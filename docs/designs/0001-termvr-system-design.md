@@ -76,7 +76,7 @@ Implementation proceeds across five sequential milestones following this `Milest
 
 | Exam Gate | Verification Metric | Pass Threshold |
 | :--- | :--- | :--- |
-| **Cached Shell Cold Start (`Midterm`)** | Time from tapping `Launch` on a cached Alpine profile to an interactive shell prompt. | `<= 600 ms` P95 on reference device |
+| **Cached Shell Cold Start (`Midterm`)** | Time from tapping `Launch` on a cached Debian 13 (`debian:trixie-slim`) profile to an interactive shell prompt. | `<= 600 ms` P95 on reference device |
 | **High-Refresh Rendering (`Midterm`)** | Render-thread frame time on dirty frames at `120 Hz` during full-screen editor scrolling. | `<= 4.0 ms` P95; `0` render wakeups when idle |
 | **Subprocess Budget (`Midterm`)** | Total host OS child processes spawned for one sandbox running 8 concurrent shell tabs. | `<= 4` host child processes |
 | **CJK & Modifier Input (`Midterm`)** | Korean Hangul syllable composition and latched `CTRL` chords on Gboard and Samsung Keyboard. | `100%` exact byte output; zero dropped jamo |
@@ -138,7 +138,7 @@ Seven architectural decisions eliminate design ambiguity across process supervis
 | **D3** | How does `TermVR` freeze idle background sandboxes without failing to spawn helper processes under memory pressure? | Send checkpoint commands directly from the Android service over a pre-opened owner-only Unix control socket using rotating snapshot slots. | Avoids spawning a new OS process during memory pressure and preserves the prior snapshot if storage fills mid-save. |
 | **D4** | How does `TermVR` render split panes without exhausting Android display overlays or flashing black on tab switches? | Draw all split panes of the terminal screen inside one shared OpenGL ES 3.0 surface backed by a persistent surfaceless GL context. | Stays within Android's hardware overlay budget, shares one glyph atlas across panes, and redraws triple buffers cleanly on surface recreation. |
 | **D5** | How does guest DNS keep working when the phone roams between Wi-Fi, 5G cellular, VPNs, and Private DNS? | Run an app-local loopback DNS forwarder routed through Android's active network resolver instead of passing static boot-time DNS server IPs. | Survives airplane-to-Wi-Fi transitions, cellular handoffs, host VPNs, and DNS-over-TLS policies without restarting the sandbox. |
-| **D6** | How does text shaping remain identical across vendor Android ROMs? | Bundle FreeType and HarfBuzz statically inside the JNI library with `JetBrains Mono` and `Symbols Nerd Font Mono`, querying system fonts only for CJK and emoji fallback. | Guarantees uniform cell dimensions, box drawing, and cursor-aware ligatures across all Android OEMs. |
+| **D6** | How does text shaping remain identical across vendor Android ROMs? | Bundle FreeType and HarfBuzz statically inside the JNI library with `TermVR Mono NF` (`v1.0.1` Regular subset), querying system fonts only for extra CJK or emoji fallback. | Guarantees uniform cell dimensions, box drawing, and cursor-aware ligatures across all Android OEMs. |
 | **D7** | How do host image pulls and guest tools use `HTTP`, `HTTPS`, `SOCKS5`, and `SOCKS4` proxies across single-VPN limits and Wi-Fi switches? | Run a host `LoopbackProxyBridge` paired with a guest `127.0.0.1:1080` listener (and optional `SO_ORIGINAL_DST` redirect) over `stdio` mux streams. | Translates `SOCKS4/4a` and authenticated proxies for all tools, keeps credentials out of guest `env`, works under `-isolate-lan`, and hot-swaps upstream proxies live. |
 
 ---
@@ -150,8 +150,8 @@ Six end-to-end journeys define observable behavior across UI screens and runtime
 ### 5.1 CUJ 1: First-Run Diagnostics and Quick Shell Launch
 
 - **Given** a fresh installation of `TermVR` on an unrooted Android 14+ `arm64` phone on Wi-Fi.
-- **When** the user inspects the host readiness card on `Home` and taps `Quick Shell (Alpine)`.
-- **Then** `TermVR` pulls and compiles the `linux/arm64` image into persistent storage and starts the foreground sandbox service. Cached launches open an interactive shell prompt within `600 ms`.
+- **When** the user inspects the host readiness card on `Home` and taps `Quick Shell (Debian 13)`.
+- **Then** `TermVR` pulls and compiles the `debian:trixie-slim` (`linux/arm64`) image into persistent storage and starts the foreground sandbox service. Cached launches open an interactive shell prompt within `600 ms`.
 
 ### 5.2 CUJ 2: Multi-Tab Editing with Auxiliary Modifiers and Hangul/CJK Input
 
@@ -161,7 +161,7 @@ Six end-to-end journeys define observable behavior across UI screens and runtime
 
 ### 5.3 CUJ 3: Prebuilt Docker Engine and Kubernetes (`k3s`) Recipes
 
-- **Given** an Android device with at least `6 GiB` physical RAM and a `2.5 GiB` profile memory limit.
+- **Given** an Android device with at least `6 GiB` physical RAM.
 - **When** the user opens `Catalog`, launches the `Kubernetes Single-Node (k3s)` recipe, and confirms volume creation and loopback port rules.
 - **Then** `TermVR` boots `k3s` on a dedicated `ext4lite` volume and streams daemon logs in Stream 0. A ready shell tab opens with `kubectl` configured and one-tap `kubeconfig` export.
 
@@ -410,7 +410,7 @@ The table below lists all structural, build, metadata, and governance files comm
 | `core/runtime-gvx/src/main/AndroidManifest.xml` | `:core:runtime-gvx` | Minimal manifest for the `:core:runtime-gvx` supervisor namespace. |
 | `guest/termvr-agent/go.mod` | `guest/termvr-agent` | Standalone zero-dependency Go `1.27.4` module (`dev.gfire.termvr/guest/termvr-agent`). |
 | `scripts/source-lock.json` | Build & Provenance | Exact commit SHAs and SPDX licenses for `gvx`, `ghostty`, `freetype`, `harfbuzz`, and bundled fonts. |
-| `fdroid/dev.gfire.termvr.yml` | F-Droid Metadata | Source-built F-Droid recipe with 6 `srclibs`, `init:` prefetch, `prebuild:` native build, and `arm64-v8a` ABI. |
+| `fdroid/dev.gfire.termvr.yml` | F-Droid Metadata | Source-built F-Droid recipe with 5 `srclibs`, `init:` prefetch, `prebuild:` native build, and `arm64-v8a` ABI. |
 | `fastlane/metadata/android/en-US/*.txt` | Store Metadata | F-Droid title, 80-character summary, and plain-text long description. |
 | `AGENTS.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `README.md` | Governance | Agent rules, contributor workflow, release log, and repository overview. |
 | `docs/designs/SITEMAP.md`, `docs/designs/0001-termvr-system-design.md` | Design Docs | `EGM` design index and this master architecture and implementation specification. |
@@ -476,8 +476,8 @@ data class SandboxProfile(
     val muxMode: MuxMode = MuxMode.STDIO_MUX,
     val initDaemonArgv: List<String> = emptyList(),  // Optional Stream-0 daemon (dockerd, k3s)
     val defaultShellArgv: List<String> = emptyList(),// Empty = auto-probe /bin/bash, /bin/ash, /bin/sh
-    val memoryMiB: Int = 1024,                       // Clamped to 256..12288
-    val cpuCores: Double = 2.0,                      // Clamped at launch to <= host availableProcessors()
+    val memoryMiB: Int = 0,                          // 0 = unlimited; or clamped to 256..12288 MiB
+    val cpuCores: Double = 0.0,                      // 0.0 = unlimited; or clamped to <= host availableProcessors()
     val guestPrivileged: Boolean = false,            // True on docker/k3s recipes (user-space Sentry caps)
     val volumes: List<VolumeMountSpec> = emptyList(),
     val tmpfsMounts: List<String> = listOf("/tmp", "/run"),
@@ -621,11 +621,11 @@ enum class ModifierLatchState { RELEASED, ONE_SHOT, LOCKED, HELD }
 @Serializable
 data class FontConfig(
     val schemaVersion: Int = 1,
-    val familyId: String = "jetbrains-mono",
+    val familyId: String = "termvr-mono-nf",
     val customFontPath: String? = null,              // Copied into <filesDir>/fonts/<sha256>.ttf
     val customFontSha256: String? = null,
     val sizeSp: Float = 13.0f,                       // Clamped to 8.0f..32.0f in 0.5f increments
-    val cellHeightMultiplier: Float = 1.15f,         // Clamped to 1.0f..1.6f
+    val cellHeightMultiplier: Float = 1.0f,          // Clamped to 1.0f..1.6f
     val ligaturesEnabled: Boolean = true,
     val nerdFontSymbolsEnabled: Boolean = true,
 )
@@ -648,7 +648,7 @@ data class RecipeManifest(
     val summary: String,
     val imageRef: String,
     val minHostRamMiB: Int,                          // 4096 for Docker, 6144 for k3s (+4096 for Calico)
-    val defaultProfileRamMiB: Int,
+    val defaultProfileRamMiB: Int = 0,               // 0 = unlimited; or explicit MiB cap
     val minFreeDiskMiB: Int,
     val volumeTemplateSuffix: String,                // Instantiated per profile as "<suffix>-<profileId>"
     val volumeGuestMountPath: String,
@@ -745,12 +745,12 @@ During `doFrame`, `TermVrGlThread` iterates the layout rectangles of all visible
 | Tier | Font Source | Glyph Coverage | Atlas Target |
 | :--- | :--- | :--- | :--- |
 | **1** | User Custom `.ttf` / `.otf` (optional, `SHA-256` verified) | Primary ASCII, Latin, and optional ligatures | `GL_R8` (`2048 x 2048`) |
-| **2** | Bundled `JetBrains Mono` (`v2.304`, Regular/Bold/Italic/BoldItalic) | Primary monospace metrics (`cellWidth`, `cellHeight`, `baseline`) and ligatures | `GL_R8` (`2048 x 2048`) |
-| **3** | Bundled `Symbols Nerd Font Mono` (`v3.5.1`) | Powerline, Devicons, Codicons, FontAwesome, Octicons (`PUA` codepoints), scaled to `1` or `2` cells | `GL_R8` (`2048 x 2048`) |
-| **4** | Host System CJK via NDK `ASystemFontIterator` (`NotoSansCJK` / OEM CJK) | Korean Hangul (`U+AC00..U+D7A3`, `U+1100..U+11FF`, `U+3130..U+318F`), Han, Hiragana, Katakana (`span_cols = 2`) | `GL_R8` (`2048 x 2048`) |
+| **2** | Bundled `TermVR Mono NF` (`v1.0.1`, `TermVRMonoNF-Regular.ttf` with synthesized Bold and Italic) | Primary monospace metrics (`cellWidth`, `cellHeight`, `baseline`), Latin, 11,172 Hangul syllables, 6,355 CJK glyphs, box drawing, and ligatures | `GL_R8` (`2048 x 2048`) |
+| **3** | Bundled `TermVR Mono NF` `PUA` / Optional `Nerd` Fallback | Powerline, Devicons, Codicons, FontAwesome, Octicons (`v3.5.1`, 10,615 `PUA` icons), scaled to `1` or `2` cells | `GL_R8` (`2048 x 2048`) |
+| **4** | Host System CJK via NDK `ASystemFontIterator` (`NotoSansCJK` / OEM CJK) | Supplementary Hangul, Han, Hiragana, and Katakana fallback when missing from primary font (`span_cols = 2`) | `GL_R8` (`2048 x 2048`) |
 | **5** | Host System Color Emoji (`NotoColorEmoji.ttf`) | Multi-codepoint ZWJ and skin-tone emoji sequences (`FT_LOAD_COLOR`) | `GL_RGBA8` (`2048 x 2048`) |
 
-Box-drawing (`U+2500..U+257F`), block elements (`U+2580..U+259F`), and Braille (`U+2800..U+28FF`) rasterize procedurally to exact cell pixel bounds. Borders in `tmux`, `btop`, and `lazygit` never show subpixel seams.
+Box-drawing (`U+2500..U+257F`), block elements (`U+2580..U+259F`), and Braille (`U+2800..U+28FF`) use native `TermVR Mono NF` glyphs when `cellHeightMultiplier <= 1.03` or procedural cell-exact rasterization above `1.03`. Borders in `tmux`, `btop`, and `lazygit` never show subpixel seams.
 
 When `FontConfig.ligaturesEnabled` is `true`, operator runs (`==`, `!=`, `>=`, `<=`, `=>`, `|>`, `::`, `///`) pass through `hb_shape` (`calt=1`, `liga=1`). Runs touched by the cursor or selection split automatically into 1-cell characters so in-place editing stays unambiguous.
 
@@ -845,7 +845,7 @@ When `profile.muxMode == MuxMode.RAW_PTY` (fallback mode for minimalist scratch 
 Upstream `rungv run` checks for `--` before reading positional image arguments, whereas `rungv restore` rejects `-image`, `--entrypoint`, and command arguments altogether. `GvxCommandBuilder` therefore implements two distinct argument builders:
 
 - **`buildRunArgs(profile, dnsPort, controlSock, activePorts)`**:
-  - Passes `run`, `-m "${profile.memoryMiB}m"`, and `--cpus` clamped to `min(profile.cpuCores, Runtime.getRuntime().availableProcessors().toDouble())`.
+  - Passes `run`, optional `-m "${profile.memoryMiB}m"` when `memoryMiB > 0`, and optional `--cpus` clamped to `Runtime.getRuntime().availableProcessors().toDouble()` when `cpuCores > 0.0` (omitted by default for unlimited container resources).
   - Sets guest user-space capabilities: `--privileged=true` when `profile.guestPrivileged` is `true` (`docker`/`k3s`), `--privileged=false --net-raw` when `transparentTcp` is `true`, or `--privileged=false` otherwise.
   - Passes `--host-dns "127.0.0.1:$dnsPort"`, `-control-socket controlSock.absolutePath`, and `--host-ca-certs` when `profile.trustHostCaCerts` is `true`.
   - Passes `-net=nat` (plus `-isolate-lan` if `isolateLanEgress`), `-net=wg -wg-conf <path>`, or `-net=none`.
@@ -854,7 +854,7 @@ Upstream `rungv run` checks for `--` before reading positional image arguments, 
   - In `STDIO_MUX` mode, appends `--entrypoint /run/termvr-agent/termvr-agent`, `-image profile.imageRef`, `--`, `--mux-stdio`, `--proxy-listen 127.0.0.1:1080`, optional `--transparent-proxy-port 1081`, optional `--make-root-rshared`, and optional `-- <initDaemonArgv...>`.
 - **`buildRestoreArgs(profile, slotDir, dnsPort, controlSock, resolvedPorts)`**:
   - Passes `restore`, `-checkpoint-dir slotDir.absolutePath`, `-control-socket controlSock.absolutePath`, `--host-dns "127.0.0.1:$dnsPort"`, and identical ordered `-v` and `--tmpfs` flags.
-  - Appends matching `-net` / `-isolate-lan` / `-wg-conf`, `-m`, clamped `--cpus`, matching `--privileged` / `--net-raw` flags, optional `--host-ca-certs`, optional `-t`, and resolved `-p` rules.
+  - Appends matching `-net` / `-isolate-lan` / `-wg-conf`, optional `-m` and clamped `--cpus` when positive, matching `--privileged` / `--net-raw` flags, optional `--host-ca-certs`, optional `-t`, and resolved `-p` rules.
 
 ### 15.3 App-Local `LoopbackDnsProxy` and `LoopbackProxyBridge`
 
@@ -943,20 +943,20 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 `CatalogScreen` organizes three tabs (`Distributions`, `Recipes`, `Local Images`) filtered strictly to the device's native Linux architecture (`arm64` on `arm64-v8a`; `amd64` on `x86_64`):
 
-- **Curated distributions**: `Alpine 3.21`, `Debian 13 (Trixie)`, `Ubuntu 24.04 LTS`, and `Fedora 42`, each pre-configured with `/workspace` mount and `STDIO_MUX`.
+- **Curated distributions**: `Debian 13 (Trixie)` (`debian:trixie-slim`, default), `Alpine 3.21`, `Ubuntu 24.04 LTS`, and `Fedora 42`, each pre-configured with `/workspace` mount and `STDIO_MUX`.
 - **Registry auth & `rungv` CLI contracts**:
   - `CatalogRepository` authenticates against OCI registries using Kotlin `HttpsURLConnection` (`TLS 1.3`, routed through `LoopbackProxyBridge` when active) and writes `$HOME/.docker/config.json` (`0600`) directly because `rungv login` lacks `--host-dns`.
   - `rungv pull` and `rungv image save` always receive `--host-dns 127.0.0.1:<dnsPort>`. `Export Image (.tar)` is enabled only while online for registry-pulled images (upstream `rungv image save` re-fetches manifests and rejects local `image load` tar imports).
   - `rungv system df --format json` and `rungv volume ls --format json` emit newline-delimited JSON (**NDJSON**, one JSON object per line), whereas `rungv volume inspect` emits a JSON array; `CatalogRepository` parses each format accordingly and passes `-f` to `system prune` and `volume prune`.
 - **Recipe 1: `Docker Engine (DinD)` (`docker:28-dind`)**:
-  - Requires `>= 4096 MiB` physical host RAM (`1536 MiB` default sandbox RAM) and `>= 2048 MiB` free disk.
+  - Requires `>= 4096 MiB` physical host RAM (unlimited default sandbox RAM) and `>= 2048 MiB` free disk.
   - Sets `guestPrivileged = true`, mounts per-profile `ext4lite` volume `docker-${profileId}:/var/lib/docker`, sets `-e DOCKER_TLS_CERTDIR=`, sets `autoCheckpointOnLowMemory = false`, and runs `initDaemonArgv = ["dockerd-entrypoint.sh", "--storage-driver=overlay2", "--iptables=true", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]`.
   - Streams `dockerd` logs in Stream 0 (`Daemon Logs` tab) and opens Stream 1 shell once `127.0.0.1:2375` responds.
 - **Recipe 2: `Kubernetes Single-Node (k3s)` (`rancher/k3s:v1.32.2-k3s1`)**:
-  - Requires `>= 6144 MiB` physical host RAM (`2560 MiB` default sandbox RAM) and `>= 3072 MiB` free disk.
+  - Requires `>= 6144 MiB` physical host RAM (unlimited default sandbox RAM) and `>= 3072 MiB` free disk.
   - Sets `guestPrivileged = true`, mounts per-profile `ext4lite` volume `k3s-${profileId}:/var/lib/rancher/k3s`, passes `--make-root-rshared` to `termvr-agent`, binds `127.0.0.1:6443:6443/tcp`, sets `autoCheckpointOnLowMemory = false`, and launches `initDaemonArgv = ["/bin/k3s", "server", "--snapshotter=native", "--flannel-backend=host-gw", "--write-kubeconfig-mode=0644", "--tls-san=127.0.0.1", "--kubelet-arg=cgroups-per-qos=false", "--kubelet-arg=enforce-node-allocatable=", "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<3%,imagefs.available<3%"]`.
   - Provides one-tap **Export `kubeconfig`** rewriting the cluster endpoint to `https://127.0.0.1:6443`.
-  - **Optional Calico VXLAN toggle**: Raises profile RAM floor to `4096 MiB` and switches `k3s` flags to `--flannel-backend=none --disable-network-policy`. Applies `calico-vxlan.yaml` with five `gvx` overrides (`CALICO_IPV4POOL_VXLAN=Always`, `FELIX_BPFENABLED=false`, `FELIX_XDPENABLED=false`, `CALICO_DISABLE_FILE_LOGGING=true`, `veth_mtu: "1450"`).
+  - **Optional Calico VXLAN toggle**: Raises minimum host RAM floor to `4096 MiB` (unlimited sandbox RAM by default) and switches `k3s` flags to `--flannel-backend=none --disable-network-policy`. Applies `calico-vxlan.yaml` with five `gvx` overrides (`CALICO_IPV4POOL_VXLAN=Always`, `FELIX_BPFENABLED=false`, `FELIX_XDPENABLED=false`, `CALICO_DISABLE_FILE_LOGGING=true`, `veth_mtu: "1450"`).
 
 ### 16.3 `NetworkScreen`: Outbound Proxy, `0.0.0.0` LAN Gate, and WireGuard
 
@@ -998,15 +998,15 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 ### 18.1 Two-Phase Offline F-Droid Build (`init:` vs `prebuild:`)
 
-`fdroid/dev.gfire.termvr.yml` sets `subdir: app`, `gradleProps: termvrAbis=arm64-v8a`, and pins six `srclibs` matching `scripts/source-lock.json`. It separates network prefetching from offline compilation:
+`fdroid/dev.gfire.termvr.yml` sets `subdir: app`, `gradleProps: termvrAbis=arm64-v8a`, and pins five `srclibs` matching `scripts/source-lock.json`. It separates network prefetching from offline compilation:
 
-- **Phase 1 (`init: ../scripts/provision-toolchains-and-vendor.sh`)**: Runs before F-Droid disables network access (or uses pre-populated CI caches). Verifies `git rev-parse HEAD` of `$$gvx$$`, `$$ghostty$$`, `$$freetype$$`, `$$harfbuzz$$`, `$$jetbrains_mono$$`, and `$$nerd_fonts_symbols$$` against `scripts/source-lock.json`; downloads `SHA-256`-pinned official Go `1.27.4` and Zig `0.17.0` archives if absent; populates `$$gvx$$/vendor` via `go mod vendor`; and populates Zig's package cache via `zig build --fetch`.
+- **Phase 1 (`init: ../scripts/provision-toolchains-and-vendor.sh`)**: Runs before F-Droid disables network access (or uses pre-populated CI caches). Verifies `git rev-parse HEAD` of `$$gvx$$`, `$$ghostty$$`, `$$freetype$$`, `$$harfbuzz$$`, and `$$termvr_fonts$$` against `scripts/source-lock.json`; downloads `SHA-256`-pinned Go `1.27.4`, Zig `0.17.0`, and `TermVRMonoNF-TTF.zip` archives if absent; verifies `TermVRMonoNF-Regular.ttf` against `ttf_sha256`; populates `$$gvx$$/vendor` via `go mod vendor`; and populates Zig's package cache via `zig build --fetch`.
 - **Phase 2 (`prebuild: ../scripts/build-native-deps.sh`)**: Runs completely offline:
   - Compiles `librungv.so` into `core/runtime-gvx/src/main/jniLibs/<abi>/librungv.so`:
     - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -mod=vendor -trimpath -buildvcs=false -buildmode=pie -ldflags="-s -w -buildid=" ./cmd/rungv`.
     - On `x86_64` (emulator/CI): `CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$NDK_CLANG_X86_64 go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" ./cmd/rungv`.
   - Compiles static `termvr-agent` (`CGO_ENABLED=0 GOOS=linux GOARCH=<guestArch> go build -trimpath -buildvcs=false -ldflags="-s -w -buildid="`) into `app/src/main/assets/agent/<guestArch>/termvr-agent`.
-  - Compiles `libghostty-vt.a` (`zig build -Doptimize=ReleaseFast --system <zig-cache> -Dtarget=<target>`), `libfreetype.a`, and `libharfbuzz.a` (`ZERO_AR_DATE=1`, `-ffile-prefix-map=$PWD=.`), and copies `JetBrainsMono-{Regular,Bold,Italic,BoldItalic}.ttf` plus `SymbolsNerdFontMono-Regular.ttf` into `core/terminal-ui/src/main/assets/fonts/`.
+  - Compiles `libghostty-vt.a` (`zig build -Doptimize=ReleaseFast --system <zig-cache> -Dtarget=<target>`), `libfreetype.a`, and `libharfbuzz.a` (`ZERO_AR_DATE=1`, `-ffile-prefix-map=$PWD=.`) into `.native-deps/<abi>/`, and copies `TermVRMonoNF-Regular.ttf` into `core/terminal-ui/src/main/assets/fonts/`.
 
 ### 18.2 Mandatory 16 KB ELF Page-Alignment Gate
 
@@ -1048,7 +1048,7 @@ Four packaging controls guarantee identical unsigned APK bytes across independen
 > Run every verification step below from the repository root before tagging a release or updating `fdroid/dev.gfire.termvr.yml`.
 
 1. Run `./scripts/sync-gvx-version.sh --check` to confirm `gvx` commit, tag, `versionName`, and `versionCode` parity across all manifests.
-2. Verify `scripts/source-lock.json` syntax and confirm all six commit SHAs match `fdroid/dev.gfire.termvr.yml`.
+2. Verify `scripts/source-lock.json` syntax and confirm all five commit SHAs match `fdroid/dev.gfire.termvr.yml`.
 3. Run `scripts/provision-toolchains-and-vendor.sh` to populate verified Go, Zig, and upstream source caches.
 4. Run `scripts/build-native-deps.sh` with network disabled (`unshare -r -n`) for `arm64-v8a` and `x86_64`.
 5. Assemble the unsigned release APKs with `./gradlew :app:assembleRelease -PtermvrAbis=arm64-v8a`.

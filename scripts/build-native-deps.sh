@@ -14,8 +14,7 @@ GVX_DIR=""
 GHOSTTY_DIR=""
 FREETYPE_DIR=""
 HARFBUZZ_DIR=""
-JETBRAINS_MONO_DIR=""
-NERD_FONTS_DIR=""
+TERMVR_FONTS_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -29,8 +28,7 @@ Options:
   --ghostty <dir>         Path to ghostty checkout
   --freetype <dir>        Path to freetype checkout
   --harfbuzz <dir>        Path to harfbuzz checkout
-  --jetbrains-mono <dir>  Path to JetBrainsMono checkout
-  --nerd-fonts <dir>      Path to nerd-fonts checkout
+  --termvr-fonts <dir>    Path to TermVR fonts directory or checkout
   --abi <list>            Comma-separated ABIs: arm64-v8a, x86_64 (default: both)
   --toolchains-dir <dir>  Toolchain cache directory (default: <repo>/.toolchains)
   -h, --help              Print this help text
@@ -190,6 +188,30 @@ file_size_bytes() {
   fi
 }
 
+compute_sha256() {
+  local target_file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${target_file}" | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${target_file}" | awk '{print tolower($1)}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "${target_file}" | awk '{print tolower($NF)}'
+  else
+    die "No SHA-256 tool found (expected sha256sum, shasum, or openssl)"
+  fi
+}
+
+verify_sha256() {
+  local target_file="$1"
+  local expected_hex
+  expected_hex="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+  local actual_hex
+  actual_hex="$(compute_sha256 "${target_file}")"
+  if [ "${actual_hex}" != "${expected_hex}" ]; then
+    die "SHA-256 mismatch on ${target_file}: expected ${expected_hex}, got ${actual_hex}"
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --gvx)
@@ -212,14 +234,9 @@ while [ "$#" -gt 0 ]; do
       HARFBUZZ_DIR="$(resolve_abs_path "${CALLER_PWD}" "$2")"
       shift 2
       ;;
-    --jetbrains-mono|--jetbrains_mono)
+    --termvr-fonts|--termvr_fonts)
       [ "$#" -ge 2 ] || die "$1 requires a directory argument"
-      JETBRAINS_MONO_DIR="$(resolve_abs_path "${CALLER_PWD}" "$2")"
-      shift 2
-      ;;
-    --nerd-fonts|--nerd-fonts-symbols|--nerd_fonts_symbols)
-      [ "$#" -ge 2 ] || die "$1 requires a directory argument"
-      NERD_FONTS_DIR="$(resolve_abs_path "${CALLER_PWD}" "$2")"
+      TERMVR_FONTS_DIR="$(resolve_abs_path "${CALLER_PWD}" "$2")"
       shift 2
       ;;
     --abi)
@@ -242,19 +259,28 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+FONT_ARTIFACT="$(json_query ".sources.termvr_fonts.artifact")"
+FONT_TTF_SHA256="$(json_query ".sources.termvr_fonts.ttf_sha256")"
+
 [ -n "${GVX_DIR}" ] || GVX_DIR="${TOOLCHAINS_DIR}/src/gvx"
 [ -n "${GHOSTTY_DIR}" ] || GHOSTTY_DIR="${TOOLCHAINS_DIR}/src/ghostty"
 [ -n "${FREETYPE_DIR}" ] || FREETYPE_DIR="${TOOLCHAINS_DIR}/src/freetype"
 [ -n "${HARFBUZZ_DIR}" ] || HARFBUZZ_DIR="${TOOLCHAINS_DIR}/src/harfbuzz"
-[ -n "${JETBRAINS_MONO_DIR}" ] || JETBRAINS_MONO_DIR="${TOOLCHAINS_DIR}/src/jetbrains_mono"
-[ -n "${NERD_FONTS_DIR}" ] || NERD_FONTS_DIR="${TOOLCHAINS_DIR}/src/nerd_fonts_symbols"
+if [ -z "${TERMVR_FONTS_DIR}" ]; then
+  if [ -f "${TOOLCHAINS_DIR}/fonts/${FONT_ARTIFACT}" ]; then
+    TERMVR_FONTS_DIR="${TOOLCHAINS_DIR}/fonts"
+  elif [ -d "${TOOLCHAINS_DIR}/src/termvr_fonts" ]; then
+    TERMVR_FONTS_DIR="${TOOLCHAINS_DIR}/src/termvr_fonts"
+  else
+    TERMVR_FONTS_DIR="${TOOLCHAINS_DIR}/fonts"
+  fi
+fi
 
 GVX_DIR="$(require_dir "gvx" "${GVX_DIR}")"
 GHOSTTY_DIR="$(require_dir "ghostty" "${GHOSTTY_DIR}")"
 FREETYPE_DIR="$(require_dir "freetype" "${FREETYPE_DIR}")"
 HARFBUZZ_DIR="$(require_dir "harfbuzz" "${HARFBUZZ_DIR}")"
-JETBRAINS_MONO_DIR="$(require_dir "jetbrains_mono" "${JETBRAINS_MONO_DIR}")"
-NERD_FONTS_DIR="$(require_dir "nerd_fonts_symbols" "${NERD_FONTS_DIR}")"
+TERMVR_FONTS_DIR="$(require_dir "termvr_fonts" "${TERMVR_FONTS_DIR}")"
 
 GO_EXE="$(resolve_go_bin)"
 ZIG_EXE="$(resolve_zig_bin)"
@@ -291,18 +317,18 @@ BUILD_SCRATCH="${REPO_ROOT}/core/terminal-vt/build/native-deps-work"
 rm -rf "${BUILD_SCRATCH}"
 mkdir -p "${BUILD_SCRATCH}"
 
-# Stage bundled font assets once across all ABIs.
+# Stage bundled font asset once across all ABIs.
 FONTS_OUT="${REPO_ROOT}/core/terminal-ui/src/main/assets/fonts"
 mkdir -p "${FONTS_OUT}"
-for weight in Regular Bold Italic BoldItalic; do
-  src_ttf="$(find "${JETBRAINS_MONO_DIR}" -type f -name "JetBrainsMono-${weight}.ttf" | head -n 1)"
-  [ -n "${src_ttf}" ] || die "Missing JetBrainsMono-${weight}.ttf in ${JETBRAINS_MONO_DIR}"
-  cp -f "${src_ttf}" "${FONTS_OUT}/JetBrainsMono-${weight}.ttf"
-done
-nerd_ttf="$(find "${NERD_FONTS_DIR}" -type f -name "SymbolsNerdFontMono-Regular.ttf" | head -n 1)"
-[ -n "${nerd_ttf}" ] || die "Missing SymbolsNerdFontMono-Regular.ttf in ${NERD_FONTS_DIR}"
-cp -f "${nerd_ttf}" "${FONTS_OUT}/SymbolsNerdFontMono-Regular.ttf"
-log_info "Staged bundled fonts into ${FONTS_OUT}"
+rm -f "${FONTS_OUT}"/JetBrainsMono-*.ttf "${FONTS_OUT}/SymbolsNerdFontMono-Regular.ttf"
+termvr_ttf="$(find "${TERMVR_FONTS_DIR}" -type f -name "${FONT_ARTIFACT}" | head -n 1 || true)"
+if [ -z "${termvr_ttf}" ] && [ -f "${TOOLCHAINS_DIR}/fonts/${FONT_ARTIFACT}" ]; then
+  termvr_ttf="${TOOLCHAINS_DIR}/fonts/${FONT_ARTIFACT}"
+fi
+[ -n "${termvr_ttf}" ] || die "Missing ${FONT_ARTIFACT} in ${TERMVR_FONTS_DIR} or ${TOOLCHAINS_DIR}/fonts. Run provision-toolchains-and-vendor.sh first."
+verify_sha256 "${termvr_ttf}" "${FONT_TTF_SHA256}"
+cp -f "${termvr_ttf}" "${FONTS_OUT}/${FONT_ARTIFACT}"
+log_info "Staged verified ${FONT_ARTIFACT} into ${FONTS_OUT}"
 
 build_for_abi() {
   local abi="$1"
@@ -365,8 +391,8 @@ build_for_abi() {
   fi
   log_info "Built ${agent_out} (${agent_bytes} bytes)"
 
-  # 3. Stage directories for C/C++ and Zig static dependencies.
-  local deps_stage="${REPO_ROOT}/core/terminal-vt/build/native-deps/${abi}"
+  # 3. Stage directories for C/C++ and Zig static dependencies outside Gradle build/ so `./gradlew clean` preserves them.
+  local deps_stage="${REPO_ROOT}/.native-deps/${abi}"
   local stage_lib="${deps_stage}/lib"
   local stage_inc="${deps_stage}/include"
   rm -rf "${deps_stage}"

@@ -14,6 +14,8 @@
 #if defined(TERMVR_HAS_UPSTREAM_DEPS) && TERMVR_HAS_UPSTREAM_DEPS
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_OUTLINE_H
+#include FT_SYNTHESIS_H
 #include <hb.h>
 #include <hb-ft.h>
 #endif
@@ -337,6 +339,44 @@ void FillRect(std::vector<uint8_t>* buf, uint32_t w, uint32_t h, int x0, int y0,
     }
 }
 
+void DownsamplePixels(
+    const uint8_t* src,
+    uint32_t src_w,
+    uint32_t src_h,
+    uint32_t dst_w,
+    uint32_t dst_h,
+    uint32_t channels,
+    std::vector<uint8_t>* out) {
+    if (src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 || channels == 0) {
+        out->clear();
+        return;
+    }
+    out->assign(static_cast<size_t>(dst_w) * dst_h * channels, 0u);
+    for (uint32_t dy = 0; dy < dst_h; ++dy) {
+        float sy0 = (static_cast<float>(dy) * static_cast<float>(src_h)) / static_cast<float>(dst_h);
+        float sy1 = (static_cast<float>(dy + 1u) * static_cast<float>(src_h)) / static_cast<float>(dst_h);
+        uint32_t iy0 = std::min(src_h - 1u, static_cast<uint32_t>(sy0));
+        uint32_t iy1 = std::min(src_h, std::max(iy0 + 1u, static_cast<uint32_t>(std::ceil(sy1))));
+        for (uint32_t dx = 0; dx < dst_w; ++dx) {
+            float sx0 = (static_cast<float>(dx) * static_cast<float>(src_w)) / static_cast<float>(dst_w);
+            float sx1 = (static_cast<float>(dx + 1u) * static_cast<float>(src_w)) / static_cast<float>(dst_w);
+            uint32_t ix0 = std::min(src_w - 1u, static_cast<uint32_t>(sx0));
+            uint32_t ix1 = std::min(src_w, std::max(ix0 + 1u, static_cast<uint32_t>(std::ceil(sx1))));
+            uint32_t count = (iy1 - iy0) * (ix1 - ix0);
+            for (uint32_t c = 0; c < channels; ++c) {
+                uint32_t sum = 0;
+                for (uint32_t y = iy0; y < iy1; ++y) {
+                    for (uint32_t x = ix0; x < ix1; ++x) {
+                        sum += src[(static_cast<size_t>(y) * src_w + x) * channels + c];
+                    }
+                }
+                (*out)[(static_cast<size_t>(dy) * dst_w + dx) * channels + c] =
+                    static_cast<uint8_t>(count > 0 ? (sum / count) : 0u);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 struct FontManager::Impl {
@@ -553,16 +593,17 @@ void FontManager::RecomputeMetrics() {
     FT_Face primary = impl_->tier1_custom != nullptr ? impl_->tier1_custom : impl_->tier2_regular;
     if (primary != nullptr && primary->size != nullptr) {
         if (FT_Load_Char(primary, 'M', FT_LOAD_DEFAULT) == 0 && primary->glyph->advance.x > 0) {
-            cell_w = static_cast<uint32_t>(std::max<long>(6, primary->glyph->advance.x >> 6));
+            cell_w = static_cast<uint32_t>(std::max<long>(6, (primary->glyph->advance.x + 32) >> 6));
         }
-        int32_t line_px = static_cast<int32_t>(primary->size->metrics.height >> 6);
+        int32_t line_px = static_cast<int32_t>((primary->size->metrics.height + 32) >> 6);
         if (line_px > 0) {
             cell_h = static_cast<uint32_t>(std::max<int32_t>(
                 10, static_cast<int32_t>(std::round(static_cast<float>(line_px) * config_.cell_height_multiplier))));
         }
-        int32_t asc = static_cast<int32_t>(primary->size->metrics.ascender >> 6);
+        int32_t asc = static_cast<int32_t>((primary->size->metrics.ascender + 32) >> 6);
         if (asc > 0 && asc < static_cast<int32_t>(cell_h)) {
-            baseline = asc;
+            int32_t extra_leading = std::max<int32_t>(0, static_cast<int32_t>(cell_h) - line_px);
+            baseline = std::min<int32_t>(static_cast<int32_t>(cell_h) - 1, asc + extra_leading / 2);
         }
     }
 #endif
@@ -990,7 +1031,17 @@ bool FontManager::EnsureGraphemeGlyph(
         return true;
     }
 
-    if (IsBoxOrBlockOrBraille(primary_cp)) {
+    bool use_native_box = false;
+#if defined(TERMVR_HAS_UPSTREAM_DEPS) && TERMVR_HAS_UPSTREAM_DEPS
+    if (IsBoxOrBlockOrBraille(primary_cp) && config_.cell_height_multiplier <= 1.03f) {
+        FT_Face box_face = (impl_->tier1_custom != nullptr) ? impl_->tier1_custom : impl_->tier2_regular;
+        if (box_face != nullptr && FT_Get_Char_Index(box_face, primary_cp) != 0) {
+            use_native_box = true;
+        }
+    }
+#endif
+
+    if (IsBoxOrBlockOrBraille(primary_cp) && !use_native_box) {
         std::vector<uint8_t> r8;
         if (RasterizeProceduralBoxBlockBraille(primary_cp, metrics_.cell_width_px, metrics_.cell_height_px, &r8)) {
             return atlas->InsertMonoR8(
@@ -1006,13 +1057,28 @@ bool FontManager::EnsureGraphemeGlyph(
     }
 
 #if defined(TERMVR_HAS_UPSTREAM_DEPS) && TERMVR_HAS_UPSTREAM_DEPS
+    const bool want_bold = (style_flags & kStyleBold) != 0;
+    const bool want_italic = (style_flags & kStyleItalic) != 0;
+    bool face_has_bold = false;
+    bool face_has_italic = false;
+
     auto select_primary_face = [&]() -> FT_Face {
-        if (impl_->tier1_custom != nullptr) return impl_->tier1_custom;
-        bool bold = (style_flags & kStyleBold) != 0;
-        bool italic = (style_flags & kStyleItalic) != 0;
-        if (bold && italic && impl_->tier2_bold_italic != nullptr) return impl_->tier2_bold_italic;
-        if (bold && impl_->tier2_bold != nullptr) return impl_->tier2_bold;
-        if (italic && impl_->tier2_italic != nullptr) return impl_->tier2_italic;
+        if (impl_->tier1_custom != nullptr) {
+            return impl_->tier1_custom;
+        }
+        if (want_bold && want_italic && impl_->tier2_bold_italic != nullptr) {
+            face_has_bold = true;
+            face_has_italic = true;
+            return impl_->tier2_bold_italic;
+        }
+        if (want_bold && impl_->tier2_bold != nullptr) {
+            face_has_bold = true;
+            return impl_->tier2_bold;
+        }
+        if (want_italic && impl_->tier2_italic != nullptr) {
+            face_has_italic = true;
+            return impl_->tier2_italic;
+        }
         return impl_->tier2_regular;
     };
 
@@ -1040,6 +1106,10 @@ bool FontManager::EnsureGraphemeGlyph(
                 chosen_face = f;
             }
         }
+        if (chosen_face == nullptr) {
+            face_has_bold = false;
+            face_has_italic = false;
+        }
     }
     if (chosen_face == nullptr && impl_->tier3_nerd != nullptr && config_.nerd_font_symbols_enabled) {
         glyph_index = FT_Get_Char_Index(impl_->tier3_nerd, primary_cp);
@@ -1058,14 +1128,39 @@ bool FontManager::EnsureGraphemeGlyph(
     }
 
     if (chosen_face != nullptr && glyph_index != 0) {
-        FT_Int32 load_flags = FT_LOAD_RENDER | (is_color ? FT_LOAD_COLOR : FT_LOAD_TARGET_NORMAL);
-        if (FT_Load_Glyph(chosen_face, glyph_index, load_flags) == 0) {
+        const bool synth_bold = !is_color && !use_native_box && want_bold && !face_has_bold;
+        const bool synth_italic = !is_color && !use_native_box && want_italic && !face_has_italic;
+
+        FT_Error load_err = 0;
+        if (is_color) {
+            load_err = FT_Load_Glyph(chosen_face, glyph_index, FT_LOAD_RENDER | FT_LOAD_COLOR);
+        } else if (synth_bold || synth_italic) {
+            load_err = FT_Load_Glyph(chosen_face, glyph_index, FT_LOAD_DEFAULT);
+            if (load_err == 0) {
+                if (synth_bold) {
+                    FT_GlyphSlot_Embolden(chosen_face->glyph);
+                }
+                if (synth_italic) {
+                    FT_GlyphSlot_Oblique(chosen_face->glyph);
+                }
+                load_err = FT_Render_Glyph(chosen_face->glyph, FT_RENDER_MODE_NORMAL);
+            }
+        } else {
+            load_err = FT_Load_Glyph(chosen_face, glyph_index, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL);
+        }
+
+        if (load_err == 0) {
             const FT_Bitmap& bmp = chosen_face->glyph->bitmap;
             if (bmp.width == 0 || bmp.rows == 0) {
                 *out_entry = GlyphAtlasEntry{};
                 out_entry->span_cols = span_cols;
                 return true;
             }
+
+            const uint32_t max_box_w = metrics_.cell_width_px * std::max<uint8_t>(1, span_cols);
+            int16_t bx = static_cast<int16_t>(chosen_face->glyph->bitmap_left);
+            int16_t by = static_cast<int16_t>(chosen_face->glyph->bitmap_top);
+
             if (bmp.pixel_mode == FT_PIXEL_MODE_BGRA) {
                 std::vector<uint8_t> rgba(static_cast<size_t>(bmp.width) * bmp.rows * 4u);
                 for (unsigned int y = 0; y < bmp.rows; ++y) {
@@ -1078,12 +1173,29 @@ bool FontManager::EnsureGraphemeGlyph(
                         rgba[dst_i + 3] = src[x * 4u + 3];
                     }
                 }
+                uint32_t out_w = bmp.width;
+                uint32_t out_h = bmp.rows;
+                if (out_w > max_box_w || out_h > metrics_.cell_height_px) {
+                    float scale = std::min(
+                        static_cast<float>(max_box_w) / static_cast<float>(out_w),
+                        static_cast<float>(metrics_.cell_height_px) / static_cast<float>(out_h));
+                    uint32_t dst_w = std::max<uint32_t>(1u, static_cast<uint32_t>(std::lround(static_cast<float>(out_w) * scale)));
+                    uint32_t dst_h = std::max<uint32_t>(1u, static_cast<uint32_t>(std::lround(static_cast<float>(out_h) * scale)));
+                    std::vector<uint8_t> scaled;
+                    DownsamplePixels(rgba.data(), out_w, out_h, dst_w, dst_h, 4u, &scaled);
+                    rgba = std::move(scaled);
+                    out_w = dst_w;
+                    out_h = dst_h;
+                    bx = static_cast<int16_t>((max_box_w > out_w) ? ((max_box_w - out_w) / 2u) : 0u);
+                    by = static_cast<int16_t>(metrics_.baseline_px -
+                        static_cast<int32_t>((metrics_.cell_height_px > out_h) ? ((metrics_.cell_height_px - out_h) / 2u) : 0u));
+                }
                 return atlas->InsertColorRgba8(
                     key,
-                    static_cast<uint16_t>(bmp.width),
-                    static_cast<uint16_t>(bmp.rows),
-                    static_cast<int16_t>(chosen_face->glyph->bitmap_left),
-                    static_cast<int16_t>(chosen_face->glyph->bitmap_top),
+                    static_cast<uint16_t>(out_w),
+                    static_cast<uint16_t>(out_h),
+                    bx,
+                    by,
                     span_cols,
                     rgba.data(),
                     out_entry);
@@ -1096,12 +1208,34 @@ bool FontManager::EnsureGraphemeGlyph(
                         bmp.buffer + static_cast<size_t>(y) * std::abs(bmp.pitch),
                         bmp.width);
                 }
+                uint32_t out_w = bmp.width;
+                uint32_t out_h = bmp.rows;
+                if (!use_native_box && out_w > max_box_w &&
+                    (span_cols >= 2 || IsCjkOrHangulWide(primary_cp) || IsNerdFontPua(primary_cp))) {
+                    float scale = static_cast<float>(max_box_w) / static_cast<float>(out_w);
+                    uint32_t dst_w = max_box_w;
+                    uint32_t dst_h = std::max<uint32_t>(1u, static_cast<uint32_t>(std::lround(static_cast<float>(out_h) * scale)));
+                    std::vector<uint8_t> scaled;
+                    DownsamplePixels(r8.data(), out_w, out_h, dst_w, dst_h, 1u, &scaled);
+                    r8 = std::move(scaled);
+                    out_w = dst_w;
+                    out_h = dst_h;
+                    bx = 0;
+                    by = static_cast<int16_t>(std::lround(static_cast<float>(by) * scale));
+                } else if (!use_native_box && (span_cols >= 2 || IsCjkOrHangulWide(primary_cp) || IsNerdFontPua(primary_cp))) {
+                    if (bx < 0 && out_w <= max_box_w) {
+                        bx = 0;
+                    }
+                    if (bx + static_cast<int32_t>(out_w) > static_cast<int32_t>(max_box_w) && out_w <= max_box_w) {
+                        bx = static_cast<int16_t>(std::max<int32_t>(0, static_cast<int32_t>(max_box_w) - static_cast<int32_t>(out_w)));
+                    }
+                }
                 return atlas->InsertMonoR8(
                     key,
-                    static_cast<uint16_t>(bmp.width),
-                    static_cast<uint16_t>(bmp.rows),
-                    static_cast<int16_t>(chosen_face->glyph->bitmap_left),
-                    static_cast<int16_t>(chosen_face->glyph->bitmap_top),
+                    static_cast<uint16_t>(out_w),
+                    static_cast<uint16_t>(out_h),
+                    bx,
+                    by,
                     span_cols,
                     r8.data(),
                     out_entry);
