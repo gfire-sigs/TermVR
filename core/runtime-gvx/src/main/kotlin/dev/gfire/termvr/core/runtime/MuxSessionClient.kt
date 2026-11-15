@@ -468,8 +468,16 @@ class MuxSessionClient(
 
     private val stream0SendWindow = SlidingSendWindow(MuxCodec.INITIAL_STREAM_WINDOW)
     private val streamSendWindows = ConcurrentHashMap<Long, SlidingSendWindow>()
+    private val knownOpenPtyStreams = ConcurrentHashMap.newKeySet<Long>()
     private val streamRecvAvailable = ConcurrentHashMap<Long, AtomicInteger>()
     private val streamListeners = ConcurrentHashMap<Long, MuxStreamListener>()
+
+    val isClosed: Boolean
+        get() = closed.get()
+
+    fun isStreamOpen(streamId: Long): Boolean = !closed.get() && streamId in knownOpenPtyStreams
+
+    fun openStreamIds(): Set<Long> = if (closed.get()) emptySet() else knownOpenPtyStreams.toSet()
 
     private val inboundGuestRpcBuffers = ConcurrentHashMap<Long, InboundGuestRpcState>()
     private val outboundHostRpcWaiters = ConcurrentHashMap<Long, OutboundHostRpcCollector>()
@@ -516,6 +524,8 @@ class MuxSessionClient(
 
     fun attachPtyHandle(streamId: Long, listener: MuxStreamListener? = null): MuxPtyHandle {
         require(streamId >= 1L) { "attachPtyHandle requires streamId >= 1" }
+        if (closed.get()) throw IOException("MuxSessionClient is closed")
+        knownOpenPtyStreams.add(streamId)
         streamSendWindows.putIfAbsent(streamId, SlidingSendWindow(MuxCodec.INITIAL_STREAM_WINDOW))
         streamRecvAvailable.putIfAbsent(streamId, AtomicInteger(MuxCodec.INITIAL_STREAM_WINDOW))
         if (listener != null) {
@@ -569,6 +579,7 @@ class MuxSessionClient(
                 streamListeners.remove(streamId)
                 throw MuxPtyOpenException(status, errorText.ifEmpty { "OPEN_PTY failed with status $status" })
             }
+            knownOpenPtyStreams.add(streamId)
             return MuxPtyHandle(streamId, this)
         } catch (e: Exception) {
             pendingOpenPty.remove(streamId)
@@ -645,7 +656,11 @@ class MuxSessionClient(
                 recv.set(MuxCodec.INITIAL_STREAM_WINDOW)
             }
             var maxRestoredStreamId = 0L
+            knownOpenPtyStreams.clear()
             for (s in ack.openStreams) {
+                if (s.id >= 1L) {
+                    knownOpenPtyStreams.add(s.id)
+                }
                 streamSendWindows.putIfAbsent(s.id, SlidingSendWindow(MuxCodec.INITIAL_STREAM_WINDOW))
                 streamRecvAvailable.putIfAbsent(s.id, AtomicInteger(MuxCodec.INITIAL_STREAM_WINDOW))
                 if (s.id > maxRestoredStreamId) {
@@ -902,6 +917,7 @@ class MuxSessionClient(
                     throw MuxProtocolException("PTY_EXIT length must be 1, got ${frame.payload.size}")
                 }
                 val code = frame.payload[0].toInt() and 0xFF
+                knownOpenPtyStreams.remove(frame.streamId)
                 activeProxySockets.remove(frame.streamId)?.close()
                 streamSendWindows.remove(frame.streamId)?.close()
                 streamRecvAvailable.remove(frame.streamId)
@@ -1205,6 +1221,7 @@ class MuxSessionClient(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         stream0SendWindow.close()
+        knownOpenPtyStreams.clear()
         for (win in streamSendWindows.values) {
             win.close()
         }

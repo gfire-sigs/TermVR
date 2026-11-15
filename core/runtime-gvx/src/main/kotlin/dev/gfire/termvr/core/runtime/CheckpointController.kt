@@ -14,10 +14,13 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -55,27 +58,40 @@ fun interface ControlSocketTransport {
  * Android `LocalSocket` control client honoring 2000 ms connect/write and 60000 ms read timeouts.
  */
 object AndroidLocalSocketTransport : ControlSocketTransport {
+    private const val MAX_UNIX_SOCKET_PATH_BYTES = 107
+
     override fun sendCommand(
         socketFile: File,
         payloadLine: String,
         connectWriteTimeoutMs: Int,
         readTimeoutMs: Int,
     ): String {
+        val socketPath = socketFile.absolutePath
+        if (socketPath.toByteArray(StandardCharsets.UTF_8).size > MAX_UNIX_SOCKET_PATH_BYTES) {
+            throw IOException("Control socket path exceeds Unix domain limit: $socketPath")
+        }
         val socket = LocalSocket()
         val connectExecutor = Executors.newSingleThreadExecutor { r ->
             Thread(r, "termvr-ctl-connect").apply { isDaemon = true }
         }
         try {
-            socket.soTimeout = connectWriteTimeoutMs
+            // Android LocalSocket leaves its underlying fd null until connect() creates it;
+            // calling setSoTimeout before connect() throws IOException("socket not created").
             val connectTask = connectExecutor.submit(
                 Callable {
                     socket.connect(
-                        LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM),
+                        LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM),
                     )
                 },
             )
-            connectTask.get(connectWriteTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            try {
+                connectTask.get(connectWriteTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            } catch (e: ExecutionException) {
+                val cause = e.cause
+                throw if (cause is IOException) cause else IOException(cause?.message ?: e.message, cause)
+            }
 
+            socket.soTimeout = connectWriteTimeoutMs
             val out = socket.outputStream
             val lineBytes = if (payloadLine.endsWith("\n")) {
                 payloadLine.toByteArray(StandardCharsets.UTF_8)
@@ -88,7 +104,12 @@ object AndroidLocalSocketTransport : ControlSocketTransport {
                     out.flush()
                 },
             )
-            writeTask.get(connectWriteTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            try {
+                writeTask.get(connectWriteTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            } catch (e: ExecutionException) {
+                val cause = e.cause
+                throw if (cause is IOException) cause else IOException(cause?.message ?: e.message, cause)
+            }
 
             socket.soTimeout = readTimeoutMs
             val reader = BufferedReader(InputStreamReader(socket.inputStream, StandardCharsets.UTF_8))
@@ -131,8 +152,16 @@ data class CheckpointSlotMetadata(
 
 @Serializable
 private data class ControlCheckpointCommand(
-    val op: String = "checkpoint",
     val dir: String,
+    @SerialName("leave_running")
+    val leaveRunning: Boolean = false,
+    val token: String? = null,
+)
+
+@Serializable
+private data class ControlCheckpointResponse(
+    val ok: Boolean,
+    val error: String? = null,
 )
 
 data class ActiveCheckpoint(
@@ -212,6 +241,29 @@ class CheckpointController(
     }
 
     /**
+     * Prepares the inactive checkpoint slot directory before launching `rungv run` so `gvx` can
+     * pre-open bundle files before `hostlockdown` restricts filesystem creation.
+     */
+    fun prepareCheckpointSlotDir(profileId: String): File {
+        val rootDir = profileCheckpointRoot(profileId)
+        rootDir.mkdirs()
+        val currentMeta = readMetadata(profileId)
+        val nextSlotName = if (currentMeta?.activeSlot == CheckpointSlotMetadata.SLOT_A) {
+            CheckpointSlotMetadata.SLOT_B
+        } else {
+            CheckpointSlotMetadata.SLOT_A
+        }
+        val slotDir = File(rootDir, nextSlotName)
+        if (slotDir.exists()) {
+            slotDir.deleteRecursively()
+        }
+        if (!slotDir.mkdirs()) {
+            throw CheckpointFailedException("Failed to create checkpoint slot directory: ${slotDir.absolutePath}")
+        }
+        return slotDir
+    }
+
+    /**
      * Executes atomic dual-slot checkpoint rotation over `<filesDir>/ctl/<profileId>.sock`.
      */
     fun checkpoint(
@@ -219,6 +271,7 @@ class CheckpointController(
         controlSocketFile: File,
         currentPssBytes: Long,
         resolvedPorts: List<PortForwardRule> = emptyList(),
+        preopenedSlotDir: File? = null,
         awaitProcessExit: () -> Int,
     ): CheckpointSlotMetadata {
         val rootDir = profileCheckpointRoot(profileId)
@@ -232,22 +285,37 @@ class CheckpointController(
 
         val currentMeta = readMetadata(profileId)
         val previousSlotName = currentMeta?.activeSlot
-        val nextSlotName = if (previousSlotName == CheckpointSlotMetadata.SLOT_A) {
-            CheckpointSlotMetadata.SLOT_B
+        val nextSlotName: String
+        val nextSlotDir: File
+        if (preopenedSlotDir != null) {
+            require(
+                preopenedSlotDir.name == CheckpointSlotMetadata.SLOT_A ||
+                    preopenedSlotDir.name == CheckpointSlotMetadata.SLOT_B,
+            ) {
+                "Pre-opened checkpoint dir must be slot-a or slot-b: ${preopenedSlotDir.absolutePath}"
+            }
+            nextSlotName = preopenedSlotDir.name
+            nextSlotDir = preopenedSlotDir
+            if (!nextSlotDir.exists() && !nextSlotDir.mkdirs()) {
+                throw CheckpointFailedException("Failed to create checkpoint slot directory: ${nextSlotDir.absolutePath}")
+            }
         } else {
-            CheckpointSlotMetadata.SLOT_A
-        }
-
-        val nextSlotDir = File(rootDir, nextSlotName)
-        if (nextSlotDir.exists()) {
-            nextSlotDir.deleteRecursively()
-        }
-        if (!nextSlotDir.mkdirs()) {
-            throw CheckpointFailedException("Failed to create checkpoint slot directory: ${nextSlotDir.absolutePath}")
+            nextSlotName = if (previousSlotName == CheckpointSlotMetadata.SLOT_A) {
+                CheckpointSlotMetadata.SLOT_B
+            } else {
+                CheckpointSlotMetadata.SLOT_A
+            }
+            nextSlotDir = File(rootDir, nextSlotName)
+            if (nextSlotDir.exists()) {
+                nextSlotDir.deleteRecursively()
+            }
+            if (!nextSlotDir.mkdirs()) {
+                throw CheckpointFailedException("Failed to create checkpoint slot directory: ${nextSlotDir.absolutePath}")
+            }
         }
 
         val cmdLine = lineJson.encodeToString(
-            ControlCheckpointCommand(op = "checkpoint", dir = nextSlotDir.absolutePath),
+            ControlCheckpointCommand(dir = nextSlotDir.absolutePath, leaveRunning = false),
         )
         val reply = try {
             controlTransport.sendCommand(
@@ -257,18 +325,33 @@ class CheckpointController(
                 readTimeoutMs = CHECKPOINT_READ_TIMEOUT_MS,
             ).trim()
         } catch (e: Exception) {
-            nextSlotDir.deleteRecursively()
+            if (preopenedSlotDir == null) {
+                nextSlotDir.deleteRecursively()
+            }
             throw CheckpointFailedException("Control socket checkpoint command failed: ${e.message}")
         }
 
-        if (reply != "ok") {
-            nextSlotDir.deleteRecursively()
+        val response = try {
+            lineJson.decodeFromString<ControlCheckpointResponse>(reply)
+        } catch (_: SerializationException) {
+            if (preopenedSlotDir == null) {
+                nextSlotDir.deleteRecursively()
+            }
             throw CheckpointFailedException("Unexpected checkpoint reply from gvx: '$reply'")
+        }
+        if (!response.ok) {
+            if (preopenedSlotDir == null) {
+                nextSlotDir.deleteRecursively()
+            }
+            val detail = response.error?.takeIf { it.isNotBlank() } ?: "gvx reported checkpoint failure"
+            throw CheckpointFailedException("Checkpoint rejected by gvx: $detail")
         }
 
         val exitCode = awaitProcessExit()
         if (exitCode != 0) {
-            nextSlotDir.deleteRecursively()
+            if (preopenedSlotDir == null) {
+                nextSlotDir.deleteRecursively()
+            }
             throw CheckpointFailedException("gvx exited with non-zero status $exitCode after checkpoint")
         }
 

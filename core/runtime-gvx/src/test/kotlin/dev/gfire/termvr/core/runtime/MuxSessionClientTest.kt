@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.encodeToString
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -554,6 +555,77 @@ class MuxSessionClientTest {
             client.close()
             bridge.close()
             targetServer.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `resync populates open streams and updates closed state cleanly`() {
+        val hostToGuestOut = PipedOutputStream()
+        val guestReads = PipedInputStream(hostToGuestOut, 64 * 1024)
+        val guestToHostOut = PipedOutputStream()
+        val hostReads = PipedInputStream(guestToHostOut, 64 * 1024)
+
+        val pool = Executors.newSingleThreadExecutor()
+        pool.execute {
+            try {
+                while (true) {
+                    val frame = MuxCodec.readFrame(guestReads) ?: break
+                    when (frame.type) {
+                        MuxFrameType.MUX_RESYNC -> {
+                            MuxCodec.writeFrame(
+                                guestToHostOut,
+                                MuxFrame(
+                                    MuxFrameType.MUX_RESYNC_ACK,
+                                    0L,
+                                    """{"openStreams":[{"id":1,"rows":24,"cols":80},{"id":3,"rows":40,"cols":120}]}"""
+                                        .toByteArray(StandardCharsets.UTF_8),
+                                ),
+                            )
+                        }
+
+                        MuxFrameType.OPEN_PTY -> {
+                            MuxCodec.writeFrame(guestToHostOut, MuxFrame(MuxFrameType.OPEN_PTY_ACK, frame.streamId, byteArrayOf(0)))
+                        }
+
+                        else -> Unit
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        val client = MuxSessionClient(
+            inputStream = hostReads,
+            outputStream = hostToGuestOut,
+            sharesDir = File(tempDir, "shares"),
+        )
+        try {
+            assertFalse(client.isClosed)
+            client.start(sendHostHello = true)
+            val ack = client.resync()
+            assertEquals(listOf(1L, 3L), ack.openStreams.map { it.id })
+            assertTrue(client.isStreamOpen(1L))
+            assertTrue(client.isStreamOpen(3L))
+            assertFalse(client.isStreamOpen(2L))
+            assertEquals(setOf(1L, 3L), client.openStreamIds())
+
+            // Next openPty advances stream ID past max restored streamId (3 -> 4).
+            val nextPty = client.openPty()
+            assertEquals(4L, nextPty.streamId)
+            assertTrue(client.isStreamOpen(4L))
+
+            // PTY_EXIT on stream 1 removes it from open streams.
+            MuxCodec.writeFrame(guestToHostOut, MuxFrame(MuxFrameType.PTY_EXIT, 1L, byteArrayOf(0)))
+            val deadline = System.currentTimeMillis() + 2_000L
+            while (client.isStreamOpen(1L) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10L)
+            }
+            assertFalse(client.isStreamOpen(1L))
+        } finally {
+            client.close()
+            assertTrue(client.isClosed)
+            assertFalse(client.isStreamOpen(3L))
             pool.shutdownNow()
         }
     }

@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -137,6 +138,22 @@ class TerminalViewModel(
                 )
             }
         }
+        scope.launch {
+            runtimeGateway.runStates.collect { states ->
+                for ((profileId, state) in states) {
+                    if (state == SandboxRunState.RUNNING && sessionCoordinator.needsReattach(profileId)) {
+                        val profile = profileRepository.getProfile(profileId) ?: continue
+                        val settings = profileRepository.observeAppSettings().first()
+                        val palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK
+                        sessionCoordinator.reattachAfterResume(
+                            profile = profile,
+                            maxScrollbackLines = settings.defaultScrollbackLines,
+                            palette = palette,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun activeController(): TerminalSurfaceController? = sessionCoordinator.activeController()
@@ -201,21 +218,39 @@ class TerminalViewModel(
 
     fun switchToOrStartProfile(profile: SandboxProfile) {
         scope.launch {
-            val state = uiState.value.runStates[profile.id] ?: SandboxRunState.STOPPED
-            if (state != SandboxRunState.RUNNING) {
-                runtimeGateway.startOrResumeSandbox(profile)
+            val prevState = uiState.value.runStates[profile.id] ?: SandboxRunState.STOPPED
+            if (prevState != SandboxRunState.RUNNING) {
+                runCatching {
+                    runtimeGateway.startOrResumeSandbox(profile)
+                }.onFailure { err ->
+                    sessionCoordinator.reportError(err.message ?: "Failed to start or resume container")
+                    return@launch
+                }
             }
-            sessionCoordinator.ensureTabsForProfile(
-                profile = profile,
-                maxScrollbackLines = uiState.value.appSettings.defaultScrollbackLines,
-                palette = uiState.value.palette,
-            )
+            val settings = uiState.value.appSettings
+            if (prevState == SandboxRunState.FROZEN) {
+                sessionCoordinator.reattachAfterResume(
+                    profile = profile,
+                    maxScrollbackLines = settings.defaultScrollbackLines,
+                    palette = uiState.value.palette,
+                )
+            } else {
+                sessionCoordinator.ensureTabsForProfile(
+                    profile = profile,
+                    maxScrollbackLines = settings.defaultScrollbackLines,
+                    palette = uiState.value.palette,
+                )
+            }
         }
     }
 
     fun freezeProfile(profileId: String) {
         scope.launch {
-            runtimeGateway.freezeSandbox(profileId)
+            runCatching {
+                runtimeGateway.freezeSandbox(profileId)
+            }.onFailure { err ->
+                sessionCoordinator.reportError(err.message ?: "Failed to freeze container")
+            }
         }
     }
 

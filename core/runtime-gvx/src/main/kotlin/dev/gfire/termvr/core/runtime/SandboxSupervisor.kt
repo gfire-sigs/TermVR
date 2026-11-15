@@ -344,6 +344,8 @@ class SandboxSupervisor(
             if (controlSock.exists()) controlSock.delete()
 
             val isRestore = activeCheckpoint != null
+            val preopenedCheckpointDir = activeCheckpoint?.slotDir
+                ?: checkpointController.prepareCheckpointSlotDir(profile.id)
             setRunState(profile.id, if (isRestore) SandboxRunState.RESTORING else SandboxRunState.STARTING)
 
             val hostEnv = commandBuilder.buildHostEnvironment(
@@ -373,6 +375,7 @@ class SandboxSupervisor(
                     controlSock = controlSock,
                     activePorts = effectivePorts,
                     guestArch = guestArch,
+                    checkpointDir = preopenedCheckpointDir,
                 )
             }
 
@@ -472,6 +475,7 @@ class SandboxSupervisor(
                 muxClient = muxClient,
                 rawPtyHandle = rawPtyHandle,
                 controlSock = controlSock,
+                preopenedCheckpointDir = preopenedCheckpointDir,
                 stderrThread = stderrThread,
                 publishedPorts = publishedList,
                 lastActivityMillis = AtomicLong(now),
@@ -501,6 +505,7 @@ class SandboxSupervisor(
                     controlSocketFile = managed.controlSock,
                     currentPssBytes = currentPss,
                     resolvedPorts = resolvedPorts,
+                    preopenedSlotDir = managed.preopenedCheckpointDir,
                     awaitProcessExit = { managed.process.waitForExit() },
                 )
                 cleanupSessionResources(profileId, managed)
@@ -625,6 +630,9 @@ class SandboxSupervisor(
 
         for (id in activeIds) {
             val managed = sessions[id] ?: continue
+            if ((_runStates.value[id] ?: SandboxRunState.STOPPED) != SandboxRunState.RUNNING) {
+                continue
+            }
             if (!managed.process.isAlive) {
                 continue
             }
@@ -814,6 +822,11 @@ class SandboxSupervisor(
         sessions.remove(profileId, managed)
         managed.muxClient?.close()
         managed.rawPtyHandle?.close()
+        try {
+            managed.stderrThread.join(250L)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
         managed.controlSock.delete()
     }
 
@@ -830,6 +843,7 @@ class SandboxSupervisor(
         val muxClient: MuxSessionClient?,
         val rawPtyHandle: HostPtyHandle?,
         val controlSock: File,
+        val preopenedCheckpointDir: File,
         val stderrThread: Thread,
         val publishedPorts: MutableList<PublishedPortMapping>,
         val lastActivityMillis: AtomicLong,

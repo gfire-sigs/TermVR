@@ -309,4 +309,33 @@ class GvxCommandBuilderTest {
         assertTrue(cpuOnlyArgs.contains("--cpus"))
         assertTrue(cpuOnlyArgs.contains("2"))
     }
+
+    @Test
+    fun `buildRunArgs includes -checkpoint-dir before -image when checkpointDir is provided`() {
+        val builder = newBuilder()
+        val profile = SandboxProfile(
+            id = "snap-run",
+            displayName = "Snap",
+            imageRef = "docker.io/library/debian:trixie-slim",
+        )
+        val slotDir = File(tempDir, "files/checkpoints/snap-run/slot-a")
+        val argsWithDir = builder.buildRunArgs(
+            profile = profile,
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(profile.id),
+            checkpointDir = slotDir,
+        )
+        val ckptIdx = argsWithDir.indexOf("-checkpoint-dir")
+        val imageIdx = argsWithDir.indexOf("-image")
+        assertTrue(ckptIdx > 0)
+        assertEquals(slotDir.absolutePath, argsWithDir[ckptIdx + 1])
+        assertTrue(ckptIdx < imageIdx)
+
+        val argsWithoutDir = builder.buildRunArgs(
+            profile = profile,
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(profile.id),
+        )
+        assertFalse(argsWithoutDir.contains("-checkpoint-dir"))
+    }
 }
