@@ -280,10 +280,7 @@ class GvxCommandBuilder(
 
         val args = ArrayList<String>(48)
         args.add("run")
-        args.add("-m")
-        args.add("${profile.memoryMiB}m")
-        args.add("--cpus")
-        args.add(formatCpuCores(SandboxProfile.clampCpuCores(profile.cpuCores, hostAvailableProcessors)))
+        appendResourceFlags(args, profile, hostAvailableProcessors)
 
         appendCapabilityFlags(args, profile)
 
@@ -367,10 +364,7 @@ class GvxCommandBuilder(
         appendVolumeAndTmpfsFlags(args, profile, guestArch)
         appendNetworkFlags(args, profile)
 
-        args.add("-m")
-        args.add("${profile.memoryMiB}m")
-        args.add("--cpus")
-        args.add(formatCpuCores(SandboxProfile.clampCpuCores(profile.cpuCores, hostAvailableProcessors)))
+        appendResourceFlags(args, profile, hostAvailableProcessors)
 
         appendCapabilityFlags(args, profile)
         if (profile.trustHostCaCerts) {
@@ -432,6 +426,21 @@ class GvxCommandBuilder(
             "--proxy-listen",
             GUEST_PROXY_LISTEN_ADDR,
         )
+    }
+
+    private fun appendResourceFlags(
+        args: MutableList<String>,
+        profile: SandboxProfile,
+        hostAvailableProcessors: Int,
+    ) {
+        if (profile.hasMemoryLimit) {
+            args.add("-m")
+            args.add("${profile.memoryMiB}m")
+        }
+        if (profile.hasCpuLimit) {
+            args.add("--cpus")
+            args.add(formatCpuCores(SandboxProfile.clampCpuCores(profile.cpuCores, hostAvailableProcessors)))
+        }
     }
 
     private fun appendCapabilityFlags(args: MutableList<String>, profile: SandboxProfile) {

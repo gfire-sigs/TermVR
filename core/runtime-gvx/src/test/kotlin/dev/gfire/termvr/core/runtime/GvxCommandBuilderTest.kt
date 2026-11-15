@@ -275,4 +275,38 @@ class GvxCommandBuilderTest {
             builder.buildRunArgs(profile, 0, builder.controlSocketFile(profile.id))
         }
     }
+
+    @Test
+    fun `buildRunArgs and buildRestoreArgs omit -m and --cpus when unlimited`() {
+        val builder = newBuilder()
+        val unlimited = SandboxProfile(
+            id = "debian-unlim",
+            displayName = "Debian Unlimited",
+            imageRef = "docker.io/library/debian:trixie-slim",
+        )
+        val runArgs = builder.buildRunArgs(unlimited, 5353, builder.controlSocketFile(unlimited.id))
+        assertFalse(runArgs.contains("-m"))
+        assertFalse(runArgs.contains("--cpus"))
+
+        val restoreArgs = builder.buildRestoreArgs(
+            profile = unlimited,
+            slotDir = File(tempDir, "slot-unlim"),
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(unlimited.id),
+        )
+        assertFalse(restoreArgs.contains("-m"))
+        assertFalse(restoreArgs.contains("--cpus"))
+
+        val memOnly = unlimited.copy(memoryMiB = 1024, cpuCores = 0.0)
+        val memOnlyArgs = builder.buildRunArgs(memOnly, 5353, builder.controlSocketFile(memOnly.id))
+        assertTrue(memOnlyArgs.contains("-m"))
+        assertTrue(memOnlyArgs.contains("1024m"))
+        assertFalse(memOnlyArgs.contains("--cpus"))
+
+        val cpuOnly = unlimited.copy(memoryMiB = 0, cpuCores = 2.0)
+        val cpuOnlyArgs = builder.buildRunArgs(cpuOnly, 5353, builder.controlSocketFile(cpuOnly.id))
+        assertFalse(cpuOnlyArgs.contains("-m"))
+        assertTrue(cpuOnlyArgs.contains("--cpus"))
+        assertTrue(cpuOnlyArgs.contains("2"))
+    }
 }

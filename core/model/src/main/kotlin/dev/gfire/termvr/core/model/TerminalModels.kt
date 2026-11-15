@@ -155,12 +155,12 @@ data class FontConfig(
 
     companion object {
         const val CURRENT_SCHEMA_VERSION: Int = 1
-        const val DEFAULT_FAMILY_ID: String = "jetbrains-mono"
+        const val DEFAULT_FAMILY_ID: String = "termvr-mono-nf"
         const val DEFAULT_SIZE_SP: Float = 13.0f
         const val MIN_SIZE_SP: Float = 8.0f
         const val MAX_SIZE_SP: Float = 32.0f
         const val SIZE_STEP_SP: Float = 0.5f
-        const val DEFAULT_CELL_HEIGHT_MULTIPLIER: Float = 1.15f
+        const val DEFAULT_CELL_HEIGHT_MULTIPLIER: Float = 1.0f
         const val MIN_CELL_HEIGHT_MULTIPLIER: Float = 1.0f
         const val MAX_CELL_HEIGHT_MULTIPLIER: Float = 1.6f
 
@@ -223,28 +223,28 @@ data class ColorPalette(
 
         val DEFAULT_DARK = ColorPalette(
             id = "termvr-dark",
-            displayName = "TermVR Dark",
-            foregroundRgba = 0xE6EDF3FFu,
-            backgroundRgba = 0x101418FFu,
-            cursorRgba = 0x58A6FFFFu,
-            selectionRgba = 0x264F78B3u,
+            displayName = "TermVR Obsidian",
+            foregroundRgba = 0xE8EEF0FFu,
+            backgroundRgba = 0x0D1011FFu,
+            cursorRgba = 0xF06E1EFFu,
+            selectionRgba = 0x1DC99A4Du,
             ansi16Rgba = listOf(
-                0x1F242CFFu, // 0 Black
-                0xFF7B72FFu, // 1 Red
-                0x3FB950FFu, // 2 Green
-                0xD29922FFu, // 3 Yellow
-                0x58A6FFFFu, // 4 Blue
-                0xBC8CFFFFu, // 5 Magenta
-                0x39C5CFFFU, // 6 Cyan
-                0xB1BAC4FFu, // 7 White
-                0x6E7681FFu, // 8 Bright Black
-                0xFFA198FFu, // 9 Bright Red
-                0x56D364FFu, // 10 Bright Green
-                0xE3B341FFu, // 11 Bright Yellow
-                0x79C0FFFFu, // 12 Bright Blue
-                0xD2A8FFFFu, // 13 Bright Magenta
-                0x56D4DDFFu, // 14 Bright Cyan
-                0xFFFFFFFFu, // 15 Bright White
+                0x192022FFu, // 0 Black
+                0xF06469FFu, // 1 Red
+                0x1DC99AFFu, // 2 Green (TermVR Mint)
+                0xF06E1EFFu, // 3 Yellow (TermVR Signal Amber)
+                0x5CA8FFFFu, // 4 Blue
+                0xC78DFFFFu, // 5 Magenta
+                0x45D0E0FFu, // 6 Cyan
+                0xC9D4D8FFu, // 7 White
+                0x78888EFFu, // 8 Bright Black
+                0xFF8A8EFFu, // 9 Bright Red
+                0x4DE3B8FFu, // 10 Bright Green
+                0xFFAA4DFFu, // 11 Bright Yellow
+                0x85C1FFFFu, // 12 Bright Blue
+                0xDCB3FFFFu, // 13 Bright Magenta
+                0x7CE6F2FFu, // 14 Bright Cyan
+                0xF5F8F9FFu, // 15 Bright White
             ),
         )
 
@@ -395,9 +395,12 @@ data class RecipeManifest(
         require(minHostRamMiB >= SandboxProfile.MIN_MEMORY_MIB) {
             "RecipeManifest minHostRamMiB must be at least ${SandboxProfile.MIN_MEMORY_MIB}"
         }
-        require(defaultProfileRamMiB in SandboxProfile.MIN_MEMORY_MIB..SandboxProfile.MAX_MEMORY_MIB) {
-            "RecipeManifest defaultProfileRamMiB must be within " +
-                "${SandboxProfile.MIN_MEMORY_MIB}..${SandboxProfile.MAX_MEMORY_MIB}"
+        require(
+            defaultProfileRamMiB == SandboxProfile.UNLIMITED_MEMORY_MIB ||
+                defaultProfileRamMiB >= SandboxProfile.MIN_MEMORY_MIB,
+        ) {
+            "RecipeManifest defaultProfileRamMiB must be ${SandboxProfile.UNLIMITED_MEMORY_MIB} " +
+                "or at least ${SandboxProfile.MIN_MEMORY_MIB}"
         }
         require(minFreeDiskMiB > 0) { "RecipeManifest minFreeDiskMiB must be positive" }
         require(VOLUME_SUFFIX_REGEX.matches(volumeTemplateSuffix)) {
@@ -423,11 +426,17 @@ data class RecipeManifest(
             }
         }
         if (optionalVariantMinProfileRamMiB != null) {
-            require(optionalVariantMinProfileRamMiB in SandboxProfile.MIN_MEMORY_MIB..SandboxProfile.MAX_MEMORY_MIB) {
+            require(
+                optionalVariantMinProfileRamMiB == SandboxProfile.UNLIMITED_MEMORY_MIB ||
+                    optionalVariantMinProfileRamMiB >= SandboxProfile.MIN_MEMORY_MIB,
+            ) {
                 "RecipeManifest optionalVariantMinProfileRamMiB out of bounds"
             }
         }
     }
+
+    val defaultMemoryMiB: Int
+        get() = defaultProfileRamMiB
 
     fun toSandboxProfile(
         profileId: String,

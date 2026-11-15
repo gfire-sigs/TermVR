@@ -241,9 +241,11 @@ class SandboxForegroundService : LifecycleService() {
     private fun buildActiveNotification(): Notification {
         val states = supervisorInstance.runStates.value
         val snapshots = supervisorInstance.telemetryByProfile.value
-        val runningSnapshots = snapshots.filterKeys { states[it] == SandboxRunState.RUNNING }.values
-        val activeCount = states.values.count { it == SandboxRunState.RUNNING }.coerceAtLeast(1)
+        val activeIds = states.filterValues { it == SandboxRunState.RUNNING }.keys
+        val runningSnapshots = snapshots.filterKeys { it in activeIds }.values
+        val activeCount = activeIds.size.coerceAtLeast(1)
 
+        val title = formatActiveNotificationTitle(activeCount, activeIds)
         val summaryText = formatStatusNotificationText(
             activeCount = activeCount,
             snapshots = runningSnapshots,
@@ -278,7 +280,7 @@ class SandboxForegroundService : LifecycleService() {
 
         return NotificationCompat.Builder(this, CHANNEL_STATUS_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("TermVR Sandbox Runtime")
+            .setContentTitle(title)
             .setContentText(summaryText)
             .setStyle(NotificationCompat.BigTextStyle().bigText(summaryText))
             .setOngoing(true)
@@ -303,13 +305,13 @@ class SandboxForegroundService : LifecycleService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val text = if (frozenIds.size == 1) {
-            "1 sandbox frozen ($firstId)"
+            "1 container frozen ($firstId)"
         } else {
-            "${frozenIds.size} sandboxes frozen"
+            "${frozenIds.size} containers frozen"
         }
         return NotificationCompat.Builder(this, CHANNEL_FROZEN_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("Frozen Sandboxes")
+            .setContentTitle("Frozen Containers")
             .setContentText(text)
             .setAutoCancel(true)
             .addAction(NotificationCompat.Action(0, "Resume", resumePending))
@@ -484,6 +486,22 @@ class SandboxForegroundService : LifecycleService() {
         var resumeActionHandler: ((String) -> Unit)? = null
 
         /**
+         * Formats the `sandbox_status` notification title for single or multiple active containers.
+         */
+        fun formatActiveNotificationTitle(
+            activeCount: Int,
+            activeProfileIds: Collection<String> = emptyList(),
+        ): String {
+            return if (activeCount > 1) {
+                "$activeCount containers running"
+            } else if (activeProfileIds.size == 1) {
+                "TermVR (${activeProfileIds.first()})"
+            } else {
+                "TermVR Sandbox Runtime"
+            }
+        }
+
+        /**
          * Formats the `sandbox_status` notification line and `[Wake Lock]`, `[Proxy]`, `[LAN 0.0.0.0]` badges.
          */
         fun formatStatusNotificationText(
@@ -493,7 +511,8 @@ class SandboxForegroundService : LifecycleService() {
         ): String {
             val totalCpuPct = snapshots.sumOf { it.cpuPercent }.roundToInt()
             val totalPssMiB = snapshots.sumOf { it.pssMiB }
-            val base = "$activeCount active \u2022 CPU $totalCpuPct% \u2022 $totalPssMiB MiB PSS"
+            val containerLabel = if (activeCount == 1) "1 active container" else "$activeCount active containers"
+            val base = "$containerLabel \u2022 CPU $totalCpuPct% \u2022 $totalPssMiB MiB PSS"
 
             val badges = ArrayList<String>(3)
             if (wakeLockRemainingSeconds != null) {

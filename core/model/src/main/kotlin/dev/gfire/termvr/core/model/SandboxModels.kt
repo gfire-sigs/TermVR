@@ -15,8 +15,8 @@ data class SandboxProfile(
     val muxMode: MuxMode = MuxMode.STDIO_MUX,
     val initDaemonArgv: List<String> = emptyList(),
     val defaultShellArgv: List<String> = emptyList(),
-    val memoryMiB: Int = DEFAULT_MEMORY_MIB,
-    val cpuCores: Double = DEFAULT_CPU_CORES,
+    val memoryMiB: Int = UNLIMITED_MEMORY_MIB,
+    val cpuCores: Double = UNLIMITED_CPU_CORES,
     val guestPrivileged: Boolean = false,
     val volumes: List<VolumeMountSpec> = emptyList(),
     val tmpfsMounts: List<String> = DEFAULT_TMPFS_MOUNTS,
@@ -45,11 +45,12 @@ data class SandboxProfile(
         require(defaultShellArgv.none { it.isEmpty() }) {
             "SandboxProfile defaultShellArgv must not contain empty elements"
         }
-        require(memoryMiB in MIN_MEMORY_MIB..MAX_MEMORY_MIB) {
-            "SandboxProfile memoryMiB must be within $MIN_MEMORY_MIB..$MAX_MEMORY_MIB, found $memoryMiB"
+        require(memoryMiB == UNLIMITED_MEMORY_MIB || memoryMiB in MIN_MEMORY_MIB..MAX_MEMORY_MIB) {
+            "SandboxProfile memoryMiB must be $UNLIMITED_MEMORY_MIB (unlimited) or within " +
+                "$MIN_MEMORY_MIB..$MAX_MEMORY_MIB, found $memoryMiB"
         }
-        require(cpuCores.isFinite() && cpuCores > 0.0) {
-            "SandboxProfile cpuCores must be finite and positive, found $cpuCores"
+        require(cpuCores == UNLIMITED_CPU_CORES || (cpuCores.isFinite() && cpuCores > 0.0)) {
+            "SandboxProfile cpuCores must be $UNLIMITED_CPU_CORES (unlimited) or finite and positive, found $cpuCores"
         }
         for (tmpfsPath in tmpfsMounts) {
             require(isCleanAbsoluteGuestPath(tmpfsPath)) {
@@ -66,12 +67,20 @@ data class SandboxProfile(
         }
     }
 
+    val hasMemoryLimit: Boolean
+        get() = memoryMiB > 0
+
+    val hasCpuLimit: Boolean
+        get() = cpuCores > 0.0
+
     companion object {
         const val CURRENT_SCHEMA_VERSION: Int = 1
+        const val UNLIMITED_MEMORY_MIB: Int = 0
+        const val UNLIMITED_CPU_CORES: Double = 0.0
         const val MIN_MEMORY_MIB: Int = 256
         const val MAX_MEMORY_MIB: Int = 12288
-        const val DEFAULT_MEMORY_MIB: Int = 1024
-        const val DEFAULT_CPU_CORES: Double = 2.0
+        const val DEFAULT_MEMORY_MIB: Int = UNLIMITED_MEMORY_MIB
+        const val DEFAULT_CPU_CORES: Double = UNLIMITED_CPU_CORES
 
         val DEFAULT_TMPFS_MOUNTS: List<String> = listOf("/tmp", "/run")
 
@@ -80,14 +89,18 @@ data class SandboxProfile(
 
         fun isValidProfileId(candidate: String): Boolean = ID_SLUG_REGEX.matches(candidate)
 
-        fun clampMemoryMiB(rawMiB: Int): Int = rawMiB.coerceIn(MIN_MEMORY_MIB, MAX_MEMORY_MIB)
+        fun clampMemoryMiB(rawMiB: Int): Int =
+            if (rawMiB <= 0) UNLIMITED_MEMORY_MIB else rawMiB.coerceIn(MIN_MEMORY_MIB, MAX_MEMORY_MIB)
 
         fun clampCpuCores(
             requestedCores: Double,
             hostAvailableProcessors: Int = Runtime.getRuntime().availableProcessors(),
         ): Double {
-            require(requestedCores.isFinite() && requestedCores > 0.0) {
-                "Requested cpuCores must be finite and positive"
+            require(requestedCores.isFinite()) {
+                "Requested cpuCores must be finite"
+            }
+            if (requestedCores <= 0.0) {
+                return UNLIMITED_CPU_CORES
             }
             val maxHostCores = hostAvailableProcessors.coerceAtLeast(1).toDouble()
             return min(requestedCores, maxHostCores)
@@ -432,7 +445,7 @@ data class DistributionCatalogEntry(
     val architecture: GuestLinuxArch,
     val imageRef: String,
     val approximateDownloadMiB: Int,
-    val defaultMemoryMiB: Int = SandboxProfile.DEFAULT_MEMORY_MIB,
+    val defaultMemoryMiB: Int = SandboxProfile.UNLIMITED_MEMORY_MIB,
     val defaultShellArgv: List<String> = emptyList(),
 ) {
     init {
@@ -449,7 +462,17 @@ data class DistributionCatalogEntry(
         require(approximateDownloadMiB > 0) {
             "DistributionCatalogEntry approximateDownloadMiB must be positive"
         }
+        require(
+            defaultMemoryMiB == SandboxProfile.UNLIMITED_MEMORY_MIB ||
+                defaultMemoryMiB >= SandboxProfile.MIN_MEMORY_MIB,
+        ) {
+            "DistributionCatalogEntry defaultMemoryMiB must be ${SandboxProfile.UNLIMITED_MEMORY_MIB} " +
+                "or at least ${SandboxProfile.MIN_MEMORY_MIB}, found $defaultMemoryMiB"
+        }
     }
+
+    val recommendedMemoryMiB: Int
+        get() = defaultMemoryMiB
 
     fun toSandboxProfile(
         profileId: String = distroSlug,
@@ -460,7 +483,7 @@ data class DistributionCatalogEntry(
         imageRef = imageRef,
         muxMode = MuxMode.STDIO_MUX,
         defaultShellArgv = defaultShellArgv,
-        memoryMiB = defaultMemoryMiB,
+        memoryMiB = SandboxProfile.clampMemoryMiB(defaultMemoryMiB),
         volumes = listOf(
             VolumeMountSpec(
                 sourceName = profileId,
@@ -475,48 +498,52 @@ data class DistributionCatalogEntry(
         val CURATED_ENTRIES: List<DistributionCatalogEntry> = GuestLinuxArch.entries.flatMap { arch ->
             listOf(
                 DistributionCatalogEntry(
-                    id = "alpine-3.21-${arch.ociArch}",
-                    distroSlug = "alpine",
-                    displayName = "Alpine 3.21",
-                    version = "3.21",
-                    summary = "Minimal musl Linux base with apk package manager for fast shell startup.",
-                    architecture = arch,
-                    imageRef = "docker.io/library/alpine:3.21",
-                    approximateDownloadMiB = 15,
-                    defaultShellArgv = listOf("/bin/ash", "-l"),
-                ),
-                DistributionCatalogEntry(
-                    id = "debian-13-${arch.ociArch}",
+                    id = "debian-trixie",
                     distroSlug = "debian",
-                    displayName = "Debian 13 (Trixie)",
+                    displayName = "Debian 13",
                     version = "13",
-                    summary = "Standard glibc Debian Trixie userland with apt package management.",
+                    summary = "General-purpose Linux environment with apt package management and broad tool support.",
                     architecture = arch,
                     imageRef = "docker.io/library/debian:trixie-slim",
                     approximateDownloadMiB = 30,
+                    defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
                     defaultShellArgv = listOf("/bin/bash", "-l"),
                 ),
                 DistributionCatalogEntry(
-                    id = "ubuntu-24.04-${arch.ociArch}",
+                    id = "ubuntu-noble",
                     distroSlug = "ubuntu",
-                    displayName = "Ubuntu 24.04 LTS",
+                    displayName = "Ubuntu 24.04",
                     version = "24.04",
-                    summary = "Long-term support Ubuntu Noble userland for compilers and CLI toolchains.",
+                    summary = "Long-term support Linux environment with apt packages for development tools and servers.",
                     architecture = arch,
                     imageRef = "docker.io/library/ubuntu:24.04",
                     approximateDownloadMiB = 32,
+                    defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
                     defaultShellArgv = listOf("/bin/bash", "-l"),
                 ),
                 DistributionCatalogEntry(
-                    id = "fedora-42-${arch.ociArch}",
+                    id = "fedora-42",
                     distroSlug = "fedora",
                     displayName = "Fedora 42",
                     version = "42",
-                    summary = "Modern glibc Fedora Linux environment with dnf5 developer packages.",
+                    summary = "Up-to-date Linux environment with dnf packages and modern developer toolchains.",
                     architecture = arch,
                     imageRef = "docker.io/library/fedora:42",
                     approximateDownloadMiB = 72,
+                    defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
                     defaultShellArgv = listOf("/bin/bash", "-l"),
+                ),
+                DistributionCatalogEntry(
+                    id = "alpine-3-21",
+                    distroSlug = "alpine",
+                    displayName = "Alpine 3.21",
+                    version = "3.21",
+                    summary = "Lightweight Linux base with apk packages and fast shell startup.",
+                    architecture = arch,
+                    imageRef = "docker.io/library/alpine:3.21",
+                    approximateDownloadMiB = 15,
+                    defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
+                    defaultShellArgv = listOf("/bin/ash", "-l"),
                 ),
             )
         }

@@ -43,7 +43,7 @@ class CatalogRepositoryTest {
         val docker = repo.loadRecipe("docker-dind")!!
         assertEquals("docker:28-dind", docker.imageRef)
         assertEquals(4096, docker.minHostRamMiB)
-        assertEquals(1536, docker.defaultProfileRamMiB)
+        assertEquals(0, docker.defaultProfileRamMiB)
         assertEquals(2048, docker.minFreeDiskMiB)
         assertEquals("docker", docker.volumeTemplateSuffix)
         assertEquals("/var/lib/docker", docker.volumeGuestMountPath)
@@ -64,7 +64,7 @@ class CatalogRepositoryTest {
         val k3s = repo.loadRecipe("k3s-single-node")!!
         assertEquals("rancher/k3s:v1.32.2-k3s1", k3s.imageRef)
         assertEquals(6144, k3s.minHostRamMiB)
-        assertEquals(2560, k3s.defaultProfileRamMiB)
+        assertEquals(0, k3s.defaultProfileRamMiB)
         assertEquals(3072, k3s.minFreeDiskMiB)
         assertEquals("k3s", k3s.volumeTemplateSuffix)
         assertEquals("/var/lib/rancher/k3s", k3s.volumeGuestMountPath)
@@ -95,8 +95,10 @@ class CatalogRepositoryTest {
         val amd64 = repo.getCuratedDistributions("x86_64")
 
         assertEquals(4, arm64.size)
+        assertEquals("debian-trixie", arm64.first().id)
         assertTrue(arm64.all { it.architecture == GuestLinuxArch.ARM64 })
         assertEquals(4, amd64.size)
+        assertEquals("debian-trixie", amd64.first().id)
         assertTrue(amd64.all { it.architecture == GuestLinuxArch.AMD64 })
         assertTrue(repo.getCuratedDistributions("x86").isEmpty())
     }
@@ -267,5 +269,58 @@ class CatalogRepositoryTest {
         assertThrows(IllegalStateException::class.java) {
             CatalogRepository.buildImageSaveArgs("alpine:3.21", "/tmp/out.tar", dnsPort = 15353, isOnline = false)
         }
+    }
+
+    @Test
+    fun `INV-C6 CatalogRepository validates and executes volume create and volume rm lifecycle`() = runTest {
+        val recordedCommands = mutableListOf<List<String>>()
+        var nextExitCode = 0
+        val repo = CatalogRepository(
+            filesDir = tempDir,
+            assetSource = localAssets,
+            commandExecutor = { args, _ ->
+                recordedCommands += args
+                RungvCommandResult(nextExitCode, "", if (nextExitCode == 0) "" else "volume error")
+            },
+        )
+
+        repo.createVolume("workspace_data.01")
+        repo.removeVolume("workspace_data.01")
+        repo.removeVolume("workspace_data.01", force = true)
+
+        assertEquals(
+            listOf(
+                listOf("volume", "create", "workspace_data.01"),
+                listOf("volume", "rm", "workspace_data.01"),
+                listOf("volume", "rm", "-f", "workspace_data.01"),
+            ),
+            recordedCommands,
+        )
+
+        for (badName in listOf("", ".", "..", "UpperCase", "bad/vol", "bad name", "a".repeat(65))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                CatalogRepository.buildVolumeCreateArgs(badName)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                CatalogRepository.buildVolumeRmArgs(badName, force = true)
+            }
+        }
+
+        nextExitCode = 1
+        var createFailed = false
+        try {
+            repo.createVolume("valid-vol")
+        } catch (_: IllegalStateException) {
+            createFailed = true
+        }
+        assertTrue(createFailed)
+
+        var removeFailed = false
+        try {
+            repo.removeVolume("valid-vol")
+        } catch (_: IllegalStateException) {
+            removeFailed = true
+        }
+        assertTrue(removeFailed)
     }
 }

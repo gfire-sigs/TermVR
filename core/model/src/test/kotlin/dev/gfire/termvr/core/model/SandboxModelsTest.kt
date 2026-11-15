@@ -13,11 +13,25 @@ class SandboxModelsTest {
     private val json = Json { encodeDefaults = true }
 
     @Test
-    fun `INV-S1 SandboxProfile validates slug regex schemaVersion and memory bounds and clamps resources`() {
-        // Property: SandboxProfile accepts [a-z0-9-]{3,32} slugs and 256..12288 MiB RAM, rejecting all out-of-range inputs.
-        // Seam: SandboxProfile constructor, clampMemoryMiB, clampCpuCores, and Json codec.
+    fun `INV-S1 SandboxProfile validates slug regex schemaVersion and unlimited or bounded resources`() {
+        // Property: SandboxProfile defaults to unlimited (0 / 0.0), accepts 0 or 256..12288 MiB, and clamps resources.
+        // Seam: SandboxProfile constructor, clampMemoryMiB, clampCpuCores, hasMemoryLimit, hasCpuLimit, and Json codec.
         // Oracle: Design 0001 Section 11.1 contract.
         // Fault detected: uppercase/short/long slug acceptance, memory overflow/underflow, or schemaVersion bypass.
+        val unlimitedDefault = SandboxProfile(
+            id = "debian-box",
+            displayName = "Debian 13",
+            imageRef = "docker.io/library/debian:trixie-slim",
+        )
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, unlimitedDefault.memoryMiB)
+        assertEquals(SandboxProfile.UNLIMITED_CPU_CORES, unlimitedDefault.cpuCores)
+        assertFalse(unlimitedDefault.hasMemoryLimit)
+        assertFalse(unlimitedDefault.hasCpuLimit)
+        assertEquals(0, SandboxProfile.clampMemoryMiB(0))
+        assertEquals(0, SandboxProfile.clampMemoryMiB(-512))
+        assertEquals(0.0, SandboxProfile.clampCpuCores(0.0, hostAvailableProcessors = 8))
+        assertEquals(0.0, SandboxProfile.clampCpuCores(-2.0, hostAvailableProcessors = 8))
+
         val valid = SandboxProfile(
             id = "ubuntu-24-dev",
             displayName = "Ubuntu 24.04 Dev",
@@ -27,6 +41,8 @@ class SandboxModelsTest {
         )
         assertEquals(256, valid.memoryMiB)
         assertEquals(8.0, valid.cpuCores)
+        assertTrue(valid.hasMemoryLimit)
+        assertTrue(valid.hasCpuLimit)
         assertEquals(12288, SandboxProfile.clampMemoryMiB(65536))
         assertEquals(valid, json.decodeFromString<SandboxProfile>(json.encodeToString(valid)))
 
@@ -37,10 +53,16 @@ class SandboxModelsTest {
             }, "Expected slug '$slug' to fail")
         }
 
-        for (badMem in listOf(0, 255, 12289, -512)) {
+        for (badMem in listOf(1, 255, 12289, -512)) {
             assertThrows(IllegalArgumentException::class.java, {
                 SandboxProfile(id = "alpine-dev", displayName = "Test", imageRef = "alpine:3.21", memoryMiB = badMem)
             }, "Expected memoryMiB=$badMem to fail")
+        }
+
+        for (badCpu in listOf(-0.5, Double.NaN, Double.POSITIVE_INFINITY)) {
+            assertThrows(IllegalArgumentException::class.java, {
+                SandboxProfile(id = "alpine-dev", displayName = "Test", imageRef = "alpine:3.21", cpuCores = badCpu)
+            }, "Expected cpuCores=$badCpu to fail")
         }
 
         for (badSchema in listOf(0, 2, -1)) {
@@ -230,15 +252,25 @@ class SandboxModelsTest {
         assertTrue(arm64Entries.all { it.architecture == GuestLinuxArch.ARM64 })
         assertTrue(amd64Entries.all { it.architecture == GuestLinuxArch.AMD64 })
         assertEquals(
-            setOf("Alpine 3.21", "Debian 13 (Trixie)", "Ubuntu 24.04 LTS", "Fedora 42"),
-            arm64Entries.map { it.displayName }.toSet(),
+            listOf("Debian 13", "Ubuntu 24.04", "Fedora 42", "Alpine 3.21"),
+            arm64Entries.map { it.displayName },
         )
+        assertEquals("debian-trixie", arm64Entries.first().id)
+        assertEquals("docker.io/library/debian:trixie-slim", arm64Entries.first().imageRef)
+        assertTrue(arm64Entries.all { it.recommendedMemoryMiB == 0 && it.defaultMemoryMiB == 0 })
+        assertTrue(arm64Entries.all { SandboxProfile.isValidProfileId(it.id) })
         assertTrue(DistributionCatalogEntry.forAndroidAbi("armeabi-v7a").isEmpty())
         assertNull(GuestLinuxArch.fromAndroidAbi("armeabi-v7a"))
 
-        val alpineProfile = arm64Entries.first { it.distroSlug == "alpine" }.toSandboxProfile()
-        assertEquals(MuxMode.STDIO_MUX, alpineProfile.muxMode)
-        assertTrue(alpineProfile.volumes.any { it.guestMountPath == "/workspace" && it.kind == VolumeKind.WORKSPACE_HOSTFS })
+        val debianProfile = arm64Entries.first().toSandboxProfile(profileId = arm64Entries.first().id)
+        assertEquals(MuxMode.STDIO_MUX, debianProfile.muxMode)
+        assertFalse(debianProfile.hasMemoryLimit)
+        assertFalse(debianProfile.hasCpuLimit)
+        assertTrue(debianProfile.volumes.any { it.guestMountPath == "/workspace" && it.kind == VolumeKind.WORKSPACE_HOSTFS })
+
+        assertThrows(IllegalArgumentException::class.java) {
+            arm64Entries.first().copy(defaultMemoryMiB = 128)
+        }
 
         assertTrue(SandboxRunState.FREEZING.locksWorkspaceWrites)
         assertTrue(SandboxRunState.FROZEN.locksWorkspaceWrites)

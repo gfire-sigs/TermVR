@@ -76,7 +76,7 @@ data class AppPersistenceState(
 object AppPersistenceSerializer : Serializer<AppPersistenceState> {
     private val json = Json {
         encodeDefaults = true
-        ignoreUnknownKeys = false
+        ignoreUnknownKeys = true
     }
 
     override val defaultValue: AppPersistenceState = AppPersistenceState()
@@ -85,11 +85,21 @@ object AppPersistenceSerializer : Serializer<AppPersistenceState> {
         val raw = input.readBytes().toString(Charsets.UTF_8)
         if (raw.isBlank()) return defaultValue
         return try {
-            json.decodeFromString<AppPersistenceState>(raw)
+            val decoded = json.decodeFromString<AppPersistenceState>(raw)
+            normalizeLegacyState(decoded)
         } catch (e: SerializationException) {
             throw CorruptionException("Failed to decode TermVR persistence state", e)
         } catch (e: IllegalArgumentException) {
             throw CorruptionException("Invalid TermVR persistence state", e)
+        }
+    }
+
+    private fun normalizeLegacyState(state: AppPersistenceState): AppPersistenceState {
+        val font = state.fontConfig
+        return if (font.familyId == "jetbrains-mono" && font.customFontPath == null) {
+            state.copy(fontConfig = font.copy(familyId = FontConfig.DEFAULT_FAMILY_ID))
+        } else {
+            state
         }
     }
 

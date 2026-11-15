@@ -5,7 +5,7 @@
   "summary": "Runs an isolated rootless Docker daemon inside gvx using overlay2 on a dedicated ext4lite volume.",
   "imageRef": "docker:28-dind",
   "minHostRamMiB": 4096,
-  "defaultProfileRamMiB": 1536,
+  "defaultProfileRamMiB": 0,
   "minFreeDiskMiB": 2048,
   "volumeTemplateSuffix": "docker",
   "volumeGuestMountPath": "/var/lib/docker",

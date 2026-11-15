@@ -304,6 +304,25 @@ class CatalogRepository(
         return parseVolumeInspectJsonArray(result.stdout)
     }
 
+    suspend fun createVolume(
+        volumeName: String,
+        env: Map<String, String> = emptyMap(),
+    ): RungvCommandResult {
+        val result = commandExecutor.execute(buildVolumeCreateArgs(volumeName), env)
+        check(result.exitCode == 0) { "rungv volume create failed: ${result.stderr}" }
+        return result
+    }
+
+    suspend fun removeVolume(
+        volumeName: String,
+        force: Boolean = false,
+        env: Map<String, String> = emptyMap(),
+    ): RungvCommandResult {
+        val result = commandExecutor.execute(buildVolumeRmArgs(volumeName, force), env)
+        check(result.exitCode == 0) { "rungv volume rm failed: ${result.stderr}" }
+        return result
+    }
+
     suspend fun systemPrune(env: Map<String, String> = emptyMap()): RungvCommandResult =
         commandExecutor.execute(buildSystemPruneArgs(), env)
 
@@ -384,11 +403,29 @@ class CatalogRepository(
 
         fun buildVolumeLsArgs(): List<String> = listOf("volume", "ls", "--format", "json")
 
+        fun buildVolumeCreateArgs(volumeName: String): List<String> {
+            validateVolumeName(volumeName)
+            return listOf("volume", "create", volumeName)
+        }
+
+        fun buildVolumeRmArgs(volumeName: String, force: Boolean = false): List<String> {
+            validateVolumeName(volumeName)
+            return listOf("volume", "rm") + (if (force) listOf("-f") else emptyList()) + volumeName
+        }
+
         fun buildVolumeInspectArgs(volumeName: String): List<String> {
             require(volumeName.isNotBlank() && !volumeName.any(Char::isWhitespace)) {
                 "volumeName must not be blank"
             }
             return listOf("volume", "inspect", volumeName)
+        }
+
+        private val VOLUME_NAME_REGEX = Regex("^[a-z0-9._-]{1,64}$")
+
+        internal fun validateVolumeName(volumeName: String) {
+            require(VOLUME_NAME_REGEX.matches(volumeName) && volumeName != "." && volumeName != "..") {
+                "volumeName must match [a-z0-9._-]{1,64} without '.' or '..'"
+            }
         }
 
         fun buildSystemPruneArgs(): List<String> = listOf("system", "prune", "-f")

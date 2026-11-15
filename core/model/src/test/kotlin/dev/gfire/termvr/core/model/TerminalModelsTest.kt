@@ -108,9 +108,9 @@ class TerminalModelsTest {
         // Fault detected: off-by-one float bound, NaN bypass, unrounded pinch-zoom step, or invalid SHA-256 hex.
         val defaultFont = FontConfig()
         assertEquals(1, defaultFont.schemaVersion)
-        assertEquals("jetbrains-mono", defaultFont.familyId)
+        assertEquals("termvr-mono-nf", defaultFont.familyId)
         assertEquals(13.0f, defaultFont.sizeSp)
-        assertEquals(1.15f, defaultFont.cellHeightMultiplier)
+        assertEquals(1.0f, defaultFont.cellHeightMultiplier)
         assertTrue(defaultFont.ligaturesEnabled)
         assertTrue(defaultFont.nerdFontSymbolsEnabled)
 
@@ -189,6 +189,23 @@ class TerminalModelsTest {
             assertEquals(palette, roundTripped)
         }
 
+        val obsidian = ColorPalette.DEFAULT_DARK
+        assertEquals("termvr-dark", obsidian.id)
+        assertEquals("TermVR Obsidian", obsidian.displayName)
+        assertEquals(0x0D1011FFu, obsidian.backgroundRgba)
+        assertEquals(0xE8EEF0FFu, obsidian.foregroundRgba)
+        assertEquals(0xF06E1EFFu, obsidian.cursorRgba)
+        assertEquals(0x1DC99A4Du, obsidian.selectionRgba)
+        assertTrue(obsidian.ansi16Rgba.contains(0x1DC99AFFu))
+        assertTrue(obsidian.ansi16Rgba.contains(0xF06E1EFFu))
+        assertTrue(wcagContrast(obsidian.foregroundRgba, obsidian.backgroundRgba) >= 15.0)
+        for (idx in 1..15) {
+            assertTrue(
+                wcagContrast(obsidian.ansi16Rgba[idx], obsidian.backgroundRgba) >= 4.5,
+                "Expected DEFAULT_DARK ANSI[$idx] contrast >= 4.5",
+            )
+        }
+
         val hcDark = ColorPalette.HIGH_CONTRAST_DARK
         assertTrue(wcagContrast(hcDark.foregroundRgba, hcDark.backgroundRgba) >= 7.0)
         for (idx in 1..15) {
@@ -261,6 +278,15 @@ class TerminalModelsTest {
         assertThrows(IllegalArgumentException::class.java) {
             k3s.copy(initDaemonArgv = emptyList())
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            k3s.copy(defaultProfileRamMiB = 128)
+        }
+
+        val unlimitedRecipe = k3s.copy(defaultProfileRamMiB = 0)
+        assertEquals(0, unlimitedRecipe.defaultMemoryMiB)
+        val unlimitedProfile = unlimitedRecipe.toSandboxProfile(profileId = "dev-k3s-unlim")
+        assertEquals(0, unlimitedProfile.memoryMiB)
+        assertEquals(false, unlimitedProfile.hasMemoryLimit)
     }
 
     private fun slotLabel(slot: KeySlotSpec): String = when (slot) {
