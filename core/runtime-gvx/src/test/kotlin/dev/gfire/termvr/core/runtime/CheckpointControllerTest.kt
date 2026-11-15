@@ -33,13 +33,15 @@ class CheckpointControllerTest {
                 assertEquals(CheckpointController.CONNECT_WRITE_TIMEOUT_MS, connectWriteTimeoutMs)
                 assertEquals(CheckpointController.CHECKPOINT_READ_TIMEOUT_MS, readTimeoutMs)
                 sentCommands.add(payloadLine)
+                assertTrue(payloadLine.contains("\"leave_running\":false"))
+                assertFalse(payloadLine.contains("\"op\""))
                 // Simulate gvx writing checkpoint files inside the requested slot directory.
                 val dirMarker = "\"dir\":\""
                 val start = payloadLine.indexOf(dirMarker) + dirMarker.length
                 val end = payloadLine.indexOf('"', start)
                 val targetDir = File(payloadLine.substring(start, end))
                 File(targetDir, "checkpoint.img").writeText("img-$nowMs", StandardCharsets.UTF_8)
-                "ok"
+                """{"ok":true}"""
             },
             clockMillis = { nowMs },
         )
@@ -120,7 +122,7 @@ class CheckpointControllerTest {
                 val start = payloadLine.indexOf(dirMarker) + dirMarker.length
                 val end = payloadLine.indexOf('"', start)
                 File(payloadLine.substring(start, end), "state.bin").writeText("ok")
-                "ok"
+                """{"ok":true}"""
             },
         )
 
@@ -152,7 +154,7 @@ class CheckpointControllerTest {
         @TempDir tempDir: File,
     ) {
         val ctlSock = File(tempDir, "ctl/app.sock").apply { parentFile?.mkdirs() }
-        var replyValue = "ok"
+        var replyValue = """{"ok":true}"""
         var exitValue = 0
 
         val controller = CheckpointController(
@@ -176,7 +178,21 @@ class CheckpointControllerTest {
         assertEquals(CheckpointSlotMetadata.SLOT_A, first.activeSlot)
 
         // Error reply cleans failed slot-b and keeps slot-a active.
-        replyValue = "err: busy"
+        replyValue = """{"ok":false,"error":"busy"}"""
+        val rejected = assertThrows(CheckpointFailedException::class.java) {
+            controller.checkpoint(
+                profileId = "app",
+                controlSocketFile = ctlSock,
+                currentPssBytes = 10_000_000L,
+                awaitProcessExit = { 0 },
+            )
+        }
+        assertTrue(rejected.message.orEmpty().contains("busy"))
+        assertEquals(CheckpointSlotMetadata.SLOT_A, controller.resolveActiveCheckpoint("app")?.metadata?.activeSlot)
+        assertFalse(File(tempDir, "checkpoints/app/slot-b").exists())
+
+        // Non-JSON reply is rejected cleanly.
+        replyValue = "not-json"
         assertThrows(CheckpointFailedException::class.java) {
             controller.checkpoint(
                 profileId = "app",
@@ -186,10 +202,9 @@ class CheckpointControllerTest {
             )
         }
         assertEquals(CheckpointSlotMetadata.SLOT_A, controller.resolveActiveCheckpoint("app")?.metadata?.activeSlot)
-        assertFalse(File(tempDir, "checkpoints/app/slot-b").exists())
 
         // Non-zero exit cleans failed slot-b and keeps slot-a active.
-        replyValue = "ok"
+        replyValue = """{"ok":true}"""
         exitValue = 2
         assertThrows(CheckpointFailedException::class.java) {
             controller.checkpoint(
@@ -222,7 +237,7 @@ class CheckpointControllerTest {
                 val start = payloadLine.indexOf(dirMarker) + dirMarker.length
                 val end = payloadLine.indexOf('"', start)
                 File(payloadLine.substring(start, end), "img").writeText("v1")
-                "ok"
+                """{"ok":true}"""
             },
         )
         v1Controller.checkpoint(
@@ -248,5 +263,91 @@ class CheckpointControllerTest {
         assertNull(v2Controller.readMetadata("upg"))
         assertFalse(File(tempDir, "checkpoints/upg/slot-a").exists())
         assertTrue(volumeMarker.isFile)
+    }
+
+    @Test
+    fun `preopened checkpoint slot avoids unlinking directory and supports repeated restore checkpoints`(
+        @TempDir tempDir: File,
+    ) {
+        val ctlSock = File(tempDir, "ctl/preopen.sock").apply { parentFile?.mkdirs() }
+        var reply = """{"ok":true}"""
+        val seenDirs = ArrayList<String>()
+
+        val controller = CheckpointController(
+            filesDir = tempDir,
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+            controlTransport = { _, payloadLine, _, _ ->
+                val dirMarker = "\"dir\":\""
+                val start = payloadLine.indexOf(dirMarker) + dirMarker.length
+                val end = payloadLine.indexOf('"', start)
+                val dirPath = payloadLine.substring(start, end)
+                seenDirs.add(dirPath)
+                if (reply.contains("\"ok\":true")) {
+                    File(dirPath, "state.img").writeText("state-${seenDirs.size}")
+                    File(dirPath, "manifest.json").writeText("{}")
+                }
+                reply
+            },
+        )
+
+        // 1. Cold start prepares slot-a before launch, rungv pre-opens files inside slot-a.
+        val slotA = controller.prepareCheckpointSlotDir("preopen")
+        assertEquals(CheckpointSlotMetadata.SLOT_A, slotA.name)
+        val preopenedMarker = File(slotA, "pages.img").apply { writeText("preopened-fd") }
+
+        val firstMeta = controller.checkpoint(
+            profileId = "preopen",
+            controlSocketFile = ctlSock,
+            currentPssBytes = 10_000_000L,
+            preopenedSlotDir = slotA,
+            awaitProcessExit = { 0 },
+        )
+        assertEquals(CheckpointSlotMetadata.SLOT_A, firstMeta.activeSlot)
+        // Must NOT have deleted/recreated slot-a after rungv pre-opened files.
+        assertEquals("preopened-fd", preopenedMarker.readText())
+        assertEquals(slotA.absolutePath, seenDirs.single())
+
+        // 2. Resume uses slot-a as its preopened checkpoint dir; a failed second freeze preserves slot-a.
+        val activeBeforeSecondFreeze = controller.resolveActiveCheckpoint("preopen")!!
+        assertEquals(slotA, activeBeforeSecondFreeze.slotDir)
+
+        reply = """{"ok":false,"error":"control socket timeout"}"""
+        assertThrows(CheckpointFailedException::class.java) {
+            controller.checkpoint(
+                profileId = "preopen",
+                controlSocketFile = ctlSock,
+                currentPssBytes = 10_000_000L,
+                preopenedSlotDir = activeBeforeSecondFreeze.slotDir,
+                awaitProcessExit = { 0 },
+            )
+        }
+        assertTrue(File(slotA, "state.img").isFile)
+        assertNotNull(controller.resolveActiveCheckpoint("preopen"))
+
+        // 3. Second freeze into preopened slot-a succeeds and keeps slot-a alive on disk!
+        reply = """{"ok":true}"""
+        val secondMeta = controller.checkpoint(
+            profileId = "preopen",
+            controlSocketFile = ctlSock,
+            currentPssBytes = 10_000_000L,
+            preopenedSlotDir = activeBeforeSecondFreeze.slotDir,
+            awaitProcessExit = { 0 },
+        )
+        assertEquals(CheckpointSlotMetadata.SLOT_A, secondMeta.activeSlot)
+        assertTrue(File(slotA, "state.img").isFile)
+        assertNotNull(controller.resolveActiveCheckpoint("preopen"))
+
+        // 4. Subsequent cold start after superseded/new run prepares the opposite slot-b.
+        val slotB = controller.prepareCheckpointSlotDir("preopen")
+        assertEquals(CheckpointSlotMetadata.SLOT_B, slotB.name)
+    }
+
+    @Test
+    fun `AndroidLocalSocketTransport rejects Unix socket paths longer than 107 bytes`() {
+        val longPath = File("/tmp/" + "a".repeat(120) + ".sock")
+        val ex = assertThrows(java.io.IOException::class.java) {
+            AndroidLocalSocketTransport.sendCommand(longPath, "{}", 2000, 2000)
+        }
+        assertTrue(ex.message.orEmpty().contains("Unix domain limit"))
     }
 }

@@ -275,6 +275,7 @@ class GvxCommandBuilder(
         activePorts: List<PortForwardRule> = profile.portForwards,
         guestArch: GuestLinuxArch = GuestLinuxArch.ARM64,
         hostAvailableProcessors: Int = Runtime.getRuntime().availableProcessors(),
+        checkpointDir: File? = null,
     ): List<String> {
         require(dnsPort in 1..65535) { "dnsPort must be within 1..65535, found $dnsPort" }
 
@@ -288,6 +289,10 @@ class GvxCommandBuilder(
         args.add("127.0.0.1:$dnsPort")
         args.add("-control-socket")
         args.add(controlSock.absolutePath)
+        if (checkpointDir != null) {
+            args.add("-checkpoint-dir")
+            args.add(checkpointDir.absolutePath)
+        }
         if (profile.trustHostCaCerts) {
             args.add("--host-ca-certs")
         }

@@ -3,8 +3,10 @@ package dev.gfire.termvr.ui.terminal
 import dev.gfire.termvr.core.model.ColorPalette
 import dev.gfire.termvr.core.model.MuxMode
 import dev.gfire.termvr.core.model.SandboxProfile
+import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.runtime.HostPtyHandle
 import dev.gfire.termvr.core.runtime.MuxPtyHandle
+import dev.gfire.termvr.core.runtime.MuxSessionClient
 import dev.gfire.termvr.core.runtime.MuxStreamListener
 import dev.gfire.termvr.core.ui.SplitDirection
 import dev.gfire.termvr.core.ui.TerminalSplitNode
@@ -68,6 +70,7 @@ class TerminalSessionCoordinator(
 ) {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val paneRuntimes = ConcurrentHashMap<String, PaneRuntime>()
+    private val boundMuxByProfile = ConcurrentHashMap<String, MuxSessionClient>()
 
     private val _tabs = MutableStateFlow<List<TerminalTabState>>(emptyList())
     val tabs: StateFlow<List<TerminalTabState>> = _tabs.asStateFlow()
@@ -80,6 +83,19 @@ class TerminalSessionCoordinator(
 
     fun clearError() {
         _lastError.value = null
+    }
+
+    fun reportError(message: String) {
+        _lastError.value = message
+    }
+
+    fun needsReattach(profileId: String): Boolean {
+        val hasTabs = _tabs.value.any { it.profileId == profileId }
+        if (!hasTabs) return false
+        val currentMux = runtimeGateway.getMuxClient(profileId) ?: return false
+        if (currentMux.isClosed) return false
+        val boundMux = boundMuxByProfile[profileId]
+        return boundMux == null || boundMux !== currentMux || boundMux.isClosed
     }
 
     fun selectTab(tabId: String) {
@@ -308,6 +324,7 @@ class TerminalSessionCoordinator(
      * Closes every tab belonging to [profileId] after sandbox termination.
      */
     fun closeProfileTabs(profileId: String) {
+        boundMuxByProfile.remove(profileId)
         val matching = _tabs.value.filter { it.profileId == profileId }
         for (tab in matching) {
             closeTab(tab.tabId)
@@ -320,16 +337,37 @@ class TerminalSessionCoordinator(
     fun sendPtyBytes(paneId: String, bytes: ByteArray) {
         val runtime = paneRuntimes[paneId] ?: return
         if (runtime.closed) return
+        if (runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
+            return
+        }
         runtimeGateway.markProfileActivity(runtime.profileId)
         ioScope.launch {
+            if (runtime.closed || runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
+                return@launch
+            }
             runCatching {
                 when {
                     runtime.isStreamZero -> runtimeGateway.getMuxClient(runtime.profileId)?.writeStream0Stdin(bytes)
-                    runtime.muxPtyHandle != null -> runtime.muxPtyHandle?.writeInput(bytes)
+                    runtime.muxPtyHandle != null -> {
+                        val currentMux = runtimeGateway.getMuxClient(runtime.profileId)
+                        val bound = boundMuxByProfile[runtime.profileId]
+                        if (currentMux != null && !currentMux.isClosed && bound !== currentMux &&
+                            runtime.streamId >= 1L && currentMux.isStreamOpen(runtime.streamId)
+                        ) {
+                            boundMuxByProfile[runtime.profileId] = currentMux
+                            runtime.muxPtyHandle = currentMux.attachPtyHandle(
+                                streamId = runtime.streamId,
+                                listener = createStreamListener(runtime),
+                            )
+                        }
+                        runtime.muxPtyHandle?.writeInput(bytes)
+                    }
                     else -> runtime.rawPtyHandle?.write(bytes)
                 }
             }.onFailure { err ->
-                _lastError.value = err.message ?: "PTY write failed"
+                if (runtimeGateway.runStates.value[runtime.profileId] == SandboxRunState.RUNNING) {
+                    _lastError.value = err.message ?: "PTY write failed"
+                }
             }
         }
     }
@@ -346,10 +384,17 @@ class TerminalSessionCoordinator(
     ) {
         val runtime = paneRuntimes[paneId] ?: return
         if (runtime.closed || runtime.isStreamZero) return
+        if (runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
+            return
+        }
         ioScope.launch {
+            if (runtime.closed || runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
+                return@launch
+            }
             runCatching {
                 val mux = runtime.muxPtyHandle
-                if (mux != null) {
+                val currentMux = runtimeGateway.getMuxClient(runtime.profileId)
+                if (mux != null && (currentMux == null || !currentMux.isClosed)) {
                     mux.resize(rows = rows, cols = cols, xpixel = widthPx, ypixel = heightPx)
                 } else if (runtime.rawPtyHandle != null) {
                     runtimeGateway.resizeRawPty(
@@ -401,7 +446,29 @@ class TerminalSessionCoordinator(
 
     private fun bindStreamZero(profileId: String, runtime: PaneRuntime) {
         val mux = runtimeGateway.getMuxClient(profileId) ?: return
+        if (mux.isClosed) return
+        boundMuxByProfile[profileId] = mux
         mux.setStreamListener(0L, createStreamListener(runtime))
+    }
+
+    private fun attachRawPtyReader(runtime: PaneRuntime, rawPty: HostPtyHandle) {
+        runtime.rawReaderThread?.interrupt()
+        runtime.rawPtyHandle = rawPty
+        val reader = Thread({
+            val buf = ByteArray(8192)
+            while (!runtime.closed) {
+                val count = runCatching { rawPty.read(buf) }.getOrDefault(-1)
+                if (count <= 0) break
+                if (!runtime.session.isClosed) {
+                    runtime.session.writePtyBytes(buf, 0, count)
+                    runtime.controller.notifyPtyOutput()
+                }
+            }
+        }, "termvr-rawpty-${runtime.paneId}").apply {
+            isDaemon = true
+            start()
+        }
+        runtime.rawReaderThread = reader
     }
 
     private fun bindInteractivePaneStream(profile: SandboxProfile, runtime: PaneRuntime) {
@@ -411,30 +478,16 @@ class TerminalSessionCoordinator(
                 appendTerminalNotice(runtime, "\r\n[RAW PTY handle unavailable]\r\n")
                 return
             }
-            runtime.rawPtyHandle = rawPty
-            val reader = Thread({
-                val buf = ByteArray(8192)
-                while (!runtime.closed) {
-                    val count = runCatching { rawPty.read(buf) }.getOrDefault(-1)
-                    if (count <= 0) break
-                    if (!runtime.session.isClosed) {
-                        runtime.session.writePtyBytes(buf, 0, count)
-                        runtime.controller.notifyPtyOutput()
-                    }
-                }
-            }, "termvr-rawpty-${runtime.paneId}").apply {
-                isDaemon = true
-                start()
-            }
-            runtime.rawReaderThread = reader
+            attachRawPtyReader(runtime, rawPty)
             return
         }
 
         val mux = runtimeGateway.getMuxClient(profile.id)
-        if (mux == null) {
+        if (mux == null || mux.isClosed) {
             appendTerminalNotice(runtime, "\r\n[Sandbox mux stream is unavailable]\r\n")
             return
         }
+        boundMuxByProfile[profile.id] = mux
         ioScope.launch {
             runCatching {
                 val listener = createStreamListener(runtime)
@@ -461,19 +514,41 @@ class TerminalSessionCoordinator(
         profile: SandboxProfile,
         existingTabs: List<TerminalTabState>,
     ) {
+        if (profile.muxMode == MuxMode.RAW_PTY) {
+            val rawPty = runtimeGateway.getRawPtyHandle(profile.id) ?: return
+            for (tab in existingTabs) {
+                for (paneId in tab.allPaneIds()) {
+                    val runtime = paneRuntimes[paneId] ?: continue
+                    if (runtime.closed || runtime.isStreamZero) continue
+                    attachRawPtyReader(runtime, rawPty)
+                }
+            }
+            return
+        }
+
         val mux = runtimeGateway.getMuxClient(profile.id) ?: return
+        if (mux.isClosed) return
+        boundMuxByProfile[profile.id] = mux
         for (tab in existingTabs) {
             for (paneId in tab.allPaneIds()) {
                 val runtime = paneRuntimes[paneId] ?: continue
                 if (runtime.closed) continue
                 if (runtime.isStreamZero) {
                     bindStreamZero(profile.id, runtime)
-                } else if (runtime.streamId >= 1L) {
-                    runtime.muxPtyHandle = mux.attachPtyHandle(
+                } else if (runtime.streamId >= 1L && mux.isStreamOpen(runtime.streamId)) {
+                    val handle = mux.attachPtyHandle(
                         streamId = runtime.streamId,
                         listener = createStreamListener(runtime),
                     )
+                    runtime.muxPtyHandle = handle
+                    val cols = runtime.session.cols
+                    val rows = runtime.session.rows
+                    if (cols >= 2 && rows >= 2) {
+                        runCatching { handle.resize(rows = rows, cols = cols) }
+                    }
                 } else {
+                    runtime.muxPtyHandle = null
+                    runtime.streamId = -1L
                     bindInteractivePaneStream(profile, runtime)
                 }
             }

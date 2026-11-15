@@ -213,7 +213,7 @@ class HostReadinessAndSupervisorTest {
                 val end = payloadLine.indexOf('"', start)
                 File(payloadLine.substring(start, end), "cp.img").writeText("saved")
                 activeHandles.lastOrNull()?.markCheckpointExited(0)
-                "ok"
+                """{"ok":true}"""
             },
             clockMillis = { nowMs },
         )
@@ -374,7 +374,7 @@ class HostReadinessAndSupervisorTest {
                 val start = payloadLine.indexOf(dirMarker) + dirMarker.length
                 val end = payloadLine.indexOf('"', start)
                 File(payloadLine.substring(start, end), "cp.img").writeText("old")
-                "ok"
+                """{"ok":true}"""
             },
         )
         val ctlSock = File(filesDir, "ctl/oldprof.sock").apply { parentFile?.mkdirs() }
@@ -537,7 +537,7 @@ class HostReadinessAndSupervisorTest {
                 File(payloadLine.substring(start, end), "cp.img").writeText("saved")
                 val id = controlSockPath.nameWithoutExtension
                 handlesById[id]?.markCheckpointExited(0)
-                "ok"
+                """{"ok":true}"""
             },
         )
         val supervisor = SandboxSupervisor(
@@ -609,6 +609,125 @@ class HostReadinessAndSupervisorTest {
         }
     }
 
+    @Test
+    fun `SandboxSupervisor passes -checkpoint-dir on run and completes multi-cycle Start-Freeze-Resume-Freeze-Resume`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val pool = Executors.newCachedThreadPool()
+        val launchedCommands = CopyOnWriteArrayList<List<String>>()
+        val activeHandles = CopyOnWriteArrayList<FakeMuxProcessHandle>()
+        val preopenedDirs = CopyOnWriteArrayList<File>()
+        val resyncStreamLists = CopyOnWriteArrayList<String>()
+
+        val commandBuilder = GvxCommandBuilder(filesDir, cacheDir, caExporter = { pem, dir ->
+            pem.parentFile?.mkdirs()
+            pem.writeText("PEM")
+            dir.mkdirs()
+        })
+        val checkpointController = CheckpointController(
+            filesDir = filesDir,
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+            controlTransport = { _, payloadLine, _, _ ->
+                val dirMarker = "\"dir\":\""
+                val start = payloadLine.indexOf(dirMarker) + dirMarker.length
+                val end = payloadLine.indexOf('"', start)
+                val reqDir = File(payloadLine.substring(start, end))
+                val launchCkptDir = preopenedDirs.last()
+                if (reqDir.canonicalFile != launchCkptDir.canonicalFile) {
+                    """{"ok":false,"error":"checkpoint directory ${reqDir.absolutePath} does not match pre-opened -checkpoint-dir ${launchCkptDir.absolutePath}"}"""
+                } else {
+                    File(reqDir, "manifest.json").writeText("{}")
+                    File(reqDir, "state.img").writeText("saved")
+                    activeHandles.lastOrNull()?.markCheckpointExited(0)
+                    """{"ok":true}"""
+                }
+            },
+        )
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = commandBuilder,
+            proxyBridge = LoopbackProxyBridge(secretStore = InMemorySecretStore()),
+            dnsProxy = LoopbackDnsProxy(networkDnsBackend = { _, _ -> ByteArray(0) }),
+            checkpointController = checkpointController,
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                totalHostRamMiBProvider = { 8192 },
+                freeDiskMiBProvider = { 4096 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = { args, _, _ ->
+                launchedCommands.add(args)
+                val ckptIdx = args.indexOf("-checkpoint-dir")
+                assertTrue(ckptIdx >= 0, "Expected -checkpoint-dir in args: $args")
+                val ckptDir = File(args[ckptIdx + 1])
+                assertTrue(ckptDir.isDirectory)
+                // Simulate gvx pre-opening bundle files prior to hostlockdown.
+                File(ckptDir, "pages.img").apply { if (!exists()) writeText("preopened-inode") }
+                preopenedDirs.add(ckptDir)
+                val openStreamsJson = if (args.first() == "restore") """[{"id":1,"rows":24,"cols":80}]""" else "[]"
+                resyncStreamLists.add(openStreamsJson)
+                val handle = FakeMuxProcessHandle(pool, resyncOpenStreamsJson = openStreamsJson)
+                activeHandles.add(handle)
+                handle
+            },
+            agentExtractor = { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("stub")
+                }
+            },
+        )
+
+        try {
+            val profile = SandboxProfile(
+                id = "snap-loop",
+                displayName = "Snap Loop",
+                imageRef = "docker.io/library/debian:trixie-slim",
+            )
+
+            // Cycle 1: Start -> Freeze
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals("run", launchedCommands.last().first())
+            val slotA = File(filesDir, "checkpoints/snap-loop/slot-a")
+            assertEquals(slotA, preopenedDirs.last())
+
+            assertEquals(SandboxRunState.FROZEN, supervisor.freezeSandbox(profile.id))
+            assertEquals("preopened-inode", File(slotA, "pages.img").readText())
+
+            // Cycle 2: Resume -> Freeze again into pre-opened slot-a
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals("restore", launchedCommands.last().first())
+            assertEquals(slotA, preopenedDirs.last())
+            val restoredMux = supervisor.getMuxClient(profile.id)!!
+            assertTrue(restoredMux.isStreamOpen(1L))
+
+            assertEquals(SandboxRunState.FROZEN, supervisor.freezeSandbox(profile.id))
+            assertTrue(File(slotA, "state.img").isFile)
+
+            // Cycle 3: Resume a second time and applyPortForwards via checkpoint & restore
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            val updatedRules = listOf(
+                PortForwardRule("http", ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 18080, 18080, 80, 80),
+            )
+            assertEquals(
+                SandboxRunState.RUNNING,
+                supervisor.applyPortForwards(profile.id, updatedRules, checkpointAndRestore = true),
+            )
+            assertEquals("restore", launchedCommands.last().first())
+            assertTrue(launchedCommands.last().contains("127.0.0.1:18080:80/tcp"))
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
     private fun writeProcStat(procRoot: File, pid: Int, comm: String, ppid: Int) {
         val pidDir = File(procRoot, pid.toString()).apply { mkdirs() }
         File(pidDir, "stat").writeText("$pid ($comm) S $ppid 1 1 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0")
@@ -617,6 +736,7 @@ class HostReadinessAndSupervisorTest {
     private class FakeMuxProcessHandle(
         executor: java.util.concurrent.ExecutorService,
         stderrText: String = "",
+        private val resyncOpenStreamsJson: String = "[]",
     ) : GvxProcessHandle {
         private val agentToHostOut = PipedOutputStream()
         override val stdoutStream: InputStream = PipedInputStream(agentToHostOut, 65536)
@@ -656,7 +776,11 @@ class HostReadinessAndSupervisorTest {
                                 synchronized(agentToHostOut) {
                                     MuxCodec.writeFrame(
                                         agentToHostOut,
-                                        MuxFrame(MuxFrameType.MUX_RESYNC_ACK, 0L, """{"openStreams":[]}""".toByteArray(StandardCharsets.UTF_8)),
+                                        MuxFrame(
+                                            MuxFrameType.MUX_RESYNC_ACK,
+                                            0L,
+                                            """{"openStreams":$resyncOpenStreamsJson}""".toByteArray(StandardCharsets.UTF_8),
+                                        ),
                                     )
                                 }
                             }
