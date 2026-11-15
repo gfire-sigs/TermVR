@@ -338,4 +338,43 @@ class GvxCommandBuilderTest {
         )
         assertFalse(argsWithoutDir.contains("-checkpoint-dir"))
     }
+
+    @Test
+    fun `buildRunArgs sets DOCKER_DEFAULT_PLATFORM on arm64 when DOCKER_HOST is configured`() {
+        val builder = newBuilder()
+        val profile = SandboxProfile(
+            id = "dind-arm64",
+            displayName = "DinD",
+            imageRef = "docker:28-dind",
+            envVars = mapOf("DOCKER_HOST" to "unix:///var/run/docker.sock"),
+        )
+
+        val arm64Args = builder.buildRunArgs(
+            profile = profile,
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(profile.id),
+            guestArch = GuestLinuxArch.ARM64,
+        )
+        assertTrue(arm64Args.contains("DOCKER_DEFAULT_PLATFORM=linux/arm64"))
+
+        val explicitOverride = profile.copy(
+            envVars = profile.envVars + ("DOCKER_DEFAULT_PLATFORM" to "linux/arm64/v8"),
+        )
+        val overrideArgs = builder.buildRunArgs(
+            profile = explicitOverride,
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(explicitOverride.id),
+            guestArch = GuestLinuxArch.ARM64,
+        )
+        assertTrue(overrideArgs.contains("DOCKER_DEFAULT_PLATFORM=linux/arm64/v8"))
+        assertFalse(overrideArgs.contains("DOCKER_DEFAULT_PLATFORM=linux/arm64"))
+
+        val amd64Args = builder.buildRunArgs(
+            profile = profile,
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(profile.id),
+            guestArch = GuestLinuxArch.AMD64,
+        )
+        assertFalse(amd64Args.any { it.startsWith("DOCKER_DEFAULT_PLATFORM=") })
+    }
 }

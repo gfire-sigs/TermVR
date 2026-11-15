@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -110,6 +111,44 @@ func waitStatusToCode(ws syscall.WaitStatus) uint8 {
 func EnsureRootRShared() error {
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_SHARED, ""); err != nil {
 		return wrapErr("mount / MS_REC|MS_SHARED", err)
+	}
+	return nil
+}
+
+// EnsureArm64CPUInfoPatched bind-mounts a patched /proc/cpuinfo on gVisor arm64 hosts
+// that report "CPU architecture : 0", ignoring permission errors in unprivileged sandboxes.
+func EnsureArm64CPUInfoPatched() error {
+	if runtime.GOARCH != "arm64" {
+		return nil
+	}
+	raw, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		return wrapErr("read /proc/cpuinfo", err)
+	}
+	patched, changed := PatchArm64ZeroCPUInfo(raw)
+	if !changed {
+		return nil
+	}
+	var tmpPath string
+	var writeErr error
+	for _, path := range []string{"/run/.termvr-cpuinfo", "/tmp/.termvr-cpuinfo"} {
+		_ = os.Remove(path)
+		if err := os.WriteFile(path, patched, 0o444); err == nil {
+			tmpPath = path
+			break
+		} else {
+			writeErr = err
+		}
+	}
+	if tmpPath == "" {
+		return wrapErr("write patched cpuinfo", writeErr)
+	}
+	if err := syscall.Mount(tmpPath, "/proc/cpuinfo", "", syscall.MS_BIND, ""); err != nil {
+		_ = os.Remove(tmpPath)
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			return nil
+		}
+		return wrapErr("bind-mount /proc/cpuinfo", err)
 	}
 	return nil
 }

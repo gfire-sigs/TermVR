@@ -728,6 +728,160 @@ class HostReadinessAndSupervisorTest {
         }
     }
 
+    @Test
+    fun `pollTelemetryOnce cleans up unexpected process exit and updates runState`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val pool = Executors.newCachedThreadPool()
+        val handles = CopyOnWriteArrayList<FakeMuxProcessHandle>()
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = GvxCommandBuilder(filesDir, cacheDir, CaCertificateExporter { pem, dir ->
+                pem.parentFile?.mkdirs()
+                pem.writeText("pem")
+                dir.mkdirs()
+            }),
+            proxyBridge = LoopbackProxyBridge(InMemorySecretStore()),
+            dnsProxy = LoopbackDnsProxy(NetworkDnsBackend { _, _ -> ByteArray(0) }),
+            checkpointController = CheckpointController(filesDir),
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                totalHostRamMiBProvider = { 8192 },
+                freeDiskMiBProvider = { 4096 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = GvxProcessLauncher { _, _, _ ->
+                FakeMuxProcessHandle(pool).also { handles += it }
+            },
+            agentExtractor = AgentAssetExtractor { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("stub")
+                }
+            },
+        )
+
+        try {
+            val profile = SandboxProfile(
+                id = "exit-watch",
+                displayName = "Exit Watch",
+                imageRef = "docker.io/library/debian:trixie-slim",
+            )
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals(1, handles.size)
+
+            handles.last().markCheckpointExited(1)
+            supervisor.pollTelemetryOnce(isInteractive = true)
+            assertEquals(SandboxRunState.FAILED, supervisor.runStates.value[profile.id])
+            assertNull(supervisor.getMuxClient(profile.id))
+
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals(2, handles.size)
+            handles.last().markCheckpointExited(0)
+            supervisor.pollTelemetryOnce(isInteractive = true)
+            assertEquals(SandboxRunState.STOPPED, supervisor.runStates.value[profile.id])
+            assertNull(supervisor.getMuxClient(profile.id))
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `failed restore marks checkpoint superseded so retry cold boots cleanly`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val pool = Executors.newCachedThreadPool()
+        val launchedCommands = CopyOnWriteArrayList<List<String>>()
+        lateinit var currentHandle: FakeMuxProcessHandle
+        val checkpointController = CheckpointController(
+            filesDir = filesDir,
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+            controlTransport = { _, payloadLine, _, _ ->
+                val dirMarker = "\"dir\":\""
+                val start = payloadLine.indexOf(dirMarker) + dirMarker.length
+                val end = payloadLine.indexOf('"', start)
+                val slotDir = File(payloadLine.substring(start, end))
+                slotDir.mkdirs()
+                File(slotDir, "state.img").writeText("state")
+                currentHandle.markCheckpointExited(0)
+                """{"ok":true}"""
+            },
+        )
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = GvxCommandBuilder(filesDir, cacheDir, CaCertificateExporter { pem, dir ->
+                pem.parentFile?.mkdirs()
+                pem.writeText("pem")
+                dir.mkdirs()
+            }),
+            proxyBridge = LoopbackProxyBridge(InMemorySecretStore()),
+            dnsProxy = LoopbackDnsProxy(NetworkDnsBackend { _, _ -> ByteArray(0) }),
+            checkpointController = checkpointController,
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                totalHostRamMiBProvider = { 8192 },
+                freeDiskMiBProvider = { 4096 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = GvxProcessLauncher { args, _, _ ->
+                launchedCommands += args
+                FakeMuxProcessHandle(pool).also { handle ->
+                    currentHandle = handle
+                    if (args.firstOrNull() == "restore") {
+                        handle.destroyGracefully()
+                    }
+                }
+            },
+            agentExtractor = AgentAssetExtractor { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("stub")
+                }
+            },
+        )
+
+        try {
+            val profile = SandboxProfile(
+                id = "restore-fallback",
+                displayName = "Restore Fallback",
+                imageRef = "docker.io/library/debian:trixie-slim",
+            )
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals(SandboxRunState.FROZEN, supervisor.freezeSandbox(profile.id))
+
+            val err = try {
+                supervisor.startOrResumeSandbox(profile)
+                null
+            } catch (e: java.io.IOException) {
+                e
+            }
+            assertNotNull(err)
+            assertEquals(SandboxRunState.FAILED, supervisor.runStates.value[profile.id])
+            assertTrue(checkpointController.readMetadata(profile.id)?.superseded == true)
+
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals("run", launchedCommands.last().first())
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
     private fun writeProcStat(procRoot: File, pid: Int, comm: String, ppid: Int) {
         val pidDir = File(procRoot, pid.toString()).apply { mkdirs() }
         File(pidDir, "stat").writeText("$pid ($comm) S $ppid 1 1 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0")

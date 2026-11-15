@@ -29,6 +29,11 @@ func EnsureRootRShared() error {
 	return errors.New("MS_SHARED root remount requires Linux")
 }
 
+// EnsureArm64CPUInfoPatched is a no-op on non-Linux hosts.
+func EnsureArm64CPUInfoPatched() error {
+	return nil
+}
+
 type portablePTYBackend struct{}
 
 func newDefaultPTYBackend(_ *Reaper) PTYBackend {

@@ -300,7 +300,7 @@ class GvxCommandBuilder(
         appendNetworkFlags(args, profile)
         appendPortForwardFlags(args, profile.id, activePorts)
         appendVolumeAndTmpfsFlags(args, profile, guestArch)
-        appendRunEnvFlags(args, profile)
+        appendRunEnvFlags(args, profile, guestArch)
 
         when (profile.muxMode) {
             MuxMode.STDIO_MUX -> {
@@ -571,9 +571,22 @@ class GvxCommandBuilder(
         }
     }
 
-    private fun appendRunEnvFlags(args: MutableList<String>, profile: SandboxProfile) {
+    private fun appendRunEnvFlags(
+        args: MutableList<String>,
+        profile: SandboxProfile,
+        guestArch: GuestLinuxArch,
+    ) {
         val mergedEnv = linkedMapOf<String, String>()
         mergedEnv.putAll(profile.envVars)
+
+        // Work around gvisor arm64 /proc/cpuinfo ("CPU architecture : 0") producing
+        // linux/arm64/unknown in containerd/docker platform detection.
+        if (guestArch == GuestLinuxArch.ARM64 &&
+            "DOCKER_HOST" in mergedEnv &&
+            "DOCKER_DEFAULT_PLATFORM" !in mergedEnv
+        ) {
+            mergedEnv["DOCKER_DEFAULT_PLATFORM"] = "linux/${guestArch.ociArch}"
+        }
 
         if (profile.muxMode == MuxMode.STDIO_MUX) {
             val noProxyCsv = profile.network.outboundProxy.noProxyEntries.joinToString(",")

@@ -165,6 +165,9 @@ func runAgent(cfg agentConfig) error {
 			logStderr("termvr-agent: warning: make-root-rshared failed: " + err.Error())
 		}
 	}
+	if err := mux.EnsureArm64CPUInfoPatched(); err != nil {
+		logStderr("termvr-agent: warning: patch cpuinfo failed: " + err.Error())
+	}
 
 	reaper := mux.NewReaper()
 	go reaper.Run(ctx)

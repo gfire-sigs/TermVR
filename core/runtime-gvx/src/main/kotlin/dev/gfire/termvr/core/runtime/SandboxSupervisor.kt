@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -441,12 +442,12 @@ class SandboxSupervisor(
                         cachedProfiles[profile.id]?.guestClipboardReadPolicy ?: profile.guestClipboardReadPolicy
                     },
                 ).also { client ->
-                    client.start(sendHostHello = true)
                     try {
+                        client.start(sendHostHello = true)
                         if (isRestore) {
-                            client.resync()
+                            client.resync(timeoutMs = RESTORE_RESYNC_TIMEOUT_MS)
                         } else {
-                            client.awaitHello()
+                            client.awaitHello(timeoutMs = COLD_BOOT_HELLO_TIMEOUT_MS)
                         }
                     } catch (e: Exception) {
                         client.close()
@@ -457,11 +458,19 @@ class SandboxSupervisor(
                             Thread.currentThread().interrupt()
                         }
                         val stderrTail = synchronized(recentStderr) { recentStderr.joinToString(" | ") }
+                        val reason = e.message?.takeIf { it.isNotBlank() }
+                            ?: if (e is TimeoutException) "Timed out waiting for sandbox handshake" else "Sandbox start failed"
+                        if (isRestore) {
+                            checkpointController.markSuperseded(
+                                profileId = profile.id,
+                                reason = "Restore failed: $reason",
+                            )
+                        }
                         setRunState(profile.id, SandboxRunState.FAILED)
                         if (stderrTail.isNotBlank()) {
-                            throw IOException("${e.message ?: "Sandbox start failed"}: $stderrTail", e)
+                            throw IOException("$reason: $stderrTail", e)
                         }
-                        throw e
+                        throw IOException(reason, e)
                     }
                 }
             } else {
@@ -634,6 +643,13 @@ class SandboxSupervisor(
                 continue
             }
             if (!managed.process.isAlive) {
+                if (sessions.remove(id, managed)) {
+                    cleanupSessionResources(id, managed)
+                    val exitCode = runCatching { managed.process.waitForExit() }.getOrDefault(-1)
+                    setRunState(id, if (exitCode == 0) SandboxRunState.STOPPED else SandboxRunState.FAILED)
+                    releaseWakeLockIfNoRunningSandboxes()
+                    refreshHostReadiness()
+                }
                 continue
             }
             val guestSnap = runCatching {
@@ -855,6 +871,8 @@ class SandboxSupervisor(
         const val DEFAULT_WAKE_LOCK_MINUTES: Int = 30
         const val MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES: Int = 30
         const val DEFAULT_IDLE_FREEZE_MINUTES: Int = 5
+        const val COLD_BOOT_HELLO_TIMEOUT_MS: Long = 300_000L
+        const val RESTORE_RESYNC_TIMEOUT_MS: Long = 30_000L
 
         fun formatProxyBadgeLabel(config: OutboundProxyConfig): String? {
             return when (config.mode) {

@@ -241,7 +241,7 @@ class AndroidSandboxRuntimeGateway(
         val proc = pb.start()
         val stdout = proc.inputStream.bufferedReader().readText()
         val stderr = proc.errorStream.bufferedReader().readText()
-        val finished = proc.waitFor(120L, TimeUnit.SECONDS)
+        val finished = proc.waitFor(300L, TimeUnit.SECONDS)
         if (!finished) {
             proc.destroyForcibly()
             RungvCommandResult(exitCode = 124, stdout = stdout, stderr = "rungv command timed out")
