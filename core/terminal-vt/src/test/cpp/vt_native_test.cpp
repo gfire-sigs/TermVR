@@ -1,0 +1,226 @@
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include "font_manager.h"
+#include "ghostty_vt_api.h"
+#include "gles3_renderer.h"
+#include "glyph_atlas.h"
+#include "termvr_vt_types.h"
+#include "vt_session_native.h"
+
+using namespace termvr::vt;
+
+namespace {
+
+void TestCellGpuInstanceLayout() {
+    static_assert(sizeof(CellGpuInstance) == 32, "CellGpuInstance size must be 32");
+    static_assert(alignof(CellGpuInstance) == 16, "CellGpuInstance align must be 16");
+    assert(offsetof(CellGpuInstance, grid_col) == 0);
+    assert(offsetof(CellGpuInstance, grid_row) == 2);
+    assert(offsetof(CellGpuInstance, span_cols) == 4);
+    assert(offsetof(CellGpuInstance, atlas_page) == 5);
+    assert(offsetof(CellGpuInstance, style_flags) == 6);
+    assert(offsetof(CellGpuInstance, uv_x) == 8);
+    assert(offsetof(CellGpuInstance, uv_y) == 10);
+    assert(offsetof(CellGpuInstance, uv_w) == 12);
+    assert(offsetof(CellGpuInstance, uv_h) == 14);
+    assert(offsetof(CellGpuInstance, bearing_x) == 16);
+    assert(offsetof(CellGpuInstance, bearing_y) == 18);
+    assert(offsetof(CellGpuInstance, fg_rgba) == 20);
+    assert(offsetof(CellGpuInstance, bg_rgba) == 24);
+    assert(offsetof(CellGpuInstance, deco_rgba) == 28);
+}
+
+void TestVtSessionChunkedWriteAndDirtyRows() {
+    VtSessionNative session(80, 24, 10000);
+    assert(session.IsValid());
+
+    // Write > 64 KiB payload to verify chunked vt_mu locking succeeds.
+    std::string big(70000, 'A');
+    big.append("\r\n");
+    big.append("\x1b[38;2;255;100;50;4:3mStyled\x1b[0m \xED\x95\x9C\xEA\xB8\x80");
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(big.data()), big.size());
+
+    ExtractedFrameSnapshot snap1;
+    assert(session.ExtractDirtyFrame(false, &snap1));
+    assert(snap1.any_dirty);
+    assert(!snap1.dirty_rows.empty());
+
+    // Immediately extracting again with no writes yields zero dirty rows.
+    ExtractedFrameSnapshot snap2;
+    assert(session.ExtractDirtyFrame(false, &snap2));
+    assert(!snap2.any_dirty);
+    assert(snap2.dirty_rows.empty());
+
+    // Writing on a non-scrolling row dirties only old+new cursor rows (PARTIAL).
+    const char* single = "\x1b[2;1Hnext";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(single), std::strlen(single));
+    ExtractedFrameSnapshot snap3;
+    assert(session.ExtractDirtyFrame(false, &snap3));
+    assert(snap3.any_dirty);
+    assert(!snap3.full_redraw);
+    assert(snap3.dirty_rows.size() == 2u);
+
+    // Writing within the same row dirties exactly 1 row (PARTIAL).
+    const char* same_row = "\rsame";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(same_row), std::strlen(same_row));
+    ExtractedFrameSnapshot snap3b;
+    assert(session.ExtractDirtyFrame(false, &snap3b));
+    assert(snap3b.any_dirty);
+    assert(!snap3b.full_redraw);
+    assert(snap3b.dirty_rows.size() == 1u);
+
+    // Scrolling from the bottom row marks a FULL redraw.
+    const char* scroll_cmd = "\x1b[24;1H\r\nscrolled";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(scroll_cmd), std::strlen(scroll_cmd));
+    ExtractedFrameSnapshot snap4;
+    assert(session.ExtractDirtyFrame(false, &snap4));
+    assert(snap4.any_dirty);
+    assert(snap4.full_redraw);
+}
+
+void TestEncodersPasteAndKittyGraphics() {
+    VtSessionNative session(40, 12);
+    // Enable DECCKM, modifyOtherKeys=2, Kitty keyboard protocol, SGR mouse, bracketed paste.
+    const char* setup = "\x1b[?1h\x1b[>4;2m\x1b[>1u\x1b[?1002h\x1b[?1006h\x1b[?2004h";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(setup), std::strlen(setup));
+
+    GhosttyKeyEvent up{};
+    up.key = GHOSTTY_KEY_UP;
+    up.action = GHOSTTY_KEY_ACTION_PRESS;
+    auto up_bytes = session.EncodeKey(up);
+    assert(std::string(up_bytes.begin(), up_bytes.end()) == "\x1bOA");
+
+    GhosttyKeyEvent ctrl_c{};
+    ctrl_c.key = GHOSTTY_KEY_UNICODE;
+    ctrl_c.action = GHOSTTY_KEY_ACTION_PRESS;
+    ctrl_c.mods = GHOSTTY_MOD_CTRL;
+    ctrl_c.unicode_codepoint = 'c';
+    auto kitty_ctrl_c = session.EncodeKey(ctrl_c);
+    assert(std::string(kitty_ctrl_c.begin(), kitty_ctrl_c.end()) == "\x1b[99;5u");
+
+    GhosttyMouseEvent mpress{};
+    mpress.action = GHOSTTY_MOUSE_PRESS;
+    mpress.button = GHOSTTY_MOUSE_BUTTON_LEFT;
+    mpress.col = 3;
+    mpress.row = 4;
+    auto mbytes = session.EncodeMouse(mpress);
+    assert(std::string(mbytes.begin(), mbytes.end()) == "\x1b[<0;4;5M");
+
+    assert(!VtSessionNative::IsPasteSafe("rm -rf /\n", 9));
+    assert(VtSessionNative::IsPasteSafe("safe_text", 9));
+    std::vector<uint8_t> pasted;
+    assert(!session.EncodePaste("a\nb", 3, false, &pasted));
+    assert(session.EncodePaste("a\x1b[201~b", 8, true, &pasted));
+    assert(std::string(pasted.begin(), pasted.end()) == "\x1b[200~ab\x1b[201~");
+
+    // Kitty APC G: 2x2 RGBA pixels (16 bytes encoded as "AAAAAP8AAP//AAAAAP//AA=="), z=-1
+    const char* kitty_apc = "\x1b_Ga=T,f=32,s=2,v=2,c=2,r=1,z=-1;AAAAAP8AAP//AAAAAP//AA==\x1b\\";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(kitty_apc), std::strlen(kitty_apc));
+    ExtractedFrameSnapshot snap;
+    assert(session.ExtractDirtyFrame(true, &snap));
+    assert(snap.kitty_placements.size() == 1u);
+    assert(snap.kitty_placements[0].z_index == -1);
+    assert(snap.kitty_placements[0].rgba_pixels.size() == 16u);
+}
+
+void TestFontLigaturesBoxDrawingAndAtlasEviction() {
+    FontManager fm;
+    FontConfigNative cfg;
+    cfg.ligatures_enabled = true;
+    fm.Configure(cfg);
+    GlyphAtlasManager atlas;
+
+    // Row with "a == b" where cursor is at col 0 (does not touch "=="), then cursor at col 2 (splits "==").
+    std::vector<ExtractedCell> cells(6);
+    const char chars[6] = {'a', ' ', '=', '=', ' ', 'b'};
+    for (uint16_t i = 0; i < 6; ++i) {
+        cells[i].col = i;
+        cells[i].width = 1;
+        cells[i].fg_rgba = 0xFFFFFFFFu;
+        cells[i].bg_rgba = 0x000000FFu;
+        cells[i].primary_codepoint = static_cast<uint32_t>(chars[i]);
+        cells[i].grapheme_utf8.assign(1, chars[i]);
+    }
+
+    std::vector<CellGpuInstance> inst_lig;
+    fm.ShapeRow(0, cells, 0, CursorShape::kBlock, 0xFF0000FFu, 0x333333FFu, &atlas, &inst_lig);
+    assert(inst_lig.size() == 5u);  // "==" merged into span_cols = 2
+    assert(inst_lig[2].grid_col == 2 && inst_lig[2].span_cols == 2);
+
+    std::vector<CellGpuInstance> inst_split;
+    fm.ShapeRow(0, cells, 2, CursorShape::kBlock, 0xFF0000FFu, 0x333333FFu, &atlas, &inst_split);
+    assert(inst_split.size() == 6u);  // Cursor on col 2 splits "==" into 1-cell glyphs
+    assert(inst_split[2].span_cols == 1 && inst_split[3].span_cols == 1);
+
+    // Box drawing, block element, braille, and Hangul syllable rasterization.
+    GlyphAtlasEntry entry{};
+    assert(fm.EnsureGraphemeGlyph("\xE2\x94\x80", 0x2500u, 0, 1, &atlas, &entry));
+    assert(entry.atlas_page == kAtlasPageMonoR8);
+    assert(fm.EnsureGraphemeGlyph("\xE2\x96\x88", 0x2588u, 0, 1, &atlas, &entry));
+    assert(fm.EnsureGraphemeGlyph("\xE2\xA3\xBF", 0x28FFu, 0, 1, &atlas, &entry));
+    assert(fm.EnsureGraphemeGlyph("\xED\x95\x9C", 0xD55Cu, 0, 2, &atlas, &entry));
+    assert(entry.span_cols == 2);
+
+    // Verify LRU shelf eviction triggers above 90% occupancy.
+    ShelfAtlasPage page(1);
+    std::vector<uint8_t> big_glyph(1024u * 128u, 0xFFu);
+    bool any_evicted = false;
+    for (uint32_t i = 0; i < 40; ++i) {
+        GlyphKey k{};
+        k.cluster_hash = i + 1;
+        k.codepoint = 0xE000u + i;
+        k.font_size_px = 128;
+        bool evicted = false;
+        assert(page.Insert(k, 1024, 128, 0, 0, 1, big_glyph.data(), i + 1, &entry, &evicted));
+        any_evicted = any_evicted || evicted;
+    }
+    assert(any_evicted);
+    assert(page.EvictionCount() > 0);
+}
+
+void TestRendererCpuPath() {
+    VtSessionNative sess(40, 10);
+    const char* msg = "Hello \xEB\xB0\x94\xEB\xB3\xB4 == !=\r\nhttps://termvr.dev";
+    sess.WritePtyBytes(reinterpret_cast<const uint8_t*>(msg), std::strlen(msg));
+
+    Gles3Renderer renderer;
+    assert(renderer.InitializeGl());
+
+    PaneViewportSpec pane;
+    pane.session_handle = static_cast<int64_t>(reinterpret_cast<intptr_t>(&sess));
+    pane.x_px = 0;
+    pane.y_px = 0;
+    pane.width_px = 800;
+    pane.height_px = 400;
+    pane.focused = true;
+    pane.cursor_blink_visible = true;
+    pane.preedit.active = true;
+    pane.preedit.text_utf8 = "\xED\x95\x9C";
+
+    SplitDividerSpec div{800, 0, 2, 400, 0x30363DFFu};
+    assert(renderer.RenderFrame(1080, 400, {pane}, {div}, true, 0x101418FFu));
+    assert(renderer.LastDrawCallCount() >= 4u);
+    assert(renderer.LastUploadedBytes() > 0u);
+
+    renderer.NotifyContextLost(2);
+    assert(renderer.ContextEpoch() == 2u);
+    renderer.DetachSession(pane.session_handle);
+}
+
+}  // namespace
+
+int main() {
+    TestCellGpuInstanceLayout();
+    TestVtSessionChunkedWriteAndDirtyRows();
+    TestEncodersPasteAndKittyGraphics();
+    TestFontLigaturesBoxDrawingAndAtlasEviction();
+    TestRendererCpuPath();
+    std::cout << "All native TermVR VT C++ tests passed!" << std::endl;
+    return 0;
+}
