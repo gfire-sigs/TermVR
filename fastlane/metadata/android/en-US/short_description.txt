@@ -1,1 +1,1 @@
-OCI Linux sandbox terminal powered by gvx and libghostty-vt
+Rootless Debian and OCI Linux containers with a 120 Hz GPU terminal
