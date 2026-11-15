@@ -31,9 +31,9 @@ The adaptive navigation shell switches between a bottom bar on phones and a side
 | **`Home`** | One-tap profile launch, live sandbox cards, Android 14+ child-process restriction diagnostics, and 16 KB page-size status. |
 | **`Terminal`** | Multi-tab strip, single-surface split-pane viewport, `GhosttySearch` bar, and dockable 2-row auxiliary key bar. |
 | **`Catalog`** | Host-ISA distributions (`Alpine`, `Debian`, `Ubuntu`, `Fedora`), `Docker` and `Kubernetes` recipes, and `.tar` archive import/export. |
-| **`Network`** | Loopback (`127.0.0.1`), security-gated LAN (`0.0.0.0` with Wi-Fi IP and QR code), Unix sockets, LAN egress isolation, and WireGuard profiles. |
+| **`Network`** | Loopback (`127.0.0.1`), security-gated LAN (`0.0.0.0` with QR code), `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` and Android system proxies, LAN isolation, and WireGuard. |
 | **`Files`** | Dual-root browser for `/workspace` (`hostfs`) and `ext4lite` volumes, Storage Access Framework (`SAF`) transfers, and `DocumentsProvider` editor access. |
-| **Notification Bar** | Live CPU and Proportional Set Size (`PSS`) memory telemetry, wake-lock timer toggle, one-tap `Freeze` / `Resume`, and `Stop All`. |
+| **Notification Bar** | Live CPU and Proportional Set Size (`PSS`) memory telemetry, `[LAN]`/`[Proxy]`/`[Wake Lock]` badges, one-tap `Freeze` / `Resume`, and `Stop All`. |
 
 ---
 
@@ -44,12 +44,12 @@ Every directory maps to a single architectural boundary defined in [`AGENTS.md`]
 | Path | Description |
 | :--- | :--- |
 | [`app/`](app/) | Android application shell, adaptive navigation host, feature screens, R8 rules, and `DocumentsProvider` manifest. |
-| [`core/model/`](core/model/) | Pure Kotlin serializable domain types for profiles, port forwards, recipes, fonts, palettes, and key bars. |
-| [`core/data/`](core/data/) | AndroidX DataStore persistence, `SAF` URI grants, and bundled recipe catalog assets. |
+| [`core/model/`](core/model/) | Pure Kotlin serializable domain types for profiles, port forwards, proxy configs, recipes, fonts, palettes, and key bars. |
+| [`core/data/`](core/data/) | AndroidX DataStore persistence, Keystore-encrypted proxy credentials, `SAF` URI grants, and bundled recipe catalog assets. |
 | [`core/terminal-vt/`](core/terminal-vt/) | JNI module (`libtermvr_vt.so`, 16 KB aligned) owning `libghostty-vt`, FreeType, HarfBuzz, and OpenGL ES 3.0 atlas rendering. |
 | [`core/terminal-ui/`](core/terminal-ui/) | Single-surface `SurfaceView` host, `Choreographer` VSYNC loop, Hangul/CJK `InputConnection`, and auxiliary key bar. |
-| [`core/runtime-gvx/`](core/runtime-gvx/) | `SandboxForegroundService`, `librungv.so` command builder, loopback DNS proxy, wake lock controller, and mux client. |
-| [`guest/termvr-agent/`](guest/termvr-agent/) | Pure-Go static Linux multiplexer (`CGO_ENABLED=0`) for multi-tab PTY streams and gated host helper RPCs. |
+| [`core/runtime-gvx/`](core/runtime-gvx/) | `SandboxForegroundService`, `librungv.so` command builder, loopback DNS and `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` proxy bridges, and mux client. |
+| [`guest/termvr-agent/`](guest/termvr-agent/) | Pure-Go static Linux multiplexer (`CGO_ENABLED=0`) for multi-tab PTY streams, local/transparent proxy forwarding, and gated host RPCs. |
 | [`scripts/source-lock.json`](scripts/source-lock.json) | Pinned Git commit SHAs and SPDX licenses for `gvx`, `ghostty`, `freetype`, `harfbuzz`, and bundled fonts. |
 | [`fdroid/`](fdroid/) & [`fastlane/`](fastlane/) | F-Droid reproducible build recipe (`dev.gfire.termvr.yml`) and store metadata. |
 | [`docs/designs/`](docs/designs/) | Elephant-Goldfish Model (`EGM`) system architecture and zero-decision implementation specifications. |

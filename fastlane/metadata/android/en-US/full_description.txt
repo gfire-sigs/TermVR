@@ -5,7 +5,7 @@ Capabilities:
 - Prebuilt infrastructure recipes: Start an unprivileged Docker Engine (docker:dind) or a single-node Kubernetes cluster (k3s) on persistent ext4lite volumes.
 - GPU terminal rendering: Render monospace fonts, Nerd Font symbols, OpenType ligatures, CJK scripts, and Kitty inline graphics at up to 120 Hz.
 - Mobile input ergonomics: Configure a two-row auxiliary key bar with latched CTRL and ALT modifiers, cursor gestures, hardware shortcuts, and Hangul/CJK composition.
-- Explicit network control: Publish loopback (127.0.0.1) or LAN (0.0.0.0) TCP/UDP port ranges, Unix sockets, or in-memory WireGuard tunnels.
+- Explicit network and proxy control: Publish loopback (127.0.0.1) or LAN (0.0.0.0) ports, route traffic via HTTP, HTTPS, SOCKS5, SOCKS4, or system proxies, or run WireGuard tunnels.
 - Workspace and volume browser: Inspect ext4lite volumes, transfer files via Storage Access Framework, and open workspaces in external editors via DocumentsProvider.
 - Background lifecycle control: Monitor CPU and memory usage from the status notification, toggle a wake lock, and checkpoint or restore sandboxes.
 - Reproducible open-source build: Built exclusively from pinned upstream sources with zero proprietary libraries or tracking SDKs.

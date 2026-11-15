@@ -66,7 +66,7 @@ Implementation proceeds across five sequential milestones following this `Milest
 | **`M0` (Current)** | Multi-module Gradle and Go directory skeleton, F-Droid metadata, source lockfile, and system design specification. | Completed |
 | **`M1`: Core VT & GPU Surface** | Native `libghostty-vt` bridge, FreeType/HarfBuzz glyph shaping, OpenGL ES 3.0 renderer, auxiliary key bar, and Hangul/CJK input. | 3 weeks |
 | **`M2`: Sandbox Supervisor & Mux** | Foreground sandbox service, guest stdio session multiplexer, wake lock, live telemetry notification, and checkpoint/restore. | 3 weeks |
-| **`M3`: Catalog, Recipes & Network** | Distribution gallery, Docker and Kubernetes prebuilt recipes, loopback and LAN port forwarding, and WireGuard networking. | 3 weeks |
+| **`M3`: Catalog, Recipes & Network** | Distribution gallery, Docker and Kubernetes recipes, loopback/LAN port forwards, `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` proxy bridge, and WireGuard networking. | 3 weeks |
 | **`M4`: Storage Bridge & Polish** | Integrated workspace and `ext4lite` volume browser, Storage Access Framework (`SAF`) editor provider, and tablet/foldable layouts. | 2 weeks |
 | **`M5`: Reproducible Release & F-Droid** | Clean-room APK reproducibility verification, `SLSA` provenance workflow, accessibility pass, and F-Droid recipe submission. | 2 weeks |
 
@@ -81,7 +81,7 @@ Implementation proceeds across five sequential milestones following this `Milest
 | **Subprocess Budget (`Midterm`)** | Total host OS child processes spawned for one sandbox running 8 concurrent shell tabs. | `<= 4` host child processes |
 | **CJK & Modifier Input (`Midterm`)** | Korean Hangul syllable composition and latched `CTRL` chords on Gboard and Samsung Keyboard. | `100%` exact byte output; zero dropped jamo |
 | **Checkpoint & Restore (`Final`)** | Freeze and resume round-trip for an active `256 MiB` workspace with open editor buffers. | `<= 5.0 s` round-trip; open shells preserved |
-| **Port Isolation & LAN Gate (`Final`)** | Loopback-only reachability by default and explicit confirmation plus notification badge on LAN exposure. | `100%` enforcement across Wi-Fi changes |
+| **Port, Proxy & LAN Gate (`Final`)** | Loopback default, LAN `0.0.0.0` gate, and live `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` proxy switching without DNS leaks. | `100%` enforcement across Wi-Fi changes |
 | **External Editor Bridge (`Final`)** | Edit and save a sandbox `/workspace` file from an external Android editor without partial reads. | Atomic file update visible inside guest |
 | **Docker & K3s Recipes (`Final`)** | Unmodified `docker:dind` container launch and `rancher/k3s` node readiness on `ext4lite` volumes. | Both pass end-to-end on physical `arm64` |
 | **Reproducible APK (`Final`)** | Clean-room rebuild compared against published release APK after copying the signing block. | `0` byte differences (`SHA-256` match) |
@@ -110,7 +110,7 @@ Six measurable engineering goals govern `TermVR` `v1.0`.
 - **G1 (Host-Architecture OCI Execution)**: Run unmodified OCI images matching the host CPU (`linux/arm64` on `arm64-v8a`; `linux/amd64` on `x86_64`), including Docker and Kubernetes recipes.
 - **G2 (GPU-Accelerated VT Emulation)**: Render terminal grids, ligatures, Nerd Font symbols, CJK fallback fonts, and Kitty inline graphics at up to `120 Hz`.
 - **G3 (Mobile-First Input Ergonomics)**: Provide a configurable two-row auxiliary key bar, three-state modifier latches, touch gestures, hardware keyboard parity, and composition-safe CJK IME input.
-- **G4 (Explicit Network & Storage Control)**: Support loopback and security-gated LAN port forwarding, dynamic Android DNS relaying, WireGuard tunnels, volume browsing, and external `SAF` editor access.
+- **G4 (Explicit Network, Proxy & Storage Control)**: Support loopback/LAN port forwards, `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` and system proxies, dynamic DNS, WireGuard, volume browsing, and `SAF` access.
 - **G5 (Resilient Mobile Lifecycle)**: Maintain background execution through a foreground notification with live CPU and Proportional Set Size (`PSS`) memory metrics, timed wake locks, and checkpoint/restore.
 - **G6 (Trusted Reproducible Build)**: Compile all Kotlin, Go, Zig, and C/C++ sources deterministically from pinned commits for F-Droid `ReproducibleBuilds` and `SLSA` v1.0 Build Level 2 provenance.
 
@@ -129,7 +129,7 @@ Six items remain outside `TermVR` `v1.0` scope so core terminal and sandbox reli
 
 ## 4. Resolved Architectural Decisions (Descriptive Module)
 
-Six architectural decisions eliminate design ambiguity across process supervision, networking, rendering, and typography.
+Seven architectural decisions eliminate design ambiguity across process supervision, networking, proxying, rendering, and typography.
 
 | ID | Question | Binding Decision | Rationale |
 | :--- | :--- | :--- | :--- |
@@ -139,6 +139,7 @@ Six architectural decisions eliminate design ambiguity across process supervisio
 | **D4** | How does `TermVR` render split panes without exhausting Android display overlays or flashing black on tab switches? | Draw all split panes of the terminal screen inside one shared OpenGL ES 3.0 surface backed by a persistent surfaceless GL context. | Stays within Android's hardware overlay budget, shares one glyph atlas across panes, and redraws triple buffers cleanly on surface recreation. |
 | **D5** | How does guest DNS keep working when the phone roams between Wi-Fi, 5G cellular, VPNs, and Private DNS? | Run an app-local loopback DNS forwarder routed through Android's active network resolver instead of passing static boot-time DNS server IPs. | Survives airplane-to-Wi-Fi transitions, cellular handoffs, host VPNs, and DNS-over-TLS policies without restarting the sandbox. |
 | **D6** | How does text shaping remain identical across vendor Android ROMs? | Bundle FreeType and HarfBuzz statically inside the JNI library with `JetBrains Mono` and `Symbols Nerd Font Mono`, querying system fonts only for CJK and emoji fallback. | Guarantees uniform cell dimensions, box drawing, and cursor-aware ligatures across all Android OEMs. |
+| **D7** | How do host image pulls and guest tools use `HTTP`, `HTTPS`, `SOCKS5`, and `SOCKS4` proxies across single-VPN limits and Wi-Fi switches? | Run a host `LoopbackProxyBridge` paired with a guest `127.0.0.1:1080` listener (and optional `SO_ORIGINAL_DST` redirect) over `stdio` mux streams. | Translates `SOCKS4/4a` and authenticated proxies for all tools, keeps credentials out of guest `env`, works under `-isolate-lan`, and hot-swaps upstream proxies live. |
 
 ---
 
@@ -164,11 +165,11 @@ Six end-to-end journeys define observable behavior across UI screens and runtime
 - **When** the user opens `Catalog`, launches the `Kubernetes Single-Node (k3s)` recipe, and confirms volume creation and loopback port rules.
 - **Then** `TermVR` boots `k3s` on a dedicated `ext4lite` volume and streams daemon logs in Stream 0. A ready shell tab opens with `kubectl` configured and one-tap `kubeconfig` export.
 
-### 5.4 CUJ 4: LAN Port Exposure (`0.0.0.0`) with Session Security Gate
+### 5.4 CUJ 4: LAN Port Exposure (`0.0.0.0`) and Live Outbound Proxy Switching
 
-- **Given** a web application listening on port `8000` inside a running sandbox.
-- **When** the user switches port `8000` from loopback (`127.0.0.1`) to LAN (`0.0.0.0`) in `Network`, accepts the untrusted-Wi-Fi warning, and taps `Checkpoint & Restore`.
-- **Then** `TermVR` checkpoints and resumes the sandbox with LAN forwarding active for the current Wi-Fi session. The screen displays a scannable LAN URL QR code and a `[LAN 0.0.0.0]` badge.
+- **Given** a web server on port `8000` inside a running sandbox and a local `SOCKS5` tunnel on `127.0.0.1:9050`.
+- **When** the user enables the `SOCKS5` outbound proxy and switches port `8000` to `0.0.0.0` via `Checkpoint & Restore`.
+- **Then** outbound guest traffic routes through `SOCKS5` immediately without exposing credentials, and `Network` displays a LAN QR code plus `[LAN 0.0.0.0]` and `[Proxy]` badges.
 
 ### 5.5 CUJ 5: Directory Browser and External Android Editor Bridge
 
@@ -194,8 +195,8 @@ flowchart TB
         Nav["Adaptive Shell (:app)\nHome | Terminal | Catalog | Network | Files"]
         Docs["SAF Storage Provider (:app)\nExternal Editor Workspace Bridge"]
         TermUI["Terminal Surface Host (:core:terminal-ui)\nSurfaceView + VSYNC Driver + KeyBar + IME"]
-        Sup["Sandbox Supervisor (:core:runtime-gvx)\nForeground Service + DNS Proxy + Mux Client"]
-        Data["Profile & Catalog Store (:core:data)\nPersistent Settings + Recipe Definitions"]
+        Sup["Sandbox Supervisor (:core:runtime-gvx)\nForeground Service + DNS & Proxy Bridge + Mux Client"]
+        Data["Profile & Catalog Store (:core:data)\nPersistent Settings + Keystore Secrets + Recipes"]
     end
 
     subgraph NativeJNI["JNI Shared Library (:core:terminal-vt, 16 KB Aligned)"]
@@ -206,7 +207,7 @@ flowchart TB
 
     subgraph SandboxProc["Child OS Process (gvx User-Space Kernel, Lockdown Active)"]
         Sentry["gvx Sentry Kernel (systrap)\nEROFS Layers + ext4lite + hostfs + Virtual Net"]
-        Agent["Guest PID 1: termvr-agent\nStdio Stream Mux + PTY Allocator + Gated RPC"]
+        Agent["Guest PID 1: termvr-agent\nStdio Mux + PTYs + Local Proxy + Gated RPC"]
         Workloads["Guest Linux Processes\nShells / Editors / Docker / k3s"]
     end
 
@@ -218,10 +219,10 @@ flowchart TB
     TermUI --> Ghostty
     Ghostty --> Font
     Font --> GLES
-    Sup <-->|"Framed Binary Pipe (stdin / stdout)"| Agent
+    Sup <-->|"Framed Binary Pipe (PTY + Proxy + RPC)"| Agent
     Sup -->|"Owner-Only Control Socket & Loopback DNS"| Sentry
     Sentry --> Agent
-    Agent <-->|"Guest Pseudo-Terminals"| Workloads
+    Agent <-->|"Guest Pseudo-Terminals & Local Proxy"| Workloads
 ```
 
 ### 6.1 Information Architecture and Adaptive Screen Layout
@@ -233,7 +234,7 @@ flowchart TB
 | **`Home`** | Launch profiles, inspect host readiness, and control live sandboxes. | Quick-launch tiles; active and frozen sandbox cards (CPU, RAM, ports, Resume/Freeze/Stop); host health banner (child-process status, 16 KB page badge, disk usage). |
 | **`Terminal`** | Interact with multi-tab shells, split panes, and daemon logs. | Top tab strip with sandbox indicator; single-surface split-pane viewport; session drawer; scrollback search bar; collapsible two-row auxiliary key bar. |
 | **`Catalog`** | Pull host-ISA distributions, launch Docker/Kubernetes recipes, or import archives. | `Distributions` tab (`Alpine`, `Debian`, `Ubuntu`, `Fedora`); `Recipes` tab (`Docker`, `Kubernetes`); `Local Images` tab (pull, tar load/export, prune, registry auth). |
-| **`Network`** | Configure loopback, session-scoped LAN forwards, and WireGuard tunnels. | Per-profile port rules; `0.0.0.0` LAN confirmation gate plus Wi-Fi IP and QR modal; LAN egress isolation toggle; WireGuard profile importer; staged port-apply bar. |
+| **`Network`** | Configure port forwards, outbound `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` proxies, and WireGuard. | Inbound port rules plus `0.0.0.0` gate and QR modal; outbound proxy (`Direct`, `System`, `HTTP`, `HTTPS`, `SOCKS5`, `SOCKS4`, transparent TCP, remote DNS); WireGuard importer. |
 | **`Files`** | Browse workspaces and `ext4lite` volumes and exchange host files. | Dual-root browser (`/workspace` and `ext4lite` volumes); volume lifecycle controls; `SAF` archive transfers; external Android editor launch action. |
 
 ### 6.2 Terminal Emulation and Single-Surface OpenGL ES 3.0 Pipeline
@@ -251,7 +252,7 @@ The render loop wakes strictly on dirty state. Output bytes update native termin
 
 ### 6.4 Sandbox Lifecycle, Session Multiplexing, Gated Host Helpers, and Notification
 
-Each running sandbox executes inside one supervised `gvx` child process stored on non-evictable app storage so Android cache cleanup never deletes user volumes. An in-process loopback DNS proxy forwards sandbox DNS queries through Android's active network resolver across Wi-Fi, cellular, VPN, and Private DNS transitions.
+Each running sandbox executes inside one supervised `gvx` child process stored on non-evictable app storage so Android cache cleanup never deletes user volumes. Loopback DNS and proxy bridges route traffic dynamically across Wi-Fi, cellular, host VPN, and Private DNS. They also switch upstream `HTTP`, `HTTPS`, `SOCKS5`, and `SOCKS4` proxies without restarting the sandbox.
 
 ```mermaid
 sequenceDiagram
@@ -279,7 +280,7 @@ sequenceDiagram
 
 The guest multiplexer exposes five gated Guest-to-Host calls over stream 0. Guests can open `http`/`https` URLs in Custom Tabs, write clipboard text, or share a guest file. Clipboard reads require explicit opt-in, and `Files` streams reads and writes for mounted `ext4lite` volumes.
 
-While sandboxes run, an ongoing notification displays active count, CPU %, `PSS` memory, and `[LAN 0.0.0.0]` or `[Wake Lock]` badges with `Wake Lock`, `Freeze`, and `Stop All` actions. If Android notification permission is denied, an in-app status banner mirrors these controls and caps wake locks at 30 minutes. When all sandboxes are frozen, the foreground service stops and posts a passive `"Frozen Sandboxes"` notification with one-tap `Resume`.
+While sandboxes run, an ongoing notification shows active count, CPU %, `PSS` memory, and `[LAN 0.0.0.0]`, `[Proxy]`, or `[Wake Lock]` badges with `Wake Lock`, `Freeze`, and `Stop All` actions. If Android notification permission is denied, an in-app status banner mirrors these controls and caps wake locks at 30 minutes. When all sandboxes are frozen, the foreground service stops and posts a passive `"Frozen Sandboxes"` notification with one-tap `Resume`.
 
 ### 6.5 Trusted Build Infrastructure and F-Droid Distribution
 
@@ -312,11 +313,12 @@ This section specifies mandatory security, performance, accessibility, and upgra
 
 ### 8.1 Security and Isolation
 
-Four isolation boundaries protect the Android host and local network from untrusted guest workloads.
+Five isolation boundaries protect the Android host, proxy credentials, and local network from untrusted guest workloads.
 
 - **Mandatory host lockdown**: Production builds always enable `gvx` host lockdown (`seccomp` filters and pinned directory descriptors) before guest execution begins.
 - **Session-scoped LAN exposure**: Port forwards default to `127.0.0.1`. Binding `0.0.0.0` or `[::]` requires user confirmation, downgrades or re-prompts when Wi-Fi networks change, forbids unauthenticated Docker TCP port `2375`, and displays `[LAN 0.0.0.0]`.
 - **Owner-only sockets and CA isolation**: Control and Unix forward sockets reside in app-private storage accessible only to `TermVR`'s Android UID, and host CA certificate injection remains opt-in per profile.
+- **Credential-isolated proxy bridge**: Upstream proxy passwords stay encrypted in Android Keystore and never enter guest `env` variables. Host loopback proxy ports require a random 128-bit per-command token.
 - **Gated guest helper RPCs**: Guest clipboard reads default to `Disabled`. URL opens require `http`/`https` schemes in Custom Tabs, and file shares open Android's system share sheet.
 
 ### 8.2 Performance, Process, and Battery Budgets
@@ -429,21 +431,23 @@ The table below maps every planned production file across `M1` through `M5`, mar
 | **`M1`** | `Create` | `core/terminal-ui/src/main/kotlin/dev/gfire/termvr/core/ui/TerminalSurfaceView.kt` | `:core:terminal-ui` | Single `SurfaceView`, `TermVrGlThread`, persistent surfaceless EGL context, and VSYNC gate. |
 | **`M1`** | `Create` | `core/terminal-ui/src/main/kotlin/dev/gfire/termvr/core/ui/TerminalInputConnection.kt` | `:core:terminal-ui` | 64-space sentinel `BaseInputConnection` for Hangul/CJK composition, Gboard scrub, and paste. |
 | **`M1`** | `Create` | `core/terminal-ui/src/main/kotlin/dev/gfire/termvr/core/ui/AuxiliaryKeyBar.kt` | `:core:terminal-ui` | Collapsible `2x7` soft modifier bar, 3-state latches, auto-repeat, and swipe cursor scrub. |
-| **`M2`** | `Create` | `core/model/src/main/kotlin/dev/gfire/termvr/core/model/SandboxModels.kt` | `:core:model` | `SandboxProfile`, `PortForwardRule`, `VolumeMountSpec`, `MuxMode`, and `SandboxRunState`. |
+| **`M2`** | `Create` | `core/model/src/main/kotlin/dev/gfire/termvr/core/model/SandboxModels.kt` | `:core:model` | `SandboxProfile`, `PortForwardRule`, `OutboundProxyConfig`, `VolumeMountSpec`, and `SandboxRunState`. |
 | **`M2`** | `Create` | `guest/termvr-agent/internal/mux/{protocol.go,pty_linux.go,rpc.go}` | `guest/termvr-agent` | 12-byte binary frame codec, `/dev/ptmx` allocator, `SIGWINCH`, and gated host RPCs. |
 | **`M2`** | `Create` | `guest/termvr-agent/cmd/termvr-agent/main.go` | `guest/termvr-agent` | Guest PID 1 entrypoint, zombie reaper, `--make-root-rshared`, and `/run/termvr-agent/bin` wrappers. |
 | **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/GvxCommandBuilder.kt` | `:core:runtime-gvx` | Exact `buildRunArgs` and `buildRestoreArgs` builders, CA PEM export, and `RAW_PTY` JNI `openpty`. |
-| **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/LoopbackDnsProxy.kt` | `:core:runtime-gvx` | `127.0.0.1:<dnsPort>` UDP/TCP forwarder backed by `android.net.DnsResolver`. |
+| **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/LoopbackDnsProxy.kt` | `:core:runtime-gvx` | `127.0.0.1:<dnsPort>` UDP/TCP forwarder backed by `android.net.DnsResolver` or proxy TCP DNS. |
 | **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/MuxSessionClient.kt` | `:core:runtime-gvx` | Host-side stdio frame multiplexer, sliding-window flow control, and `MUX_RESYNC` recovery. |
 | **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/CheckpointController.kt` | `:core:runtime-gvx` | `LocalSocket` control client with `slot-a`/`slot-b` atomic checkpoint rotation. |
 | **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/SandboxForegroundService.kt` | `:core:runtime-gvx` | `specialUse` foreground service, live CPU/`PSS` notification, wake lock, and idle freeze policy. |
+| **`M3`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/LoopbackProxyBridge.kt` | `:core:runtime-gvx` | `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4`/`SOCKS4a` and Android system-proxy upstream dialer and bridge. |
+| **`M3`** | `Create` | `guest/termvr-agent/internal/mux/proxy_linux.go` | `guest/termvr-agent` | Guest `127.0.0.1:1080` mixed HTTP/SOCKS5 listener and `SO_ORIGINAL_DST` transparent port `1081`. |
 | **`M3`** | `Create` | `core/data/src/main/assets/recipes/{docker-dind.json,k3s-single-node.json,calico-vxlan.yaml}` | `:core:data` | Prebuilt `docker:dind` and `rancher/k3s` manifests plus the 5-patch Calico VXLAN manifest. |
-| **`M3`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/{ProfileRepository.kt,CatalogRepository.kt}` | `:core:data` | Versioned DataStore profile storage, registry auth config writer, and NDJSON `rungv` parsers. |
-| **`M3`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/{home,terminal,catalog,network,settings}/*.kt` | `:app` | Compose screens, host diagnostics, LAN `0.0.0.0` gate with QR modal, and instant `Terminal` nav. |
+| **`M3`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/{ProfileRepository.kt,CatalogRepository.kt}` | `:core:data` | Versioned DataStore profile storage, Keystore proxy secrets, registry auth writer, and NDJSON parsers. |
+| **`M3`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/{home,terminal,catalog,network,settings}/*.kt` | `:app` | Compose screens, host diagnostics, proxy editor, LAN `0.0.0.0` gate with QR modal, and `Terminal` nav. |
 | **`M4`** | `Modify` | `app/src/main/AndroidManifest.xml` | `:app` | Register `TermVrDocumentsProvider` with `MANAGE_DOCUMENTS` and `grantUriPermissions="true"`. |
 | **`M4`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/provider/TermVrDocumentsProvider.kt` | `:app` | `SAF` `DocumentsProvider` exposing `/workspace` with atomic `.termvr.tmp` swap and `FROZEN` lock. |
 | **`M4`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/files/FilesScreen.kt` | `:app` | Dual-root browser for `/workspace` and live `ext4lite` volumes via `HOST_RPC` stream transfers. |
-| **`M5`** | `Create` | `scripts/{provision-toolchains-and-vendor.sh,build-native-deps.sh}` | `scripts/` |Checksum-verified toolchain/vendor prefetch (`init:`) and offline native compilation (`prebuild:`). |
+| **`M5`** | `Create` | `scripts/{provision-toolchains-and-vendor.sh,build-native-deps.sh}` | `scripts/` | Checksum-verified toolchain/vendor prefetch (`init:`) and offline native compilation (`prebuild:`). |
 | **`M5`** | `Create` | `scripts/{verify-16kb-alignment.sh,verify-reproducible-apk.sh}` | `scripts/` | ELF `PT_LOAD` `0x4000` verifier and clean-room `apksigcopier` APK reproducibility check. |
 | **`M5`** | `Create` | `.github/workflows/{ci.yml,release-slsa.yml}` | CI / Release | 16 KB emulator tests, upstream lockfile audit, and `SLSA` v1.0 Build Level 2 release workflow. |
 
@@ -453,9 +457,9 @@ The table below maps every planned production file across `M1` through `M5`, mar
 
 `:core:model` defines immutable `@Serializable` Kotlin types shared across `:core:data`, `:core:terminal-ui`, `:core:runtime-gvx`, and `:app`. Every persisted root type carries `schemaVersion: Int = 1` and validates field bounds inside `init` blocks.
 
-### 11.1 Sandbox, Network, and Volume Schemas
+### 11.1 Sandbox, Network, Proxy, and Volume Schemas
 
-The snippet below specifies the exact `SandboxProfile`, `PortForwardRule`, `VolumeMountSpec`, and `SandboxRunState` contracts. IPv6 listen addresses retain square brackets (`"[::1]"` and `"[::]"`) so `GvxCommandBuilder` emits valid `-p` specifications for `gvx`.
+The snippet below specifies `SandboxProfile`, `OutboundProxyConfig`, `PortForwardRule`, `VolumeMountSpec`, and `SandboxRunState`. IPv6 listen addresses retain square brackets (`"[::1]"` and `"[::]"`) for `gvx`, and proxy passwords never enter `SandboxProfile` JSON (only `credentialKeyAlias` in Android Keystore).
 
 ```kotlin
 package dev.gfire.termvr.core.model
@@ -473,6 +477,7 @@ data class SandboxProfile(
     val defaultShellArgv: List<String> = emptyList(),// Empty = auto-probe /bin/bash, /bin/ash, /bin/sh
     val memoryMiB: Int = 1024,                       // Clamped to 256..12288
     val cpuCores: Double = 2.0,                      // Clamped at launch to <= host availableProcessors()
+    val guestPrivileged: Boolean = false,            // True on docker/k3s recipes (user-space Sentry caps)
     val volumes: List<VolumeMountSpec> = emptyList(),
     val tmpfsMounts: List<String> = listOf("/tmp", "/run"),
     val envVars: Map<String, String> = emptyMap(),
@@ -508,10 +513,48 @@ data class NetworkModeConfig(
     val backend: NetBackend = NetBackend.NAT,
     val isolateLanEgress: Boolean = false,           // Maps to rungv -isolate-lan
     val wireGuardConfigName: String? = null,         // Stored under <filesDir>/wg/<name>.conf
+    val outboundProxy: OutboundProxyConfig = OutboundProxyConfig(),
 )
 
 @Serializable
 enum class NetBackend { NAT, WIREGUARD, NONE }
+
+@Serializable
+data class OutboundProxyConfig(
+    val mode: OutboundProxyMode = OutboundProxyMode.DIRECT,
+    val customEndpoint: ProxyEndpointSpec? = null,
+    val routeDnsViaProxy: Boolean = true,            // Prevents UDP DNS leaks when proxy is active
+    val transparentTcp: Boolean = false,             // Redirects guest TCP via SO_ORIGINAL_DST
+    val noProxyEntries: List<String> = DEFAULT_NO_PROXY,
+) {
+    companion object {
+        val DEFAULT_NO_PROXY = listOf(
+            "localhost", "127.0.0.1", "::1",
+            "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+            ".svc", ".cluster.local",
+        )
+    }
+}
+
+@Serializable
+enum class OutboundProxyMode {
+    DIRECT,                                          // No upstream proxy
+    ANDROID_SYSTEM,                                  // Follows ConnectivityManager.getDefaultProxy()
+    CUSTOM,                                          // Uses customEndpoint (HTTP/HTTPS/SOCKS5/SOCKS4/4A)
+}
+
+@Serializable
+data class ProxyEndpointSpec(
+    val protocol: ProxyProtocol,
+    val host: String,                                // e.g. "127.0.0.1" (Orbot/SSH) or proxy FQDN
+    val port: Int,                                   // 1..65535
+    val username: String? = null,                    // Optional RFC 1929 / Basic auth / SOCKS4 USERID
+    val credentialKeyAlias: String? = null,          // Secret password stored in Android Keystore
+    val tlsServerName: String? = null,               // Optional SNI override for HTTPS proxy
+)
+
+@Serializable
+enum class ProxyProtocol { HTTP, HTTPS, SOCKS5, SOCKS4, SOCKS4A }
 
 @Serializable
 data class PortForwardRule(
@@ -778,20 +821,21 @@ Physical USB, Bluetooth, Chromebook, and Samsung DeX keyboards bypass soft compo
 
 ---
 
-## 15. `gvx` Sandbox Supervisor, Loopback DNS Proxy, `termvr-agent`, and Foreground Service (`:core:runtime-gvx` & `guest/termvr-agent`) (Descriptive Module)
+## 15. `gvx` Supervisor, Loopback DNS & Proxy Bridges, `termvr-agent`, and Foreground Service (`:core:runtime-gvx` & `guest/termvr-agent`) (Descriptive Module)
 
-`:core:runtime-gvx` supervises `gvx` child processes, translates dynamic Android network and certificate state, multiplexes guest PTY streams, and drives foreground notifications and checkpoints.
+`:core:runtime-gvx` supervises `gvx` child processes, bridges dynamic Android DNS and outbound proxies, multiplexes guest PTYs, and drives foreground notifications and checkpoints.
 
 ### 15.1 `librungv.so` Execution, Non-Evictable Storage, Host CAs, and `RAW_PTY`
 
 Android 10+ mounts `filesDir` and `cacheDir` noexec under SELinux `app_data_file`. `TermVR` packages the `gvx` CLI binary at `jniLibs/<abi>/librungv.so` with `extractNativeLibs="true"` and `useLegacyPackaging = true`. Package installation extracts `librungv.so` into `applicationInfo.nativeLibraryDir` (`apk_data_file`, `r-x`), where `ProcessBuilder` executes it legally.
 
-`SandboxForegroundService` populates four mandatory environment paths before spawning `librungv.so`:
+`SandboxForegroundService` populates five environment contracts before spawning `librungv.so`:
 
 - **`HOME = <filesDir>/gvx-home`**: Holds `$HOME/.docker/config.json` written by `CatalogRepository` for authenticated OCI pulls.
 - **`XDG_CACHE_HOME = <filesDir>/gvx-store`**: Upstream `gvx` places named `ext4lite` volumes in `filepath.Dir(OCICacheDir)/volumes`. Pointing `XDG_CACHE_HOME` into non-evictable `filesDir` keeps `<filesDir>/gvx-store/gvx/volumes/` and `layers/` safe from Android cache sweeps.
 - **`TMPDIR = <cacheDir>/gvx-tmp`**: Directs ephemeral layer-compile scratch files into fast cache storage cleared on startup.
 - **`SSL_CERT_FILE` & `SSL_CERT_DIR` (when `trustHostCaCerts == true`)**: Android stores root certificates in `/apex/com.android.conscrypt/cacerts` rather than `/etc/ssl/certs`. `GvxCommandBuilder` exports PEM certificates from `KeyStore.getInstance("AndroidCAStore")` into `<cacheDir>/ca/android-roots.pem` plus empty `<cacheDir>/ca/empty-dir` and sets both environment variables.
+- **`HTTP_PROXY`, `HTTPS_PROXY`, & `NO_PROXY` (on `pull` and `image save`)**: When an outbound proxy is active, host image commands point to `http://termvr:<128bitToken>@127.0.0.1:<bridgePort>`. Even `SOCKS4`/`SOCKS4a` upstreams work transparently with Go's `net/http` registry client through `LoopbackProxyBridge`.
 
 When `profile.muxMode == MuxMode.RAW_PTY` (fallback mode for minimalist scratch images without `/bin/sh`), `ProcessBuilder` pipes would cause `gvx` `tty_linux.go` to disable terminal mode or lock size at `80x24`. `GvxCommandBuilder` instead opens a host PTY pair via JNI (`posix_openpt`, `grantpt`, `unlockpt`, `ptsname_r`). It attaches the slave FD to `librungv.so` stdio and forwards resizes via `TIOCSWINSZ` plus `SIGWINCH`.
 
@@ -800,25 +844,35 @@ When `profile.muxMode == MuxMode.RAW_PTY` (fallback mode for minimalist scratch 
 Upstream `rungv run` checks for `--` before reading positional image arguments, whereas `rungv restore` rejects `-image`, `--entrypoint`, and command arguments altogether. `GvxCommandBuilder` therefore implements two distinct argument builders:
 
 - **`buildRunArgs(profile, dnsPort, controlSock, activePorts)`**:
-  - Passes `run`, `--rootless`, `--privileged=false`, `-m "${profile.memoryMiB}m"`, and `--cpus` clamped to `min(profile.cpuCores, Runtime.getRuntime().availableProcessors().toDouble())`.
+  - Passes `run`, `--rootless`, `-m "${profile.memoryMiB}m"`, and `--cpus` clamped to `min(profile.cpuCores, Runtime.getRuntime().availableProcessors().toDouble())`.
+  - Sets guest user-space capabilities: `--privileged=true` when `profile.guestPrivileged` is `true` (`docker`/`k3s`), `--privileged=false --net-raw` when `transparentTcp` is `true`, or `--privileged=false` otherwise.
   - Passes `--host-dns "127.0.0.1:$dnsPort"`, `-control-socket controlSock.absolutePath`, and `--host-ca-certs` when `profile.trustHostCaCerts` is `true`.
   - Passes `-net=nat` (plus `-isolate-lan` if `isolateLanEgress`), `-net=wg -wg-conf <path>`, or `-net=none`.
   - Formats each enabled `PortForwardRule` as `-p`: single port `<listenHost>:<hostPort>:<guestPort>/<proto>` (`hostPort = 0` for ephemeral), ephemeral range `<listenHost>::<guestStart>-<guestEnd>/<proto>`, fixed range `<listenHost>:<hStart>-<hEnd>:<gStart>-<gEnd>/<proto>`, or `unix:<hostSock>:<guestSock>`. Parses `rungv: publishing` lines on stderr to record assigned ephemeral host ports.
-  - Emits `-v <filesDir>/workspaces/<id>:/workspace:rw`, `-v <filesDir>/agent/<guestArch>:/run/termvr-agent:ro` (in `STDIO_MUX` mode), user `VolumeMountSpec` entries, `--tmpfs` paths, and sorted `-e <key>=<value>` flags (preserving trailing `=` on empty values).
-  - In `STDIO_MUX` mode, appends `--entrypoint /run/termvr-agent/termvr-agent`, `-image profile.imageRef`, `--`, `--mux-stdio`, optional `--make-root-rshared`, and optional `-- <initDaemonArgv...>`.
+  - Emits `-v <filesDir>/workspaces/<id>:/workspace:rw`, `-v <filesDir>/agent/<guestArch>:/run/termvr-agent:ro` (in `STDIO_MUX` mode), user `VolumeMountSpec` entries, `--tmpfs` paths, and sorted `-e <key>=<value>` flags. In `STDIO_MUX` mode, it injects credential-free `HTTP_PROXY=http://127.0.0.1:1080`, `HTTPS_PROXY=http://127.0.0.1:1080`, `ALL_PROXY=socks5h://127.0.0.1:1080`, `NO_PROXY`, and lowercase aliases.
+  - In `STDIO_MUX` mode, appends `--entrypoint /run/termvr-agent/termvr-agent`, `-image profile.imageRef`, `--`, `--mux-stdio`, `--proxy-listen 127.0.0.1:1080`, optional `--transparent-proxy-port 1081`, optional `--make-root-rshared`, and optional `-- <initDaemonArgv...>`.
 - **`buildRestoreArgs(profile, slotDir, dnsPort, controlSock, resolvedPorts)`**:
   - Passes `restore`, `-checkpoint-dir slotDir.absolutePath`, `-control-socket controlSock.absolutePath`, `--host-dns "127.0.0.1:$dnsPort"`, and identical ordered `-v` and `--tmpfs` flags.
-  - Appends matching `-net` / `-isolate-lan` / `-wg-conf`, `-m`, clamped `--cpus`, `--privileged=false`, optional `--host-ca-certs`, optional `-t`, and resolved `-p` rules.
+  - Appends matching `-net` / `-isolate-lan` / `-wg-conf`, `-m`, clamped `--cpus`, matching `--privileged` / `--net-raw` flags, optional `--host-ca-certs`, optional `-t`, and resolved `-p` rules.
 
-### 15.3 App-Local Loopback DNS Proxy (`LoopbackDnsProxy`)
+### 15.3 App-Local `LoopbackDnsProxy` and `LoopbackProxyBridge`
 
-Static boot-time DNS server IPs fail across Wi-Fi/5G handoffs, host VPNs, offline boots, and Android Private DNS (`DNS-over-TLS`). `LoopbackDnsProxy` binds `127.0.0.1:0` on both UDP and TCP inside `SandboxForegroundService` and passes `--host-dns 127.0.0.1:<dnsPort>` to `run`, `restore`, `pull`, and `image save`.
+Static boot-time DNS IPs and static proxy environment variables break across Wi-Fi/5G handoffs, single-slot Android VPN conflicts, and Private DNS (`DNS-over-TLS`). `SandboxForegroundService` hosts two lightweight loopback bridges in `:core:runtime-gvx`:
 
-Each incoming DNS packet dispatches through `android.net.DnsResolver.getInstance().rawQuery(connectivityManager.activeNetwork, queryBytes, FLAG_EMPTY, Dispatchers.IO.asExecutor(), cancelSignal, callback)` with a `3500 ms` timeout. When `activeNetwork` is `null` (airplane mode), `LoopbackDnsProxy` returns an immediate DNS `SERVFAIL` (`RCODE = 2`). Offline sandboxes boot without delay and resolve names once connectivity returns.
+- **`LoopbackDnsProxy` (`127.0.0.1:<dnsPort>` UDP & TCP)**:
+  - When no proxy is active (or `routeDnsViaProxy` is `false`), queries dispatch through `android.net.DnsResolver.getInstance().rawQuery(connectivityManager.activeNetwork, ...)` (`3500 ms` timeout; immediate `SERVFAIL` when offline).
+  - When `routeDnsViaProxy` is `true` under an active proxy, `LoopbackDnsProxy` tunnels RFC 1035 TCP DNS queries through `LoopbackProxyBridge` to prevent UDP 53 leaks.
+- **`LoopbackProxyBridge` (`HTTP` / `HTTPS` / `SOCKS5` / `SOCKS4` / `SOCKS4a` / `System`)**:
+  - Accepts authenticated host `HTTP`/`CONNECT` requests (`127.0.0.1:<bridgePort>` guarded by a random 128-bit Basic token) for `rungv pull`/`image save` and `CatalogRepository`, plus `PROXY_CONNECT` mux streams from `termvr-agent`.
+  - Resolves upstream mode dynamically per connection: `DIRECT` dials `SocketChannel` directly; `ANDROID_SYSTEM` inspects `ConnectivityManager.getDefaultProxy()` (`ProxyInfo` host, port, and exclusion list); `CUSTOM` dials the configured `ProxyEndpointSpec` retrieving any password from Android Keystore.
+  - Speaks five upstream protocols: `HTTP` (`CONNECT host:port` plus `Proxy-Authorization: Basic`) and `HTTPS` (TLS 1.3 `SSLSocket` with SNI plus `CONNECT`). It also speaks `SOCKS5` (RFC 1928 `0x05`, RFC 1929 `0x02` auth, `ATYP = 0x03`), `SOCKS4` (`0x04` IPv4), and `SOCKS4A` (`0.0.0.1` sentinel plus hostname).
+  - Enforces LAN isolation when `profile.network.isolateLanEgress` is `true`. `LoopbackProxyBridge` rejects targets resolving to `127.0.0.0/8`, `::1`, RFC1918 subnets, or link-local ranges so guests cannot reach the local LAN.
 
-### 15.4 `termvr-agent` Binary Wire Protocol and Gated Host RPCs
+### 15.4 `termvr-agent` Binary Wire Protocol, Local Proxy, and Gated Host RPCs
 
-`guest/termvr-agent` compiles to a zero-dependency static Go binary (`<= 2.2 MiB`) mounted read-only at `/run/termvr-agent/termvr-agent`. At startup, `termvr-agent` reaps zombies on `SIGCHLD` and remounts `/` shared (`MS_REC | MS_SHARED`) when `--make-root-rshared` is set. It prepends `/run/termvr-agent/bin` (`0755` wrappers `termvr-open`, `termvr-copy`, `termvr-paste`, `termvr-share`) to `PATH` and frames `stdin`/`stdout`:
+`guest/termvr-agent` compiles to a zero-dependency static Go binary (`<= 2.2 MiB`) mounted read-only at `/run/termvr-agent/termvr-agent`. At startup, `termvr-agent` reaps `SIGCHLD` zombies and remounts `/` shared (`MS_REC | MS_SHARED`) when `--make-root-rshared` is set. It also prepends `/run/termvr-agent/bin` (`0755` wrappers `termvr-open`, `termvr-copy`, `termvr-paste`, `termvr-share`) to `PATH`.
+
+For outbound proxying, `termvr-agent` binds `127.0.0.1:1080` and peeks each stream's first byte (`0x05` `SOCKS5/5h`, `0x04` `SOCKS4/4a`, ASCII `HTTP`/`CONNECT`). Under `DIRECT` mode with `-net != none`, `termvr-agent` dials targets inside the guest so live proxy switches never alter guest `env` variables. When `--transparent-proxy-port 1081` is set, pure-Go `IPT_SO_SET_REPLACE` rules redirect outbound TCP (excluding `127.0.0.0/8`, `10.0.2.0/24`, and `noProxyEntries` CIDRs) to `127.0.0.1:1081`. `termvr-agent` reads original targets via `getsockopt(SOL_IP, SO_ORIGINAL_DST)` and tunnels streams over `FD 0`/`FD 1` without routing loops:
 
 ```text
  0                   1                   2                   3
@@ -837,17 +891,19 @@ Each incoming DNS packet dispatches through `android.net.DnsResolver.getInstance
 | `0x01` | `MUX_HELLO` | Both | `0` | JSON `{ "protocol": 1, "agentVersion": "0.1.0", "initDaemon": true }` |
 | `0x02` | `OPEN_PTY` | Host to Guest | `>= 1` | `uint16 rows, cols, xpixel, ypixel` + JSON `{ "argv": [], "cwd": "/workspace", "env": {"TERM":"xterm-ghostty","COLORTERM":"truecolor"} }` |
 | `0x03` | `OPEN_PTY_ACK` | Guest to Host | `>= 1` | `uint8 status` (`0` = ok) + UTF-8 error text if non-zero |
-| `0x04` | `PTY_DATA` | Both | `0..N` | Raw UTF-8/VT terminal bytes (`stream 0` = init daemon log stream) |
+| `0x04` | `PTY_DATA` | Both | `0..N` | Raw stream bytes (`PTY` terminal I/O or tunnelled `PROXY_CONNECT` TCP payload) |
 | `0x05` | `PTY_RESIZE` | Host to Guest | `>= 1` | `uint16 rows, cols, xpixel, ypixel` (applies `TIOCSWINSZ` + `SIGWINCH`) |
-| `0x06` | `PTY_WINDOW_UPDATE`| Both | `0..N` | `uint32 deltaBytes` granting sliding-window credit (`256 KiB` per stream) |
+| `0x06` | `PTY_WINDOW_UPDATE`| Both | `0..N` | `uint32 deltaBytes` granting sliding-window credit (`256 KiB` per PTY or proxy stream) |
 | `0x07` | `PTY_SIGNAL` | Host to Guest | `>= 1` | `uint8 posixSignal` (for example `SIGHUP = 1`, `SIGINT = 2`, `SIGTERM = 15`) |
-| `0x08` | `PTY_EXIT` | Guest to Host | `0..N` | `uint8 exitCode` (`0..255`; signal `S` maps to `128 + S`) |
+| `0x08` | `PTY_EXIT` | Both | `0..N` | `uint8 exitCode` (`0..255` for PTY exit; `0` for clean proxy TCP EOF or `1` for reset) |
 | `0x09` | `TELEMETRY_REQ` | Host to Guest | `0` | Empty payload (polled every `2000 ms` while host screen is interactive) |
 | `0x0A` | `TELEMETRY_RESP` | Guest to Host | `0` | JSON `{ "cpuNanos": u64, "rssBytes": u64, "procCount": u32, "listenPorts": [u16] }` |
 | `0x0B` | `HOST_RPC_REQ` | Both | `0` | `uint32 reqId`, `uint8 op`, `uint8 flags` (`FIN`), chunk payload (`<= 32 KiB`) |
 | `0x0C` | `HOST_RPC_RESP` | Both | `0` | `uint32 reqId`, `uint8 status`, `uint8 flags` (`FIN`), chunk payload (`<= 32 KiB`) |
 | `0x0D` | `MUX_RESYNC` | Host to Guest | `0` | Empty payload sent immediately after `rungv restore` reconnects stdio |
 | `0x0E` | `MUX_RESYNC_ACK` | Guest to Host | `0` | JSON `{ "openStreams": [{"id": 1, "rows": 42, "cols": 110}] }` |
+| `0x0F` | `PROXY_CONNECT` | Guest to Host | `>= 1` | `uint16 dstPort` + UTF-8 `dstHost` (domain name or IP literal) |
+| `0x10` | `PROXY_CONNECT_ACK`| Host to Guest | `>= 1` | `uint8 status` (`0` = connected, non-zero = SOCKS/HTTP error code) + optional UTF-8 message |
 
 Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
@@ -863,13 +919,13 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 `SandboxForegroundService` runs in `:app`'s main process with `android:foregroundServiceType="specialUse"` and manifest subtype property `android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE` documenting user-initiated interactive Linux container sessions.
 
-- **Status notification & `POST_NOTIFICATIONS` fallback**: Channel `sandbox_status` (`IMPORTANCE_LOW`) renders `"2 active • CPU 14% • 612 MiB PSS"` plus `[Wake Lock 24m]` and `[LAN 0.0.0.0]` badges and three action buttons (`Wake Lock`, `Freeze`, `Stop All`). Telemetry polls guest `TELEMETRY_REQ` plus `/proc/<pid>/stat`, `/proc/<pid>/task/*/children`, and `Debug.getMemoryInfo` every `2000 ms` strictly while `PowerManager.isInteractive` is `true` (`0` polls when screen is off). If Android 13+ notification permission is denied, `TermVR` shows a persistent in-app status banner and restricts `WakeLock` to a maximum `30 min` timer.
+- **Status notification & `POST_NOTIFICATIONS` fallback**: Channel `sandbox_status` (`IMPORTANCE_LOW`) renders `"2 active • CPU 14% • 612 MiB PSS"` plus `[Wake Lock 24m]`, `[Proxy: SOCKS5]`, and `[LAN 0.0.0.0]` badges and three action buttons (`Wake Lock`, `Freeze`, `Stop All`). Telemetry polls guest `TELEMETRY_REQ` plus `/proc/<pid>/stat`, `/proc/<pid>/task/*/children`, and `Debug.getMemoryInfo` every `2000 ms` strictly while `PowerManager.isInteractive` is `true` (`0` polls when screen is off). If Android 13+ notification permission is denied, `TermVR` shows a persistent in-app status banner and restricts `WakeLock` to a maximum `30 min` timer.
 - **Atomic dual-slot checkpoints (`CheckpointController`)**: `<filesDir>/checkpoints/<profileId>/` maintains `slot-a/`, `slot-b/`, and `active-slot.json`. Before freezing, `CheckpointController` checks `Os.statvfs` to verify free disk space exceeds `1.2 * currentPssBytes`. It connects to `<filesDir>/ctl/<profileId>.sock` via `android.net.LocalSocket` (`2000 ms` connect/write timeout; `60_000 ms` read timeout), sends `{"op":"checkpoint","dir":"<inactiveSlot>"}\n`, awaits `"ok\n"` and process exit `0`, atomically renames `active-slot.json.tmp` to `active-slot.json`, and then deletes the older slot.
 - **Idle background freeze policy**: On `TRIM_MEMORY_UI_HIDDEN` or `TRIM_MEMORY_BACKGROUND`, idle sandboxes (`>= 5 min`, `autoCheckpointOnLowMemory == true`, no `WakeLock`) checkpoint automatically. This prevents Android's cached-app freezer (`API 34+`) or LMKD from killing open editor buffers. When zero sandboxes remain `RUNNING`, `SandboxForegroundService` calls `stopForeground(STOP_FOREGROUND_REMOVE)` and posts a passive `"Frozen Sandboxes"` notification with one-tap `Resume`.
 
 ---
 
-## 16. Screen Specifications, Prebuilt Recipes (`Docker` & `k3s`), and Port Forwarding (`:app` & `:core:data`) (Descriptive Module)
+## 16. Screen Specifications, Prebuilt Recipes (`Docker` & `k3s`), Proxies, and Port Forwarding (`:app` & `:core:data`) (Descriptive Module)
 
 `:app` composes five adaptive screens over unidirectional `StateFlow` view-models without importing JNI or process builders directly.
 
@@ -888,23 +944,27 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 - **Curated distributions**: `Alpine 3.21`, `Debian 13 (Trixie)`, `Ubuntu 24.04 LTS`, and `Fedora 42`, each pre-configured with `/workspace` mount and `STDIO_MUX`.
 - **Registry auth & `rungv` CLI contracts**:
-  - `CatalogRepository` authenticates against OCI registries using Kotlin `HttpsURLConnection` (`TLS 1.3`) and writes `$HOME/.docker/config.json` (`0600`) directly because `rungv login` does not accept `--host-dns`.
+  - `CatalogRepository` authenticates against OCI registries using Kotlin `HttpsURLConnection` (`TLS 1.3`, routed through `LoopbackProxyBridge` when active) and writes `$HOME/.docker/config.json` (`0600`) directly because `rungv login` lacks `--host-dns`.
   - `rungv pull` and `rungv image save` always receive `--host-dns 127.0.0.1:<dnsPort>`. `Export Image (.tar)` is enabled only while online for registry-pulled images (upstream `rungv image save` re-fetches manifests and rejects local `image load` tar imports).
   - `rungv system df --format json` and `rungv volume ls --format json` emit newline-delimited JSON (**NDJSON**, one JSON object per line), whereas `rungv volume inspect` emits a JSON array; `CatalogRepository` parses each format accordingly and passes `-f` to `system prune` and `volume prune`.
 - **Recipe 1: `Docker Engine (DinD)` (`docker:28-dind`)**:
   - Requires `>= 4096 MiB` physical host RAM (`1536 MiB` default sandbox RAM) and `>= 2048 MiB` free disk.
-  - Mounts per-profile `ext4lite` volume `docker-${profileId}:/var/lib/docker`, sets `-e DOCKER_TLS_CERTDIR=`, sets `autoCheckpointOnLowMemory = false`, and runs `initDaemonArgv = ["dockerd-entrypoint.sh", "--storage-driver=overlay2", "--iptables=true", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]`.
+  - Sets `guestPrivileged = true`, mounts per-profile `ext4lite` volume `docker-${profileId}:/var/lib/docker`, sets `-e DOCKER_TLS_CERTDIR=`, sets `autoCheckpointOnLowMemory = false`, and runs `initDaemonArgv = ["dockerd-entrypoint.sh", "--storage-driver=overlay2", "--iptables=true", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]`.
   - Streams `dockerd` logs in Stream 0 (`Daemon Logs` tab) and opens Stream 1 shell once `127.0.0.1:2375` responds.
 - **Recipe 2: `Kubernetes Single-Node (k3s)` (`rancher/k3s:v1.32.2-k3s1`)**:
   - Requires `>= 6144 MiB` physical host RAM (`2560 MiB` default sandbox RAM) and `>= 3072 MiB` free disk.
-  - Mounts per-profile `ext4lite` volume `k3s-${profileId}:/var/lib/rancher/k3s`, passes `--make-root-rshared` to `termvr-agent`, binds `127.0.0.1:6443:6443/tcp`, sets `autoCheckpointOnLowMemory = false`, and launches `initDaemonArgv = ["/bin/k3s", "server", "--snapshotter=native", "--flannel-backend=host-gw", "--write-kubeconfig-mode=0644", "--tls-san=127.0.0.1", "--kubelet-arg=cgroups-per-qos=false", "--kubelet-arg=enforce-node-allocatable=", "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<3%,imagefs.available<3%"]`.
+  - Sets `guestPrivileged = true`, mounts per-profile `ext4lite` volume `k3s-${profileId}:/var/lib/rancher/k3s`, passes `--make-root-rshared` to `termvr-agent`, binds `127.0.0.1:6443:6443/tcp`, sets `autoCheckpointOnLowMemory = false`, and launches `initDaemonArgv = ["/bin/k3s", "server", "--snapshotter=native", "--flannel-backend=host-gw", "--write-kubeconfig-mode=0644", "--tls-san=127.0.0.1", "--kubelet-arg=cgroups-per-qos=false", "--kubelet-arg=enforce-node-allocatable=", "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<3%,imagefs.available<3%"]`.
   - Provides one-tap **Export `kubeconfig`** rewriting the cluster endpoint to `https://127.0.0.1:6443`.
   - **Optional Calico VXLAN toggle**: Raises profile RAM floor to `4096 MiB` and switches `k3s` flags to `--flannel-backend=none --disable-network-policy`. Applies `calico-vxlan.yaml` with five `gvx` overrides (`CALICO_IPV4POOL_VXLAN=Always`, `FELIX_BPFENABLED=false`, `FELIX_XDPENABLED=false`, `CALICO_DISABLE_FILE_LOGGING=true`, `veth_mtu: "1450"`).
 
-### 16.3 `NetworkScreen`, Session-Scoped `0.0.0.0` Gate, and Staged Port Apply
+### 16.3 `NetworkScreen`: Outbound Proxy, `0.0.0.0` LAN Gate, and WireGuard
 
-`NetworkScreen` manages per-profile port rules, LAN egress isolation (`-isolate-lan`), and WireGuard tunnel configs (`-net=wg`):
+`NetworkScreen` organizes three cards covering inbound port forwards, outbound proxying, and WireGuard tunnels (`-net=wg`):
 
+- **Outbound Proxy (`Direct` / `Android System` / `Custom HTTP, HTTPS, SOCKS5, SOCKS4, SOCKS4a`)**:
+  - Supports one-tap switching between `Direct`, `Follow Android System Proxy`, and saved custom endpoints (such as local `Orbot 127.0.0.1:9050`, `SSH -D`, `sing-box`, corporate `HTTP`/`HTTPS` proxies, or legacy `SOCKS4`/`SOCKS4a` gateways).
+  - Stores optional proxy passwords inside Android Keystore and exposes `NO_PROXY` bypass chips, a `Route DNS via Proxy` toggle, a `Transparent TCP Redirect` toggle, and a `Test Proxy` button reporting handshake latency.
+  - Switching between `Direct`, `Android System`, and `Custom` proxy endpoints updates `LoopbackProxyBridge` live in `< 50 ms` without restarting running sandboxes; toggling `Transparent TCP Redirect` stages a `Checkpoint & Restore` or `Cold Restart` when `--net-raw` changes.
 - **Session-scoped `0.0.0.0` / `[::]` LAN gate**: New port rules default to `127.0.0.1`. Selecting `0.0.0.0` or `[::]` opens a warning sheet displaying the active Wi-Fi IP (`LinkProperties`) before allowing LAN peers. Port `2375` (unauthenticated Docker TCP) is hard-blocked from `0.0.0.0` and `[::]`. Active LAN rules render an inline QR code (`http://<lanIp>:<hostPort>`) and light the `[LAN 0.0.0.0]` notification badge. When `ConnectivityManager.NetworkCallback` reports a different network handle, LAN binds revert to `127.0.0.1` on the next restore unless re-confirmed.
 - **Hot port apply on running sandboxes**: `gvx` seals host socket binds before guest execution starts. Editing ports on a `RUNNING` sandbox offers **`Checkpoint & Restore`** (`< 5 s`, keeping shells open) or **`Cold Restart`**.
 

@@ -25,13 +25,13 @@ Execute these numbered steps before editing repository files.
 
 | Module | Namespace / Package | Single Responsibility | Permitted Internal Imports |
 | :--- | :--- | :--- | :--- |
-| `:core:model` | `dev.gfire.termvr.core.model` | Pure Kotlin value types for profiles, port rules, recipes, fonts, key bars, and telemetry. | None |
-| `:core:data` | `dev.gfire.termvr.core.data` | DataStore persistence, Storage Access Framework (`SAF`) grants, font registry, and recipe catalog loading. | `:core:model` |
+| `:core:model` | `dev.gfire.termvr.core.model` | Pure Kotlin value types for profiles, port and proxy rules, recipes, fonts, key bars, and telemetry. | None |
+| `:core:data` | `dev.gfire.termvr.core.data` | DataStore persistence, Keystore proxy credentials, `SAF` grants, font registry, and recipe catalog loading. | `:core:model` |
 | `:core:terminal-vt` | `dev.gfire.termvr.core.vt` | JNI library (`libtermvr_vt.so`) owning `libghostty-vt`, FreeType, HarfBuzz, and OpenGL ES 3.0 atlas shaders. | `:core:model` |
 | `:core:terminal-ui` | `dev.gfire.termvr.core.ui` | Single-surface `SurfaceView` host, `Choreographer` frame loop, `InputConnection` IME bridge, and auxiliary key bar. | `:core:model`, `:core:terminal-vt` |
-| `:core:runtime-gvx` | `dev.gfire.termvr.core.runtime` | `librungv.so` process supervisor, foreground service, wake lock, loopback DNS proxy, and mux client. | `:core:model`, `:core:data` |
+| `:core:runtime-gvx` | `dev.gfire.termvr.core.runtime` | `librungv.so` supervisor, foreground service, wake lock, loopback DNS and proxy bridges, and mux client. | `:core:model`, `:core:data` |
 | `:app` | `dev.gfire.termvr` | Adaptive navigation shell, feature screens, onboarding diagnostics, and `DocumentsProvider`. | All `:core:*` modules |
-| `guest/termvr-agent` | `dev.gfire.termvr/guest/termvr-agent` | Static pure-Go Linux PID 1 multiplexer allocating guest `/dev/pts` sessions over stdio pipes. | Go standard library only |
+| `guest/termvr-agent` | `dev.gfire.termvr/guest/termvr-agent` | Static pure-Go Linux PID 1 multiplexer and local proxy listener over stdio pipes. | Go standard library only |
 
 ---
 
