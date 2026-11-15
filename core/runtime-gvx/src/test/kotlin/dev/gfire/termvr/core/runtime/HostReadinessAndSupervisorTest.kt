@@ -1,0 +1,511 @@
+package dev.gfire.termvr.core.runtime
+
+import android.app.ApplicationExitInfo
+import android.content.ComponentCallbacks2
+import android.os.Build
+import dev.gfire.termvr.core.data.InMemorySecretStore
+import dev.gfire.termvr.core.model.ForwardProtocol
+import dev.gfire.termvr.core.model.GuestLinuxArch
+import dev.gfire.termvr.core.model.ListenHost
+import dev.gfire.termvr.core.model.MuxMode
+import dev.gfire.termvr.core.model.OutboundProxyConfig
+import dev.gfire.termvr.core.model.OutboundProxyMode
+import dev.gfire.termvr.core.model.PhantomProcessRemediation
+import dev.gfire.termvr.core.model.PortForwardRule
+import dev.gfire.termvr.core.model.ProxyEndpointSpec
+import dev.gfire.termvr.core.model.ProxyProtocol
+import dev.gfire.termvr.core.model.SandboxProfile
+import dev.gfire.termvr.core.model.SandboxRunState
+import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+
+class HostReadinessAndSupervisorTest {
+
+    @Test
+    fun `HostReadinessInspector detects phantom process kills, proc descendants, and disk usage`(
+        @TempDir tempDir: File,
+    ) {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        File(filesDir, "gvx-store/gvx/layers/l1.bin").apply {
+            parentFile?.mkdirs()
+            writeBytes(ByteArray(100))
+        }
+        File(filesDir, "gvx-store/gvx/volumes/v1.img").apply {
+            parentFile?.mkdirs()
+            writeBytes(ByteArray(250))
+        }
+        File(filesDir, "workspaces/ws1/main.txt").apply {
+            parentFile?.mkdirs()
+            writeBytes(ByteArray(50))
+        }
+        File(filesDir, "checkpoints/p1/slot-a/img.bin").apply {
+            parentFile?.mkdirs()
+            writeBytes(ByteArray(400))
+        }
+
+        // Synthetic /proc tree: root=100, children=101,102, grandchild=103 under 101, unrelated=200.
+        val procRoot = File(tempDir, "proc").apply { mkdirs() }
+        writeProcStat(procRoot, pid = 100, comm = "app_process64", ppid = 1)
+        writeProcStat(procRoot, pid = 101, comm = "librungv.so", ppid = 100)
+        writeProcStat(procRoot, pid = 102, comm = "systrap (helper)", ppid = 100)
+        writeProcStat(procRoot, pid = 103, comm = "sysmsg", ppid = 101)
+        writeProcStat(procRoot, pid = 200, comm = "other_app", ppid = 1)
+
+        // SDK 34 + REASON_EXCESSIVE_RESOURCE_USAGE maps to Android 14 developer toggle.
+        val sdk34Inspector = HostReadinessInspector(
+            filesDir = filesDir,
+            procRoot = procRoot,
+            exitReasonProvider = {
+                listOf(
+                    HistoricalExitRecord(
+                        reason = ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
+                        status = 0,
+                        importance = 100,
+                        description = "phantom process killer",
+                    ),
+                )
+            },
+            sdkIntProvider = { Build.VERSION_CODES.UPSIDE_DOWN_CAKE },
+            hostAbiProvider = { "arm64-v8a" },
+            pageSizeProvider = { 16384 },
+            totalHostRamMiBProvider = { 8192 },
+            freeDiskMiBProvider = { 4096 },
+            selfPidProvider = { 100 },
+        )
+        val report34 = sdk34Inspector.inspect()
+        assertTrue(report34.phantomKillerDetected)
+        assertEquals(PhantomProcessRemediation.ANDROID_14_DEV_TOGGLE, report34.remediationKind)
+        assertEquals(ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE, report34.lastKilledExitReasonCode)
+        assertEquals(3, report34.liveChildProcessCount)
+        assertEquals(16384, report34.kernelPageSizeBytes)
+        assertEquals(100L, report34.diskUsage.layersBytes)
+        assertEquals(250L, report34.diskUsage.volumesBytes)
+        assertEquals(50L, report34.diskUsage.workspacesBytes)
+        assertEquals(400L, report34.diskUsage.checkpointsBytes)
+
+        // SDK 32 + SIGKILL (9) maps to Android 12/13 ADB command.
+        val sdk32Inspector = HostReadinessInspector(
+            filesDir = filesDir,
+            procRoot = procRoot,
+            exitReasonProvider = {
+                listOf(HistoricalExitRecord(reason = ApplicationExitInfo.REASON_SIGNALED, status = 9, importance = 100))
+            },
+            sdkIntProvider = { Build.VERSION_CODES.S_V2 },
+            hostAbiProvider = { "arm64-v8a" },
+            pageSizeProvider = { 4096 },
+            totalHostRamMiBProvider = { 4096 },
+            freeDiskMiBProvider = { 1024 },
+            selfPidProvider = { 100 },
+        )
+        val report32 = sdk32Inspector.inspect()
+        assertTrue(report32.phantomKillerDetected)
+        assertEquals(PhantomProcessRemediation.ANDROID_12_13_ADB_COMMAND, report32.remediationKind)
+
+        // Normal clean exit triggers zero remediation.
+        val cleanInspector = HostReadinessInspector(
+            filesDir = filesDir,
+            procRoot = procRoot,
+            exitReasonProvider = {
+                listOf(HistoricalExitRecord(reason = ApplicationExitInfo.REASON_EXIT_SELF, status = 0, importance = 100))
+            },
+            sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+            hostAbiProvider = { "arm64-v8a" },
+            pageSizeProvider = { 16384 },
+            totalHostRamMiBProvider = { 8192 },
+            freeDiskMiBProvider = { 2048 },
+            selfPidProvider = { 100 },
+        )
+        val cleanReport = cleanInspector.inspect()
+        assertFalse(cleanReport.phantomKillerDetected)
+        assertEquals(PhantomProcessRemediation.NONE, cleanReport.remediationKind)
+        assertNull(cleanReport.lastKilledExitReasonCode)
+    }
+
+    @Test
+    fun `SandboxForegroundService formats CPU, PSS, and active policy badges accurately`() {
+        val text = SandboxForegroundService.formatStatusNotificationText(
+            activeCount = 2,
+            snapshots = listOf(
+                SandboxTelemetrySnapshot(
+                    profileId = "prof-a",
+                    cpuPercent = 12.6,
+                    pssBytes = 100L * 1024L * 1024L,
+                    activeProxyLabel = "SOCKS5 10.0.0.1:1080",
+                    exposesLan = true,
+                ),
+                SandboxTelemetrySnapshot(
+                    profileId = "prof-b",
+                    cpuPercent = 5.2,
+                    pssBytes = 50L * 1024L * 1024L,
+                ),
+            ),
+            wakeLockRemainingSeconds = 125L,
+        )
+        assertTrue(text.contains("2 active"))
+        assertTrue(text.contains("CPU 18%"))
+        assertTrue(text.contains("150 MiB PSS"))
+        assertTrue(text.contains("[Wake Lock 3m]"))
+        assertTrue(text.contains("[Proxy: SOCKS5 10.0.0.1:1080]"))
+        assertTrue(text.contains("[LAN 0.0.0.0]"))
+    }
+
+    @Test
+    fun `SandboxSupervisor enforces screen-off telemetry pause, idle auto-freeze, wake lock cap, LAN gate, and volume helper`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        var nowMs = 10_000_000L
+        var nowNs = 1_000_000_000L
+        val launchedCommands = CopyOnWriteArrayList<List<String>>()
+        val pool = Executors.newCachedThreadPool()
+        val activeHandles = CopyOnWriteArrayList<FakeMuxProcessHandle>()
+
+        val commandBuilder = GvxCommandBuilder(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            caExporter = { pem, dir ->
+                pem.parentFile?.mkdirs()
+                pem.writeText("PEM")
+                dir.mkdirs()
+            },
+        )
+        val proxyBridge = LoopbackProxyBridge(secretStore = InMemorySecretStore())
+        val dnsProxy = LoopbackDnsProxy(
+            networkDnsBackend = { _, _ -> ByteArray(0) },
+            proxyBridge = proxyBridge,
+        )
+        val checkpointController = CheckpointController(
+            filesDir = filesDir,
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+            controlTransport = { _, payloadLine, _, _ ->
+                val dirMarker = "\"dir\":\""
+                val start = payloadLine.indexOf(dirMarker) + dirMarker.length
+                val end = payloadLine.indexOf('"', start)
+                File(payloadLine.substring(start, end), "cp.img").writeText("saved")
+                activeHandles.lastOrNull()?.markCheckpointExited(0)
+                "ok"
+            },
+            clockMillis = { nowMs },
+        )
+        val readinessInspector = HostReadinessInspector(
+            filesDir = filesDir,
+            procRoot = File(tempDir, "empty-proc"),
+            sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+            hostAbiProvider = { "arm64-v8a" },
+            pageSizeProvider = { 16384 },
+            totalHostRamMiBProvider = { 8192 },
+            freeDiskMiBProvider = { 4096 },
+            selfPidProvider = { 100 },
+        )
+
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = commandBuilder,
+            proxyBridge = proxyBridge,
+            dnsProxy = dnsProxy,
+            checkpointController = checkpointController,
+            readinessInspector = readinessInspector,
+            processLauncher = { args, _ ->
+                launchedCommands.add(args)
+                val handle = FakeMuxProcessHandle(
+                    executor = pool,
+                    stderrText = "rungv: publishing 127.0.0.1:41234 -> 10.0.0.2:80/tcp\n",
+                )
+                activeHandles.add(handle)
+                handle
+            },
+            agentExtractor = { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("stub-agent")
+                }
+            },
+            guestArch = GuestLinuxArch.ARM64,
+            hostPssSampler = { 48L * 1024L * 1024L },
+            clockMillis = { nowMs },
+            nanoClock = { nowNs },
+        )
+
+        try {
+            val lanProfile = SandboxProfile(
+                id = "devbox",
+                displayName = "DevBox",
+                imageRef = "debian:bookworm-slim",
+                muxMode = MuxMode.STDIO_MUX,
+                autoCheckpointOnLowMemory = true,
+                portForwards = listOf(
+                    PortForwardRule(
+                        id = "http",
+                        protocol = ForwardProtocol.TCP,
+                        listenHost = ListenHost.LAN_ALL_V4,
+                        hostPortStart = 0,
+                        hostPortEnd = 0,
+                        guestPortStart = 80,
+                        guestPortEnd = 80,
+                    ),
+                ),
+            )
+
+            // 1. Start sandbox and verify telemetry polls honor screen interactivity strictly.
+            val started = supervisor.startOrResumeSandbox(lanProfile)
+            assertEquals(SandboxRunState.RUNNING, started)
+
+            // Screen OFF produces zero telemetry polls.
+            val offResult = supervisor.pollTelemetryOnce(isInteractive = false)
+            assertTrue(offResult.isEmpty())
+            assertEquals(0L, supervisor.completedTelemetryPolls)
+
+            // Screen ON polls guest mux + host PSS.
+            nowNs += 1_000_000_000L
+            val onResult = supervisor.pollTelemetryOnce(isInteractive = true)
+            assertEquals(1L, supervisor.completedTelemetryPolls)
+            assertEquals(48L * 1024L * 1024L, onResult["devbox"]?.pssBytes)
+
+            // Give stderr reader thread a brief moment to parse ephemeral port publishing.
+            Thread.sleep(50L)
+            assertEquals(41234, supervisor.publishedPortsByProfile.value["devbox"]?.firstOrNull()?.hostPort)
+
+            // 2. Wake lock capped at 30 minutes when POST_NOTIFICATIONS denied.
+            supervisor.setNotificationsPermissionGranted(false)
+            assertTrue(supervisor.notificationsDeniedBanner.value)
+            val grantedMinutes = supervisor.acquireWakeLock(requestedMinutes = 90)
+            assertEquals(SandboxSupervisor.MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES, grantedMinutes)
+
+            // TRIM_MEMORY_BACKGROUND skips while wake lock is active.
+            nowMs += 10 * 60_000L
+            assertTrue(supervisor.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND).isEmpty())
+
+            // Releasing wake lock enables >= 5 min idle auto-freeze.
+            supervisor.releaseWakeLock()
+            val frozen = supervisor.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
+            assertEquals(listOf("devbox"), frozen)
+            assertEquals(SandboxRunState.FROZEN, supervisor.runStates.value["devbox"])
+
+            // 3. Wi-Fi handle change requires LAN reconfirmation and downgrades 0.0.0.0 -> 127.0.0.1 on restore.
+            supervisor.onNetworkHandleChanged(1001L)
+            supervisor.onNetworkHandleChanged(2002L)
+            assertTrue("devbox" in supervisor.lanReconfirmationRequired.value)
+
+            launchedCommands.clear()
+            supervisor.startOrResumeSandbox(lanProfile, reconfirmLan = false)
+            val restoreArgs = launchedCommands.last()
+            assertEquals("restore", restoreArgs.first())
+            assertTrue(restoreArgs.any { it.startsWith("127.0.0.1:") })
+            assertFalse(restoreArgs.any { it.startsWith("0.0.0.0:") })
+
+            // Reconfirming clears the gate.
+            supervisor.stopSandbox("devbox")
+            launchedCommands.clear()
+            supervisor.startOrResumeSandbox(lanProfile, reconfirmLan = true)
+            assertFalse("devbox" in supervisor.lanReconfirmationRequired.value)
+            assertTrue(launchedCommands.last().any { it.startsWith("0.0.0.0:") })
+
+            // 4. Stopped volume helper launches with named volume mounted at /mnt/volume.
+            supervisor.stopSandbox("devbox")
+            launchedCommands.clear()
+            val helperMount = supervisor.withStoppedVolumeHelper(
+                volumeName = "proj-vol",
+                helperImageRef = "busybox:latest",
+                readOnly = true,
+            ) { _, mountPath ->
+                mountPath
+            }
+            assertEquals("/mnt/volume", helperMount)
+            assertTrue(launchedCommands.last().contains("proj-vol:/mnt/volume:ro"))
+
+            // 5. Superseded checkpoint notice + cold boot fallback.
+            checkpointController.markSuperseded("devbox", "Upgraded gvx")
+            launchedCommands.clear()
+            supervisor.startOrResumeSandbox(lanProfile)
+            assertEquals("run", launchedCommands.last().first())
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `SandboxSupervisor surfaces cold-boot notice when checkpoint metadata is from older gvxVersion`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val pool = Executors.newCachedThreadPool()
+        val launchedCommands = CopyOnWriteArrayList<List<String>>()
+
+        // Write a checkpoint using an older gvxVersion.
+        val oldCp = CheckpointController(
+            filesDir = filesDir,
+            gvxVersion = "v0.14.0",
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+            controlTransport = { _, payloadLine, _, _ ->
+                val dirMarker = "\"dir\":\""
+                val start = payloadLine.indexOf(dirMarker) + dirMarker.length
+                val end = payloadLine.indexOf('"', start)
+                File(payloadLine.substring(start, end), "cp.img").writeText("old")
+                "ok"
+            },
+        )
+        val ctlSock = File(filesDir, "ctl/oldprof.sock").apply { parentFile?.mkdirs() }
+        oldCp.checkpoint("oldprof", ctlSock, currentPssBytes = 8L * 1024L * 1024L, awaitProcessExit = { 0 })
+
+        val newCp = CheckpointController(
+            filesDir = filesDir,
+            gvxVersion = "v0.15.10002026110900",
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+        )
+        val commandBuilder = GvxCommandBuilder(filesDir, cacheDir, caExporter = { pem, dir ->
+            pem.parentFile?.mkdirs()
+            pem.writeText("PEM")
+            dir.mkdirs()
+        })
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = commandBuilder,
+            proxyBridge = LoopbackProxyBridge(secretStore = InMemorySecretStore()),
+            dnsProxy = LoopbackDnsProxy(networkDnsBackend = { _, _ -> ByteArray(0) }),
+            checkpointController = newCp,
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                totalHostRamMiBProvider = { 8192 },
+                freeDiskMiBProvider = { 4096 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = { args, _ ->
+                launchedCommands.add(args)
+                FakeMuxProcessHandle(pool)
+            },
+            agentExtractor = { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("stub")
+                }
+            },
+        )
+        try {
+            val profile = SandboxProfile(id = "oldprof", displayName = "OldProf", imageRef = "alpine:3.21")
+            val state = supervisor.startOrResumeSandbox(profile)
+            assertEquals(SandboxRunState.RUNNING, state)
+            assertEquals("run", launchedCommands.last().first())
+            assertTrue(supervisor.activeServiceNotice.value.orEmpty().contains("superseded"))
+            assertTrue(newCp.readMetadata("oldprof")?.superseded == true)
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
+    private fun writeProcStat(procRoot: File, pid: Int, comm: String, ppid: Int) {
+        val pidDir = File(procRoot, pid.toString()).apply { mkdirs() }
+        File(pidDir, "stat").writeText("$pid ($comm) S $ppid 1 1 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0")
+    }
+
+    private class FakeMuxProcessHandle(
+        executor: java.util.concurrent.ExecutorService,
+        stderrText: String = "",
+    ) : GvxProcessHandle {
+        private val agentToHostOut = PipedOutputStream()
+        override val stdoutStream: InputStream = PipedInputStream(agentToHostOut, 65536)
+
+        private val hostToAgentIn = PipedInputStream(65536)
+        override val stdinStream: OutputStream = PipedOutputStream(hostToAgentIn)
+
+        override val stderrStream: InputStream = ByteArrayInputStream(stderrText.toByteArray(StandardCharsets.UTF_8))
+        override val pid: Long = 4242L
+
+        private val alive = AtomicBoolean(true)
+        private val exitCode = java.util.concurrent.atomic.AtomicInteger(0)
+        private val exited = java.util.concurrent.CountDownLatch(1)
+
+        override val isAlive: Boolean get() = alive.get()
+
+        init {
+            executor.execute {
+                try {
+                    while (true) {
+                        val frame = MuxCodec.readFrame(hostToAgentIn) ?: break
+                        when (frame.type) {
+                            MuxFrameType.MUX_HELLO -> {
+                                val ack = MuxCodec.json.encodeToString(
+                                    MuxHelloPayload.serializer(),
+                                    MuxHelloPayload(protocol = 1, agentVersion = "test", initDaemon = false),
+                                )
+                                synchronized(agentToHostOut) {
+                                    MuxCodec.writeFrame(
+                                        agentToHostOut,
+                                        MuxFrame(MuxFrameType.MUX_HELLO, 0L, ack.toByteArray(StandardCharsets.UTF_8)),
+                                    )
+                                }
+                            }
+
+                            MuxFrameType.MUX_RESYNC -> {
+                                synchronized(agentToHostOut) {
+                                    MuxCodec.writeFrame(
+                                        agentToHostOut,
+                                        MuxFrame(MuxFrameType.MUX_RESYNC_ACK, 0L, """{"openStreams":[]}""".toByteArray(StandardCharsets.UTF_8)),
+                                    )
+                                }
+                            }
+
+                            MuxFrameType.TELEMETRY_REQ -> {
+                                val json = """{"cpuNanos":150000000,"rssBytes":33554432,"procCount":2,"listenPorts":[8080]}"""
+                                synchronized(agentToHostOut) {
+                                    MuxCodec.writeFrame(
+                                        agentToHostOut,
+                                        MuxFrame(MuxFrameType.TELEMETRY_RESP, 0L, json.toByteArray(StandardCharsets.UTF_8)),
+                                    )
+                                }
+                            }
+
+                            else -> Unit
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        fun markCheckpointExited(code: Int) {
+            exitCode.set(code)
+            alive.set(false)
+            exited.countDown()
+        }
+
+        override fun waitForExit(): Int {
+            exited.await()
+            return exitCode.get()
+        }
+
+        override fun destroyGracefully() {
+            alive.set(false)
+            exited.countDown()
+            runCatching { agentToHostOut.close() }
+            runCatching { hostToAgentIn.close() }
+        }
+    }
+}
