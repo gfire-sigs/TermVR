@@ -46,13 +46,13 @@
     },
     "termvr_fonts": {
       "repository": "https://github.com/gfire-sigs/TermVR-Fonts.git",
-      "tag": "v1.0.1",
-      "commit": "ac643073a080adc7b8bc2df9d859a19f8cbfc0cd",
+      "tag": "v1.1.0",
+      "commit": "e44630df622f2fcb50a066bf43ac00ae9c3b8ebd",
       "spdx_license": "OFL-1.1",
       "artifact": "TermVRMonoNF-Regular.ttf",
-      "release_url": "https://github.com/gfire-sigs/TermVR-Fonts/releases/download/v1.0.1/TermVRMonoNF-TTF.zip",
-      "release_sha256": "83f8950c304133549fc1998fe053a0c1e444984bf065dbab5f2981e17a7eccc7",
-      "ttf_sha256": "4a8afd00e6b95f1429b08800012cedb5b0c7599e4dbb95c7eafdcc7642320d4a"
+      "release_url": "https://github.com/gfire-sigs/TermVR-Fonts/releases/download/v1.1.0/TermVRMonoNF-TTF.zip",
+      "release_sha256": "dffd73dd63b0d7d9c598c819b61808627f04236f38134395b37c3ef1eab870a8",
+      "ttf_sha256": "47935f124bb053519fa34c5cf25d623c9e6e4b1a0869ac9fc76ea313d4b6a1fa"
     }
   }
 }

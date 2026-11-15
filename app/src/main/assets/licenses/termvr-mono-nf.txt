@@ -1,6 +1,6 @@
-TermVR Mono NF (v1.0.1)
+TermVR Mono NF (v1.1.0)
 Repository: https://github.com/gfire-sigs/TermVR-Fonts
-Commit: ac643073a080adc7b8bc2df9d859a19f8cbfc0cd
+Commit: e44630df622f2fcb50a066bf43ac00ae9c3b8ebd
 
 Copyright (c) 2026 gfire-sigs (https://github.com/gfire-sigs/TermVR-Fonts),
 with Reserved Font Name "TermVR".
