@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "id": "k3s-single-node",
+  "title": "Kubernetes Single-Node (k3s)",
+  "summary": "Runs a single-node k3s Kubernetes control plane and kubelet on an ext4lite volume with optional Calico VXLAN networking.",
+  "imageRef": "rancher/k3s:v1.32.2-k3s1",
+  "minHostRamMiB": 6144,
+  "defaultProfileRamMiB": 2560,
+  "minFreeDiskMiB": 3072,
+  "volumeTemplateSuffix": "k3s",
+  "volumeGuestMountPath": "/var/lib/rancher/k3s",
+  "initDaemonArgv": [
+    "/bin/k3s",
+    "server",
+    "--snapshotter=native",
+    "--flannel-backend=host-gw",
+    "--write-kubeconfig-mode=0644",
+    "--tls-san=127.0.0.1",
+    "--kubelet-arg=cgroups-per-qos=false",
+    "--kubelet-arg=enforce-node-allocatable=",
+    "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<3%,imagefs.available<3%"
+  ],
+  "readinessTcpPort": 6443,
+  "optionalAssetManifest": "recipes/calico-vxlan.yaml",
+  "defaultAutoCheckpoint": false,
+  "guestPrivileged": true,
+  "makeRootRshared": true,
+  "envVars": {},
+  "defaultPortForwards": [
+    {
+      "id": "k3s-api",
+      "protocol": "TCP",
+      "listenHost": "LOOPBACK_V4",
+      "hostPortStart": 6443,
+      "hostPortEnd": 6443,
+      "guestPortStart": 6443,
+      "guestPortEnd": 6443,
+      "enabled": true
+    }
+  ],
+  "optionalVariantMinProfileRamMiB": 4096,
+  "optionalVariantInitDaemonArgv": [
+    "/bin/k3s",
+    "server",
+    "--snapshotter=native",
+    "--flannel-backend=none",
+    "--disable-network-policy",
+    "--write-kubeconfig-mode=0644",
+    "--tls-san=127.0.0.1",
+    "--kubelet-arg=cgroups-per-qos=false",
+    "--kubelet-arg=enforce-node-allocatable=",
+    "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<3%,imagefs.available<3%"
+  ]
+}

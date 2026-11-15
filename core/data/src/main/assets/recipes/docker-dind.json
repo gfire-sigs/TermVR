@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "docker-dind",
+  "title": "Docker Engine (DinD)",
+  "summary": "Runs an isolated rootless Docker daemon inside gvx using overlay2 on a dedicated ext4lite volume.",
+  "imageRef": "docker:28-dind",
+  "minHostRamMiB": 4096,
+  "defaultProfileRamMiB": 1536,
+  "minFreeDiskMiB": 2048,
+  "volumeTemplateSuffix": "docker",
+  "volumeGuestMountPath": "/var/lib/docker",
+  "initDaemonArgv": [
+    "dockerd-entrypoint.sh",
+    "--storage-driver=overlay2",
+    "--iptables=true",
+    "--host=unix:///var/run/docker.sock",
+    "--host=tcp://127.0.0.1:2375"
+  ],
+  "readinessTcpPort": 2375,
+  "optionalAssetManifest": null,
+  "defaultAutoCheckpoint": false,
+  "guestPrivileged": true,
+  "makeRootRshared": false,
+  "envVars": {
+    "DOCKER_TLS_CERTDIR": ""
+  },
+  "defaultPortForwards": [
+    {
+      "id": "docker-tcp",
+      "protocol": "TCP",
+      "listenHost": "LOOPBACK_V4",
+      "hostPortStart": 2375,
+      "hostPortEnd": 2375,
+      "guestPortStart": 2375,
+      "guestPortEnd": 2375,
+      "enabled": true
+    }
+  ]
+}
