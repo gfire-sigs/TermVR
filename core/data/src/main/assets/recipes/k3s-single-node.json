@@ -5,7 +5,7 @@
   "summary": "Runs a single-node k3s Kubernetes control plane and kubelet on an ext4lite volume with optional Calico VXLAN networking.",
   "imageRef": "rancher/k3s:v1.32.2-k3s1",
   "minHostRamMiB": 6144,
-  "defaultProfileRamMiB": 2560,
+  "defaultProfileRamMiB": 0,
   "minFreeDiskMiB": 3072,
   "volumeTemplateSuffix": "k3s",
   "volumeGuestMountPath": "/var/lib/rancher/k3s",

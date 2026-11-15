@@ -195,4 +195,37 @@ class ProfileRepositoryTest {
             store.putSecret("../bad", "x".toCharArray())
         }
     }
+
+    @Test
+    fun `INV-D5 AppPersistenceSerializer ignores unknown keys and migrates legacy jetbrains-mono fontId`() = runTest {
+        val legacyJson = """
+            {
+              "schemaVersion": 1,
+              "futureExperimentalFlag": true,
+              "fontConfig": {
+                "schemaVersion": 1,
+                "familyId": "jetbrains-mono",
+                "customFontPath": null,
+                "sizeSp": 13.0,
+                "cellHeightMultiplier": 1.15,
+                "removedField": 42
+              }
+            }
+        """.trimIndent()
+        val migrated = AppPersistenceSerializer.readFrom(ByteArrayInputStream(legacyJson.toByteArray()))
+        assertEquals(FontConfig.DEFAULT_FAMILY_ID, migrated.fontConfig.familyId)
+
+        val customJson = """
+            {
+              "schemaVersion": 1,
+              "fontConfig": {
+                "schemaVersion": 1,
+                "familyId": "jetbrains-mono",
+                "customFontPath": "/data/user/0/dev.gfire.termvr/files/fonts/custom.ttf"
+              }
+            }
+        """.trimIndent()
+        val preserved = AppPersistenceSerializer.readFrom(ByteArrayInputStream(customJson.toByteArray()))
+        assertEquals("jetbrains-mono", preserved.fontConfig.familyId)
+    }
 }

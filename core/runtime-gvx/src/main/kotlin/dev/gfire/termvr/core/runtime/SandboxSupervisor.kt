@@ -230,6 +230,7 @@ class SandboxSupervisor(
     private val profileLocks = ConcurrentHashMap<String, Mutex>()
     private val sessions = ConcurrentHashMap<String, ManagedSandbox>()
     private val cachedProfiles = ConcurrentHashMap<String, SandboxProfile>()
+    private val bridgeLock = Any()
     private val helperSeq = AtomicInteger(1)
     private val telemetryPollCount = AtomicLong(0L)
     private val closed = AtomicBoolean(false)
@@ -315,7 +316,7 @@ class SandboxSupervisor(
             cachedProfiles[profile.id] = profile
             ensureBridgesRunning()
             proxyBridge.updatePolicy(profile.network.outboundProxy, profile.network.isolateLanEgress)
-            commandBuilder.ensureHostDirectories(profile, clearScratchTmp = true)
+            commandBuilder.ensureHostDirectories(profile, clearScratchTmp = sessions.isEmpty())
             if (profile.muxMode == MuxMode.STDIO_MUX) {
                 agentExtractor.ensureExtracted(guestArch)
             }
@@ -792,11 +793,13 @@ class SandboxSupervisor(
     }
 
     private fun ensureBridgesRunning() {
-        if (proxyBridge.boundPort <= 0) {
-            proxyBridge.start(0)
-        }
-        if (dnsProxy.boundPort <= 0) {
-            dnsProxy.start(0)
+        synchronized(bridgeLock) {
+            if (proxyBridge.boundPort <= 0) {
+                proxyBridge.start(0)
+            }
+            if (dnsProxy.boundPort <= 0) {
+                dnsProxy.start(0)
+            }
         }
     }
 

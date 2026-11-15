@@ -28,6 +28,8 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -160,11 +162,20 @@ class HostReadinessAndSupervisorTest {
             wakeLockRemainingSeconds = 125L,
         )
         assertTrue(text.contains("2 active"))
+        assertTrue(text.contains("2 active containers"))
         assertTrue(text.contains("CPU 18%"))
         assertTrue(text.contains("150 MiB PSS"))
         assertTrue(text.contains("[Wake Lock 3m]"))
         assertTrue(text.contains("[Proxy: SOCKS5 10.0.0.1:1080]"))
         assertTrue(text.contains("[LAN 0.0.0.0]"))
+        assertEquals(
+            "2 containers running",
+            SandboxForegroundService.formatActiveNotificationTitle(2, listOf("prof-a", "prof-b")),
+        )
+        assertEquals(
+            "TermVR (prof-a)",
+            SandboxForegroundService.formatActiveNotificationTitle(1, listOf("prof-a")),
+        )
     }
 
     @Test
@@ -495,6 +506,103 @@ class HostReadinessAndSupervisorTest {
             assertEquals(listOf(slaveFile), capturedSlaves)
             supervisor.resizeRawPty("rawbox", rows = 45, cols = 132)
             assertEquals(listOf(Triple(45, 132, 4242L)), resizedCalls)
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `SandboxSupervisor supports concurrent multi-container start, freeze, telemetry, and stop without clobbering`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val pool = Executors.newCachedThreadPool()
+        val handlesById = java.util.concurrent.ConcurrentHashMap<String, FakeMuxProcessHandle>()
+        var nowNs = 1_000_000_000L
+
+        val commandBuilder = GvxCommandBuilder(filesDir, cacheDir, caExporter = { pem, dir ->
+            pem.parentFile?.mkdirs()
+            pem.writeText("PEM")
+            dir.mkdirs()
+        })
+        val checkpointController = CheckpointController(
+            filesDir = filesDir,
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+            controlTransport = { controlSockPath, payloadLine, _, _ ->
+                val dirMarker = "\"dir\":\""
+                val start = payloadLine.indexOf(dirMarker) + dirMarker.length
+                val end = payloadLine.indexOf('"', start)
+                File(payloadLine.substring(start, end), "cp.img").writeText("saved")
+                val id = controlSockPath.nameWithoutExtension
+                handlesById[id]?.markCheckpointExited(0)
+                "ok"
+            },
+        )
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = commandBuilder,
+            proxyBridge = LoopbackProxyBridge(secretStore = InMemorySecretStore()),
+            dnsProxy = LoopbackDnsProxy(networkDnsBackend = { _, _ -> ByteArray(0) }),
+            checkpointController = checkpointController,
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                totalHostRamMiBProvider = { 8192 },
+                freeDiskMiBProvider = { 4096 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = { args, _, _ ->
+                val ctlIdx = args.indexOf("-control-socket")
+                val profileId = File(args[ctlIdx + 1]).nameWithoutExtension
+                val handle = FakeMuxProcessHandle(pool)
+                handlesById[profileId] = handle
+                handle
+            },
+            agentExtractor = { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("stub")
+                }
+            },
+            nanoClock = { nowNs },
+        )
+
+        try {
+            val profileA = SandboxProfile(id = "debian-a", displayName = "Debian A", imageRef = "debian:trixie-slim")
+            val profileB = SandboxProfile(id = "ubuntu-b", displayName = "Ubuntu B", imageRef = "ubuntu:24.04")
+
+            val results = awaitAll(
+                async { supervisor.startOrResumeSandbox(profileA) },
+                async { supervisor.startOrResumeSandbox(profileB) },
+            )
+            assertEquals(listOf(SandboxRunState.RUNNING, SandboxRunState.RUNNING), results)
+            assertEquals(SandboxRunState.RUNNING, supervisor.runStates.value["debian-a"])
+            assertEquals(SandboxRunState.RUNNING, supervisor.runStates.value["ubuntu-b"])
+
+            supervisor.acquireWakeLock(15)
+            assertNotNull(supervisor.wakeLockRemainingSeconds.value)
+
+            nowNs += 1_000_000_000L
+            val telemetry = supervisor.pollTelemetryOnce(isInteractive = true)
+            assertEquals(setOf("debian-a", "ubuntu-b"), telemetry.keys)
+
+            // Freeze profileA; profileB and wake lock must stay active.
+            assertEquals(SandboxRunState.FROZEN, supervisor.freezeSandbox("debian-a"))
+            assertEquals(SandboxRunState.FROZEN, supervisor.runStates.value["debian-a"])
+            assertEquals(SandboxRunState.RUNNING, supervisor.runStates.value["ubuntu-b"])
+            assertNotNull(supervisor.wakeLockRemainingSeconds.value)
+
+            // Stop profileB; wake lock releases once no containers are running.
+            supervisor.stopSandbox("ubuntu-b")
+            assertEquals(SandboxRunState.STOPPED, supervisor.runStates.value["ubuntu-b"])
+            assertEquals(SandboxRunState.FROZEN, supervisor.runStates.value["debian-a"])
+            assertNull(supervisor.wakeLockRemainingSeconds.value)
         } finally {
             supervisor.close()
             pool.shutdownNow()
