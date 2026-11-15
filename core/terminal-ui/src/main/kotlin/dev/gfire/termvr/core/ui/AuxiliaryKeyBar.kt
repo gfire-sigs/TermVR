@@ -182,7 +182,7 @@ fun AuxiliaryKeyBar(
                     }
                 }
             }
-            .padding(horizontal = 4.dp, vertical = 3.dp),
+            .padding(horizontal = 4.dp, vertical = 4.dp),
     ) {
         val isWide = maxWidth >= AuxiliaryKeyBarMath.WIDE_BREAKPOINT_DP.dp
         val rows: List<List<KeySlotSpec>> = if (isWide) {
@@ -197,7 +197,7 @@ fun AuxiliaryKeyBar(
         ) {
             for (rowSlots in rows) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(AuxiliaryKeyBarMath.ROW_HEIGHT_DP.dp),
@@ -328,11 +328,12 @@ private fun AuxiliaryKeySlot(
         ModifierLatchState.HELD -> MaterialTheme.colorScheme.onPrimaryContainer
         ModifierLatchState.RELEASED -> MaterialTheme.colorScheme.onSurface
     }
-    val elevation = if (modifierState == ModifierLatchState.HELD) 4.dp else 0.dp
-    val border = if (modifierState == ModifierLatchState.HELD) {
-        BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-    } else {
-        null
+    val elevation = if (modifierState == ModifierLatchState.HELD) 4.dp else 1.dp
+    val border = when (modifierState) {
+        ModifierLatchState.HELD -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        ModifierLatchState.LOCKED -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+        ModifierLatchState.ONE_SHOT -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+        ModifierLatchState.RELEASED -> BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
     }
 
     val pointerModifier = if (slot is KeySlotSpec.Modifier) {
@@ -355,7 +356,7 @@ private fun AuxiliaryKeySlot(
     }
 
     Surface(
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(5.dp),
         color = containerColor,
         contentColor = contentColor,
         shadowElevation = elevation,
@@ -369,12 +370,15 @@ private fun AuxiliaryKeySlot(
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.fillMaxHeight(),
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(horizontal = 3.dp, vertical = 1.dp),
         ) {
             Text(
                 text = label,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
+                letterSpacing = 0.2.sp,
                 fontWeight = if (modifierState != ModifierLatchState.RELEASED) {
                     FontWeight.Bold
                 } else {
@@ -389,23 +393,34 @@ private fun AuxiliaryKeySlot(
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .fillMaxWidth(0.65f)
+                        .fillMaxWidth(0.58f)
                         .padding(bottom = 2.dp)
-                        .height(2.dp)
+                        .height(2.5.dp)
                         .background(
                             color = MaterialTheme.colorScheme.primary,
-                            shape = RoundedCornerShape(1.dp),
+                            shape = RoundedCornerShape(1.5.dp),
                         ),
                 )
             } else if (modifierState == ModifierLatchState.LOCKED) {
                 Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth(0.75f)
+                        .padding(bottom = 2.dp)
+                        .height(2.5.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(1.5.dp),
+                        ),
+                )
+                Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(top = 2.dp, end = 3.dp)
+                        .padding(top = 1.dp, end = 2.dp)
                         .size(10.dp)
                         .background(
-                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.22f),
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.25f),
                             shape = RoundedCornerShape(3.dp),
                         ),
                 ) {

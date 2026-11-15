@@ -1354,13 +1354,21 @@ private class TermVrGlThread(
         glyphFrag = readAssetText("shaders/glyph_pass.frag"),
     )
 
-    private fun loadBundledFontsFromAssets(): BundledFontPack = BundledFontPack(
-        jetbrainsRegular = readAssetBytes("fonts/JetBrainsMono-Regular.ttf"),
-        jetbrainsBold = readAssetBytes("fonts/JetBrainsMono-Bold.ttf"),
-        jetbrainsItalic = readAssetBytes("fonts/JetBrainsMono-Italic.ttf"),
-        jetbrainsBoldItalic = readAssetBytes("fonts/JetBrainsMono-BoldItalic.ttf"),
-        nerdSymbols = readAssetBytes("fonts/SymbolsNerdFontMono-Regular.ttf"),
-    )
+    private fun loadBundledFontsFromAssets(): BundledFontPack {
+        val termvrRegular = readAssetBytes("fonts/TermVRMonoNF-Regular.ttf")
+        val primaryRegular = if (termvrRegular.isNotEmpty()) {
+            termvrRegular
+        } else {
+            readAssetBytes("fonts/JetBrainsMono-Regular.ttf")
+        }
+        return BundledFontPack(
+            jetbrainsRegular = primaryRegular,
+            jetbrainsBold = readAssetBytes("fonts/JetBrainsMono-Bold.ttf"),
+            jetbrainsItalic = readAssetBytes("fonts/JetBrainsMono-Italic.ttf"),
+            jetbrainsBoldItalic = readAssetBytes("fonts/JetBrainsMono-BoldItalic.ttf"),
+            nerdSymbols = readAssetBytes("fonts/SymbolsNerdFontMono-Regular.ttf"),
+        )
+    }
 
     private fun readAssetText(path: String): String =
         runCatching { context.assets.open(path).bufferedReader(StandardCharsets.UTF_8).use { it.readText() } }

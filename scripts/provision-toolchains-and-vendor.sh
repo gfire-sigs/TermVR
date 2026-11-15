@@ -18,24 +18,23 @@ GVX_DIR=""
 GHOSTTY_DIR=""
 FREETYPE_DIR=""
 HARFBUZZ_DIR=""
-JETBRAINS_MONO_DIR=""
-NERD_FONTS_DIR=""
+TERMVR_FONTS_DIR=""
 
 usage() {
   cat <<'EOF'
 Usage: provision-toolchains-and-vendor.sh [options]
 
 Verify upstream Git commits against scripts/source-lock.json, install SHA-256
-verified Go and Zig toolchains under .toolchains/, vendor gvx Go modules, and
-populate the Ghostty Zig package cache for offline builds.
+verified Go and Zig toolchains under .toolchains/, download TermVR Mono NF,
+vendor gvx Go modules, and populate the Ghostty Zig package cache for offline
+builds.
 
 Options:
   --gvx <dir>                Path to gvx checkout
   --ghostty <dir>            Path to ghostty checkout
   --freetype <dir>           Path to freetype checkout
   --harfbuzz <dir>           Path to harfbuzz checkout
-  --jetbrains-mono <dir>     Path to JetBrainsMono checkout
-  --nerd-fonts <dir>         Path to nerd-fonts checkout
+  --termvr-fonts <dir>       Path to TermVR-Fonts checkout
   --toolchains-dir <dir>     Cache directory (default: <repo>/.toolchains)
   --allow-system-toolchains  Permit matching system go and zig binaries
   --toolchains-only          Provision Go and Zig without source vendoring
@@ -403,23 +402,64 @@ clone_or_checkout_locked_source() {
   mkdir -p "${target_dir}"
   git -C "${target_dir}" init -q
   git -C "${target_dir}" remote add origin "${repo_url}"
-
-  if [ "${source_key}" = "nerd_fonts_symbols" ]; then
-    if git -C "${target_dir}" sparse-checkout init --no-cone >/dev/null 2>&1; then
-      git -C "${target_dir}" sparse-checkout set \
-        "/LICENSE" \
-        "/README.md" \
-        "/patched-fonts/NerdFontsSymbolsOnly/"
-      git -C "${target_dir}" fetch --depth 1 --filter=blob:none origin "${expected_commit}"
-    else
-      git -C "${target_dir}" fetch --depth 1 origin "${expected_commit}"
-    fi
-  else
-    git -C "${target_dir}" fetch --depth 1 origin "${expected_commit}"
-  fi
+  git -C "${target_dir}" fetch --depth 1 origin "${expected_commit}"
 
   git -C "${target_dir}" checkout -q --force --detach FETCH_HEAD
   verify_git_head "${source_key}" "${target_dir}"
+}
+
+provision_termvr_fonts() {
+  local artifact
+  local release_url
+  local release_sha256
+  local ttf_sha256
+  artifact="$(json_query ".sources.termvr_fonts.artifact")"
+  release_url="$(json_query ".sources.termvr_fonts.release_url")"
+  release_sha256="$(json_query ".sources.termvr_fonts.release_sha256")"
+  ttf_sha256="$(json_query ".sources.termvr_fonts.ttf_sha256")"
+
+  local fonts_dir="${TOOLCHAINS_DIR}/fonts"
+  local ttf_path="${fonts_dir}/${artifact}"
+  local license_path="${fonts_dir}/LICENSE"
+  local notice_path="${fonts_dir}/NOTICE.md"
+  mkdir -p "${fonts_dir}"
+
+  if [ -f "${ttf_path}" ] && [ -f "${license_path}" ] && [ -f "${notice_path}" ]; then
+    local cached_ttf_hash
+    cached_ttf_hash="$(compute_sha256 "${ttf_path}")"
+    if [ "${cached_ttf_hash}" = "$(printf '%s' "${ttf_sha256}" | tr '[:upper:]' '[:lower:]')" ]; then
+      log_info "Reusing verified ${artifact} at ${ttf_path}"
+      return 0
+    fi
+  fi
+
+  local zip_path="${TOOLCHAINS_DIR}/downloads/$(basename "${release_url}")"
+  download_verified_archive "${release_url}" "${zip_path}" "${release_sha256}"
+
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -o -j -q "${zip_path}" "${artifact}" "LICENSE" "NOTICE.md" -d "${fonts_dir}"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "${zip_path}" "${fonts_dir}" "${artifact}" <<'PY'
+import os
+import sys
+import zipfile
+
+zip_path, out_dir, artifact = sys.argv[1], sys.argv[2], sys.argv[3]
+targets = {artifact, "LICENSE", "NOTICE.md"}
+with zipfile.ZipFile(zip_path, "r") as zf:
+    for name in targets:
+        with zf.open(name) as src, open(os.path.join(out_dir, name), "wb") as dst:
+            dst.write(src.read())
+PY
+  else
+    die "Either unzip or python3 is required to extract ${zip_path}"
+  fi
+
+  [ -f "${ttf_path}" ] || die "Missing extracted ${artifact} in ${fonts_dir}"
+  [ -f "${license_path}" ] || die "Missing extracted LICENSE in ${fonts_dir}"
+  [ -f "${notice_path}" ] || die "Missing extracted NOTICE.md in ${fonts_dir}"
+  verify_sha256 "${ttf_path}" "${ttf_sha256}"
+  log_info "Staged verified ${artifact}, LICENSE, and NOTICE.md in ${fonts_dir}"
 }
 
 ensure_source_dir() {
@@ -471,15 +511,9 @@ while [ "$#" -gt 0 ]; do
       ANY_SOURCE_FLAG=1
       shift 2
       ;;
-    --jetbrains-mono|--jetbrains_mono)
+    --termvr-fonts|--termvr_fonts)
       [ "$#" -ge 2 ] || die "$1 requires a directory argument"
-      JETBRAINS_MONO_DIR="$(resolve_abs_path "${CALLER_PWD}" "$2")"
-      ANY_SOURCE_FLAG=1
-      shift 2
-      ;;
-    --nerd-fonts|--nerd-fonts-symbols|--nerd_fonts_symbols)
-      [ "$#" -ge 2 ] || die "$1 requires a directory argument"
-      NERD_FONTS_DIR="$(resolve_abs_path "${CALLER_PWD}" "$2")"
+      TERMVR_FONTS_DIR="$(resolve_abs_path "${CALLER_PWD}" "$2")"
       ANY_SOURCE_FLAG=1
       shift 2
       ;;
@@ -535,8 +569,8 @@ if [ "${TOOLCHAINS_ONLY}" = "0" ]; then
   GHOSTTY_DIR="$(ensure_source_dir "ghostty" "${GHOSTTY_DIR}" "1")"
   FREETYPE_DIR="$(ensure_source_dir "freetype" "${FREETYPE_DIR}" "${CLONE_OPTIONAL}")"
   HARFBUZZ_DIR="$(ensure_source_dir "harfbuzz" "${HARFBUZZ_DIR}" "${CLONE_OPTIONAL}")"
-  JETBRAINS_MONO_DIR="$(ensure_source_dir "jetbrains_mono" "${JETBRAINS_MONO_DIR}" "${CLONE_OPTIONAL}")"
-  NERD_FONTS_DIR="$(ensure_source_dir "nerd_fonts_symbols" "${NERD_FONTS_DIR}" "${CLONE_OPTIONAL}")"
+  TERMVR_FONTS_DIR="$(ensure_source_dir "termvr_fonts" "${TERMVR_FONTS_DIR}" "${CLONE_OPTIONAL}")"
+  provision_termvr_fonts
 
   export PATH="$(dirname "${GO_BIN}"):$(dirname "${ZIG_BIN}"):${PATH}"
   export GOTOOLCHAIN=local

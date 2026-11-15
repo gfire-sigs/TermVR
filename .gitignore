@@ -36,6 +36,7 @@ google-services.json
 
 # Generated native prebuild artifacts (never commit prebuilt binaries; F-Droid builds from source)
 .toolchains/
+/.native-deps/
 core/runtime-gvx/src/main/jniLibs/
 app/src/main/assets/agent/
 core/terminal-ui/src/main/assets/fonts/*.ttf

@@ -44,19 +44,15 @@
       "spdx_license": "MIT",
       "artifact": "libharfbuzz.a"
     },
-    "jetbrains_mono": {
-      "repository": "https://github.com/JetBrains/JetBrainsMono.git",
-      "tag": "v2.304",
-      "commit": "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
+    "termvr_fonts": {
+      "repository": "https://github.com/gfire-sigs/TermVR-Fonts.git",
+      "tag": "v1.0.1",
+      "commit": "ac643073a080adc7b8bc2df9d859a19f8cbfc0cd",
       "spdx_license": "OFL-1.1",
-      "artifact": "JetBrainsMono-*.ttf"
-    },
-    "nerd_fonts_symbols": {
-      "repository": "https://github.com/ryanoasis/nerd-fonts.git",
-      "tag": "v3.5.1",
-      "commit": "b894ea7803af6aade63d60a4381e006098ec9c4d",
-      "spdx_license": "MIT",
-      "artifact": "SymbolsNerdFontMono-Regular.ttf"
+      "artifact": "TermVRMonoNF-Regular.ttf",
+      "release_url": "https://github.com/gfire-sigs/TermVR-Fonts/releases/download/v1.0.1/TermVRMonoNF-TTF.zip",
+      "release_sha256": "83f8950c304133549fc1998fe053a0c1e444984bf065dbab5f2981e17a7eccc7",
+      "ttf_sha256": "4a8afd00e6b95f1429b08800012cedb5b0c7599e4dbb95c7eafdcc7642320d4a"
     }
   }
 }
