@@ -280,7 +280,6 @@ class GvxCommandBuilder(
 
         val args = ArrayList<String>(48)
         args.add("run")
-        args.add("--rootless")
         args.add("-m")
         args.add("${profile.memoryMiB}m")
         args.add("--cpus")
@@ -406,7 +405,6 @@ class GvxCommandBuilder(
         val mode = if (readOnly) "ro" else "rw"
         return listOf(
             "run",
-            "--rootless",
             "-m",
             "256m",
             "--cpus",
@@ -533,8 +531,10 @@ class GvxCommandBuilder(
         profile: SandboxProfile,
         guestArch: GuestLinuxArch,
     ) {
-        args.add("-v")
-        args.add("${workspaceDir(profile.id).absolutePath}:/workspace:rw")
+        if (profile.volumes.none { it.guestMountPath.trimEnd('/') == "/workspace" }) {
+            args.add("-v")
+            args.add("${workspaceDir(profile.id).absolutePath}:/workspace:rw")
+        }
 
         if (profile.muxMode == MuxMode.STDIO_MUX) {
             args.add("-v")

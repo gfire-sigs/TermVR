@@ -143,7 +143,7 @@ void main() {
 )";
 
 constexpr const char* kDefaultGlyphFrag = R"(#version 300 es
-precision mediump float;
+precision highp float;
 precision highp int;
 
 uniform sampler2D uMonoAtlas;

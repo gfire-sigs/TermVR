@@ -391,12 +391,21 @@ class SandboxSupervisor(
             }
 
             val publishedList = ArrayList<PublishedPortMapping>()
+            val recentStderr = ArrayDeque<String>()
             val stderrThread = Thread(
                 {
                     try {
                         BufferedReader(InputStreamReader(process.stderrStream, StandardCharsets.UTF_8)).use { reader ->
                             while (true) {
                                 val line = reader.readLine() ?: break
+                                if (line.isNotBlank()) {
+                                    synchronized(recentStderr) {
+                                        if (recentStderr.size >= 12) {
+                                            recentStderr.removeFirst()
+                                        }
+                                        recentStderr.addLast(line)
+                                    }
+                                }
                                 val parsed = GvxCommandBuilder.parsePublishingLine(line)
                                 if (parsed != null) {
                                     synchronized(publishedList) {
@@ -438,7 +447,16 @@ class SandboxSupervisor(
                     } catch (e: Exception) {
                         client.close()
                         process.destroyGracefully()
+                        try {
+                            stderrThread.join(250L)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                        }
+                        val stderrTail = synchronized(recentStderr) { recentStderr.joinToString(" | ") }
                         setRunState(profile.id, SandboxRunState.FAILED)
+                        if (stderrTail.isNotBlank()) {
+                            throw IOException("${e.message ?: "Sandbox start failed"}: $stderrTail", e)
+                        }
                         throw e
                     }
                 }
