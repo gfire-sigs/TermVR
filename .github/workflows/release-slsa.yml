@@ -71,6 +71,7 @@ jobs:
       - name: Build offline native dependencies and release APK
         run: |
           set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare -r -n ./scripts/build-native-deps.sh --abi "${{ matrix.abi }}"
           GRADLE_EXE="$(command -v gradle)"
           if [ -x ./gradlew ]; then

@@ -36,9 +36,9 @@ struct CellData {
     uint8_t width = 1;
     bool continuation = false;
     uint16_t style_flags = 0;
-    GhosttyColorValue fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-    GhosttyColorValue bg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-    GhosttyColorValue deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue bg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
     uint32_t link_id = 0;
 };
 
@@ -53,9 +53,9 @@ struct SavedCursorState {
     uint16_t col = 0;
     uint16_t row = 0;
     uint16_t style_flags = 0;
-    GhosttyColorValue fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-    GhosttyColorValue bg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-    GhosttyColorValue deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue bg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
     bool origin_mode = false;
     bool autowrap = true;
 };
@@ -200,7 +200,7 @@ std::vector<uint8_t> DecodeBase64(const std::string& input) {
 
 }  // namespace
 
-struct GhosttyTerminalImpl {
+struct TvGhosttyTerminalImpl {
     uint16_t cols = 80;
     uint16_t rows = 24;
     uint32_t cell_width_px = 10;
@@ -220,9 +220,9 @@ struct GhosttyTerminalImpl {
     CursorShape cursor_shape = CursorShape::kBlock;
 
     uint16_t cur_style = 0;
-    GhosttyColorValue cur_fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-    GhosttyColorValue cur_bg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-    GhosttyColorValue cur_deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue cur_fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue cur_bg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+    TvGhosttyColorValue cur_deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
     uint32_t cur_link_id = 0;
 
     uint16_t scroll_top = 0;
@@ -278,7 +278,7 @@ struct GhosttyTerminalImpl {
     uint32_t next_kitty_id = 1;
     uint64_t kitty_revision = 0;
 
-    GhosttyTerminalImpl(uint16_t init_cols, uint16_t init_rows, uint32_t max_sb)
+    TvGhosttyTerminalImpl(uint16_t init_cols, uint16_t init_rows, uint32_t max_sb)
         : cols(std::max<uint16_t>(1, init_cols)),
           rows(std::max<uint16_t>(1, init_rows)),
           max_scrollback(max_sb == 0 ? kDefaultMaxScrollbackLines : max_sb),
@@ -332,9 +332,9 @@ struct GhosttyTerminalImpl {
         cell.width = 1;
         cell.continuation = false;
         cell.style_flags = 0;
-        cell.fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+        cell.fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
         cell.bg = cur_bg;
-        cell.deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+        cell.deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
         cell.link_id = 0;
         return cell;
     }
@@ -594,9 +594,9 @@ struct GhosttyTerminalImpl {
         cursor_blink = true;
         cursor_shape = CursorShape::kBlock;
         cur_style = 0;
-        cur_fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-        cur_bg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-        cur_deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+        cur_fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+        cur_bg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+        cur_deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
         cur_link_id = 0;
         scroll_top = 0;
         scroll_bottom = static_cast<uint16_t>(rows - 1);
@@ -620,9 +620,9 @@ struct GhosttyTerminalImpl {
     void ApplySgr(const std::string& raw_params) {
         if (raw_params.empty()) {
             cur_style = 0;
-            cur_fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-            cur_bg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-            cur_deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+            cur_fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+            cur_bg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+            cur_deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
             return;
         }
 
@@ -663,9 +663,9 @@ struct GhosttyTerminalImpl {
             switch (p) {
                 case 0:
                     cur_style = 0;
-                    cur_fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-                    cur_bg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
-                    cur_deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+                    cur_fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+                    cur_bg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+                    cur_deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
                     break;
                 case 1:
                     cur_style = static_cast<uint16_t>((cur_style & ~termvr::vt::kStyleDim) | termvr::vt::kStyleBold);
@@ -726,42 +726,42 @@ struct GhosttyTerminalImpl {
                     cur_style &= static_cast<uint16_t>(~termvr::vt::kStyleStrikethrough);
                     break;
                 case 39:
-                    cur_fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+                    cur_fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
                     break;
                 case 49:
-                    cur_bg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+                    cur_bg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
                     break;
                 case 59:
-                    cur_deco = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+                    cur_deco = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
                     break;
                 case 38:
                 case 48:
                 case 58: {
-                    GhosttyColorValue* target = (p == 38) ? &cur_fg : (p == 48 ? &cur_bg : &cur_deco);
+                    TvGhosttyColorValue* target = (p == 38) ? &cur_fg : (p == 48 ? &cur_bg : &cur_deco);
                     if (subs.size() >= 3 && subs[1] == 5) {
                         int idx = std::clamp(subs[2], 0, 255);
                         uint8_t r = 0, g = 0, b = 0;
                         Palette256ToRgb(static_cast<uint8_t>(idx), &r, &g, &b);
-                        *target = {idx < 16 ? GHOSTTY_COLOR_PALETTE : GHOSTTY_COLOR_RGB,
+                        *target = {idx < 16 ? TV_GHOSTTY_COLOR_PALETTE : TV_GHOSTTY_COLOR_RGB,
                                    static_cast<uint8_t>(idx), r, g, b};
                     } else if (subs.size() >= 5 && subs[1] == 2) {
                         size_t base = subs.size() >= 6 ? 3 : 2;
                         uint8_t r = static_cast<uint8_t>(std::clamp(subs[base], 0, 255));
                         uint8_t g = static_cast<uint8_t>(std::clamp(subs[base + 1], 0, 255));
                         uint8_t b = static_cast<uint8_t>(std::clamp(subs[base + 2], 0, 255));
-                        *target = {GHOSTTY_COLOR_RGB, 0, r, g, b};
+                        *target = {TV_GHOSTTY_COLOR_RGB, 0, r, g, b};
                     } else if (i + 2 < groups.size() && groups[i + 1].subs[0] == 5) {
                         int idx = std::clamp(groups[i + 2].subs[0], 0, 255);
                         uint8_t r = 0, g = 0, b = 0;
                         Palette256ToRgb(static_cast<uint8_t>(idx), &r, &g, &b);
-                        *target = {idx < 16 ? GHOSTTY_COLOR_PALETTE : GHOSTTY_COLOR_RGB,
+                        *target = {idx < 16 ? TV_GHOSTTY_COLOR_PALETTE : TV_GHOSTTY_COLOR_RGB,
                                    static_cast<uint8_t>(idx), r, g, b};
                         i += 2;
                     } else if (i + 4 < groups.size() && groups[i + 1].subs[0] == 2) {
                         uint8_t r = static_cast<uint8_t>(std::clamp(groups[i + 2].subs[0], 0, 255));
                         uint8_t g = static_cast<uint8_t>(std::clamp(groups[i + 3].subs[0], 0, 255));
                         uint8_t b = static_cast<uint8_t>(std::clamp(groups[i + 4].subs[0], 0, 255));
-                        *target = {GHOSTTY_COLOR_RGB, 0, r, g, b};
+                        *target = {TV_GHOSTTY_COLOR_RGB, 0, r, g, b};
                         i += 4;
                     }
                     break;
@@ -771,22 +771,22 @@ struct GhosttyTerminalImpl {
                         uint8_t idx = static_cast<uint8_t>(p - 30);
                         uint8_t r = 0, g = 0, b = 0;
                         Palette256ToRgb(idx, &r, &g, &b);
-                        cur_fg = {GHOSTTY_COLOR_PALETTE, idx, r, g, b};
+                        cur_fg = {TV_GHOSTTY_COLOR_PALETTE, idx, r, g, b};
                     } else if (p >= 90 && p <= 97) {
                         uint8_t idx = static_cast<uint8_t>(p - 90 + 8);
                         uint8_t r = 0, g = 0, b = 0;
                         Palette256ToRgb(idx, &r, &g, &b);
-                        cur_fg = {GHOSTTY_COLOR_PALETTE, idx, r, g, b};
+                        cur_fg = {TV_GHOSTTY_COLOR_PALETTE, idx, r, g, b};
                     } else if (p >= 40 && p <= 47) {
                         uint8_t idx = static_cast<uint8_t>(p - 40);
                         uint8_t r = 0, g = 0, b = 0;
                         Palette256ToRgb(idx, &r, &g, &b);
-                        cur_bg = {GHOSTTY_COLOR_PALETTE, idx, r, g, b};
+                        cur_bg = {TV_GHOSTTY_COLOR_PALETTE, idx, r, g, b};
                     } else if (p >= 100 && p <= 107) {
                         uint8_t idx = static_cast<uint8_t>(p - 100 + 8);
                         uint8_t r = 0, g = 0, b = 0;
                         Palette256ToRgb(idx, &r, &g, &b);
-                        cur_bg = {GHOSTTY_COLOR_PALETTE, idx, r, g, b};
+                        cur_bg = {TV_GHOSTTY_COLOR_PALETTE, idx, r, g, b};
                     }
                     break;
             }
@@ -1621,74 +1621,74 @@ struct GhosttyTerminalImpl {
     }
 };
 
-struct GhosttyRenderStateImpl {
+struct TvGhosttyRenderStateImpl {
     uint16_t cols = 0;
     uint16_t rows = 0;
-    GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+    TvGhosttyRenderStateDirty dirty = TV_GHOSTTY_RENDER_STATE_DIRTY_FULL;
     std::vector<bool> dirty_rows;
-    std::vector<std::vector<GhosttyCellSnapshot>> row_cells;
+    std::vector<std::vector<TvGhosttyCellSnapshot>> row_cells;
 };
 
-struct GhosttyRenderStateRowIteratorImpl {
-    GhosttyRenderState state = nullptr;
+struct TvGhosttyRenderStateRowIteratorImpl {
+    TvGhosttyRenderState state = nullptr;
     bool dirty_only = false;
     uint16_t next_row = 0;
 };
 
-struct GhosttyRenderStateCellIteratorImpl {
-    GhosttyRenderState state = nullptr;
+struct TvGhosttyRenderStateCellIteratorImpl {
+    TvGhosttyRenderState state = nullptr;
     uint16_t row = 0;
     uint16_t next_col = 0;
 };
 
-struct GhosttyKeyEncoderImpl {
+struct TvGhosttyKeyEncoderImpl {
     bool decckm = false;
     int modify_other_keys = 0;
     uint32_t kitty_flags = 0;
 };
 
-struct GhosttyMouseEncoderImpl {
+struct TvGhosttyMouseEncoderImpl {
     uint16_t tracking_mode = 0;
     uint16_t format_mode = 0;
     int32_t last_motion_col = -1;
     int32_t last_motion_row = -1;
 };
 
-struct GhosttyFormatterImpl {
-    GhosttyTerminal terminal = nullptr;
-    GhosttyFormatterTerminalOptions opts = {};
+struct TvGhosttyFormatterImpl {
+    TvGhosttyTerminal terminal = nullptr;
+    TvGhosttyFormatterTerminalOptions opts = {};
 };
 
 extern "C" {
 
-GhosttyResult ghostty_terminal_new(
-    const GhosttyAllocator* allocator,
-    GhosttyTerminal* out_terminal,
-    GhosttyTerminalOptions opts) {
+TvGhosttyResult tv_ghostty_terminal_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyTerminal* out_terminal,
+    TvGhosttyTerminalOptions opts) {
     (void)allocator;
     if (out_terminal == nullptr || opts.cols == 0 || opts.rows == 0) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    auto* impl = new (std::nothrow) GhosttyTerminalImpl(opts.cols, opts.rows, opts.max_scrollback);
+    auto* impl = new (std::nothrow) TvGhosttyTerminalImpl(opts.cols, opts.rows, opts.max_scrollback);
     if (impl == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     *out_terminal = impl;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_terminal_free(GhosttyTerminal terminal) {
+void tv_ghostty_terminal_free(TvGhosttyTerminal terminal) {
     delete terminal;
 }
 
-GhosttyResult ghostty_terminal_resize(
-    GhosttyTerminal terminal,
+TvGhosttyResult tv_ghostty_terminal_resize(
+    TvGhosttyTerminal terminal,
     uint16_t cols,
     uint16_t rows,
     uint32_t cell_width_px,
     uint32_t cell_height_px) {
     if (terminal == nullptr || cols == 0 || rows == 0) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
     terminal->cell_width_px = std::max<uint32_t>(1u, cell_width_px);
     terminal->cell_height_px = std::max<uint32_t>(1u, cell_height_px);
@@ -1717,11 +1717,11 @@ GhosttyResult ghostty_terminal_resize(
     terminal->ResetTabStops();
     terminal->dirty_rows.assign(rows, true);
     terminal->full_dirty = true;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_terminal_vt_write(
-    GhosttyTerminal terminal,
+void tv_ghostty_terminal_vt_write(
+    TvGhosttyTerminal terminal,
     const uint8_t* data,
     size_t len) {
     if (terminal == nullptr || data == nullptr || len == 0) {
@@ -1732,30 +1732,30 @@ void ghostty_terminal_vt_write(
     }
 }
 
-GhosttyResult ghostty_render_state_new(
-    const GhosttyAllocator* allocator,
-    GhosttyRenderState* out_state) {
+TvGhosttyResult tv_ghostty_render_state_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyRenderState* out_state) {
     (void)allocator;
     if (out_state == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    auto* st = new (std::nothrow) GhosttyRenderStateImpl();
+    auto* st = new (std::nothrow) TvGhosttyRenderStateImpl();
     if (st == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     *out_state = st;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_render_state_free(GhosttyRenderState state) {
+void tv_ghostty_render_state_free(TvGhosttyRenderState state) {
     delete state;
 }
 
-GhosttyResult ghostty_render_state_update(
-    GhosttyRenderState state,
-    GhosttyTerminal terminal) {
+TvGhosttyResult tv_ghostty_render_state_update(
+    TvGhosttyRenderState state,
+    TvGhosttyTerminal terminal) {
     if (state == nullptr || terminal == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
     bool dims_changed = (state->cols != terminal->cols || state->rows != terminal->rows);
     state->cols = terminal->cols;
@@ -1778,7 +1778,7 @@ GhosttyResult ghostty_render_state_update(
         int32_t abs_row = 0;
         const RowData& src_row = terminal->ViewportRow(r, &abs_row);
         for (uint16_t c = 0; c < state->cols; ++c) {
-            GhosttyCellSnapshot& dst = snap_row[c];
+            TvGhosttyCellSnapshot& dst = snap_row[c];
             std::memset(&dst, 0, sizeof(dst));
             dst.col = c;
             if (c < src_row.cells.size()) {
@@ -1809,52 +1809,52 @@ GhosttyResult ghostty_render_state_update(
     }
 
     if (dims_changed || terminal->full_dirty) {
-        state->dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+        state->dirty = TV_GHOSTTY_RENDER_STATE_DIRTY_FULL;
     } else if (any_dirty) {
-        state->dirty = GHOSTTY_RENDER_STATE_DIRTY_PARTIAL;
+        state->dirty = TV_GHOSTTY_RENDER_STATE_DIRTY_PARTIAL;
     } else {
-        state->dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+        state->dirty = TV_GHOSTTY_RENDER_STATE_DIRTY_FALSE;
     }
 
     terminal->full_dirty = false;
     std::fill(terminal->dirty_rows.begin(), terminal->dirty_rows.end(), false);
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-GhosttyRenderStateDirty ghostty_render_state_get_dirty(GhosttyRenderState state) {
-    return state == nullptr ? GHOSTTY_RENDER_STATE_DIRTY_FALSE : state->dirty;
+TvGhosttyRenderStateDirty tv_ghostty_render_state_get_dirty(TvGhosttyRenderState state) {
+    return state == nullptr ? TV_GHOSTTY_RENDER_STATE_DIRTY_FALSE : state->dirty;
 }
 
-void ghostty_render_state_clean(GhosttyRenderState state) {
+void tv_ghostty_render_state_clean(TvGhosttyRenderState state) {
     if (state == nullptr) {
         return;
     }
-    state->dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+    state->dirty = TV_GHOSTTY_RENDER_STATE_DIRTY_FALSE;
     std::fill(state->dirty_rows.begin(), state->dirty_rows.end(), false);
 }
 
-GhosttyResult ghostty_render_state_row_iterator_new(
-    const GhosttyAllocator* allocator,
-    GhosttyRenderStateRowIterator* out_iter) {
+TvGhosttyResult tv_ghostty_render_state_row_iterator_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyRenderStateRowIterator* out_iter) {
     (void)allocator;
     if (out_iter == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    auto* it = new (std::nothrow) GhosttyRenderStateRowIteratorImpl();
+    auto* it = new (std::nothrow) TvGhosttyRenderStateRowIteratorImpl();
     if (it == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     *out_iter = it;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_render_state_row_iterator_free(GhosttyRenderStateRowIterator iter) {
+void tv_ghostty_render_state_row_iterator_free(TvGhosttyRenderStateRowIterator iter) {
     delete iter;
 }
 
-void ghostty_render_state_row_iterator_begin(
-    GhosttyRenderStateRowIterator iter,
-    GhosttyRenderState state,
+void tv_ghostty_render_state_row_iterator_begin(
+    TvGhosttyRenderStateRowIterator iter,
+    TvGhosttyRenderState state,
     bool dirty_only) {
     if (iter == nullptr) {
         return;
@@ -1864,15 +1864,15 @@ void ghostty_render_state_row_iterator_begin(
     iter->next_row = 0;
 }
 
-bool ghostty_render_state_row_iterator_next(
-    GhosttyRenderStateRowIterator iter,
+bool tv_ghostty_render_state_row_iterator_next(
+    TvGhosttyRenderStateRowIterator iter,
     uint16_t* out_row) {
     if (iter == nullptr || iter->state == nullptr || out_row == nullptr) {
         return false;
     }
     while (iter->next_row < iter->state->rows) {
         uint16_t r = iter->next_row++;
-        if (!iter->dirty_only || iter->state->dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL ||
+        if (!iter->dirty_only || iter->state->dirty == TV_GHOSTTY_RENDER_STATE_DIRTY_FULL ||
             (r < iter->state->dirty_rows.size() && iter->state->dirty_rows[r])) {
             *out_row = r;
             return true;
@@ -1881,38 +1881,38 @@ bool ghostty_render_state_row_iterator_next(
     return false;
 }
 
-bool ghostty_render_state_row_iterator_next_dirty(
-    GhosttyRenderStateRowIterator iter,
+bool tv_ghostty_render_state_row_iterator_next_dirty(
+    TvGhosttyRenderStateRowIterator iter,
     uint16_t* out_row) {
     if (iter == nullptr) {
         return false;
     }
     iter->dirty_only = true;
-    return ghostty_render_state_row_iterator_next(iter, out_row);
+    return tv_ghostty_render_state_row_iterator_next(iter, out_row);
 }
 
-GhosttyResult ghostty_render_state_cell_iterator_new(
-    const GhosttyAllocator* allocator,
-    GhosttyRenderStateCellIterator* out_iter) {
+TvGhosttyResult tv_ghostty_render_state_cell_iterator_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyRenderStateCellIterator* out_iter) {
     (void)allocator;
     if (out_iter == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    auto* it = new (std::nothrow) GhosttyRenderStateCellIteratorImpl();
+    auto* it = new (std::nothrow) TvGhosttyRenderStateCellIteratorImpl();
     if (it == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     *out_iter = it;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_render_state_cell_iterator_free(GhosttyRenderStateCellIterator iter) {
+void tv_ghostty_render_state_cell_iterator_free(TvGhosttyRenderStateCellIterator iter) {
     delete iter;
 }
 
-void ghostty_render_state_cell_iterator_begin(
-    GhosttyRenderStateCellIterator iter,
-    GhosttyRenderState state,
+void tv_ghostty_render_state_cell_iterator_begin(
+    TvGhosttyRenderStateCellIterator iter,
+    TvGhosttyRenderState state,
     uint16_t row) {
     if (iter == nullptr) {
         return;
@@ -1922,9 +1922,9 @@ void ghostty_render_state_cell_iterator_begin(
     iter->next_col = 0;
 }
 
-bool ghostty_render_state_cell_iterator_next(
-    GhosttyRenderStateCellIterator iter,
-    GhosttyCellSnapshot* out_cell) {
+bool tv_ghostty_render_state_cell_iterator_next(
+    TvGhosttyRenderStateCellIterator iter,
+    TvGhosttyCellSnapshot* out_cell) {
     if (iter == nullptr || iter->state == nullptr || out_cell == nullptr) {
         return false;
     }
@@ -1939,28 +1939,28 @@ bool ghostty_render_state_cell_iterator_next(
     return true;
 }
 
-GhosttyResult ghostty_key_encoder_new(
-    const GhosttyAllocator* allocator,
-    GhosttyKeyEncoder* out_encoder) {
+TvGhosttyResult tv_ghostty_key_encoder_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyKeyEncoder* out_encoder) {
     (void)allocator;
     if (out_encoder == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    auto* enc = new (std::nothrow) GhosttyKeyEncoderImpl();
+    auto* enc = new (std::nothrow) TvGhosttyKeyEncoderImpl();
     if (enc == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     *out_encoder = enc;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_key_encoder_free(GhosttyKeyEncoder encoder) {
+void tv_ghostty_key_encoder_free(TvGhosttyKeyEncoder encoder) {
     delete encoder;
 }
 
-void ghostty_key_encoder_set_opts_from_terminal(
-    GhosttyKeyEncoder encoder,
-    GhosttyTerminal terminal) {
+void tv_ghostty_key_encoder_set_opts_from_terminal(
+    TvGhosttyKeyEncoder encoder,
+    TvGhosttyTerminal terminal) {
     if (encoder == nullptr || terminal == nullptr) {
         return;
     }
@@ -1969,34 +1969,34 @@ void ghostty_key_encoder_set_opts_from_terminal(
     encoder->kitty_flags = terminal->ActiveKittyKbdFlags();
 }
 
-GhosttyResult ghostty_key_encoder_encode(
-    GhosttyKeyEncoder encoder,
-    GhosttyKeyEvent event,
+TvGhosttyResult tv_ghostty_key_encoder_encode(
+    TvGhosttyKeyEncoder encoder,
+    TvGhosttyKeyEvent event,
     uint8_t* out_buf,
     size_t buf_cap,
     size_t* out_written) {
     if (encoder == nullptr || out_written == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
     *out_written = 0;
 
     bool report_events = (encoder->kitty_flags & 0x2u) != 0u;
-    if (event.action == GHOSTTY_KEY_ACTION_RELEASE && !report_events) {
-        return GHOSTTY_SUCCESS;
+    if (event.action == TV_GHOSTTY_KEY_ACTION_RELEASE && !report_events) {
+        return TV_GHOSTTY_SUCCESS;
     }
 
     uint32_t xterm_mod = 1u +
-        ((event.mods & GHOSTTY_MOD_SHIFT) ? 1u : 0u) +
-        ((event.mods & GHOSTTY_MOD_ALT) ? 2u : 0u) +
-        ((event.mods & GHOSTTY_MOD_CTRL) ? 4u : 0u) +
-        ((event.mods & GHOSTTY_MOD_SUPER) ? 8u : 0u);
+        ((event.mods & TV_GHOSTTY_MOD_SHIFT) ? 1u : 0u) +
+        ((event.mods & TV_GHOSTTY_MOD_ALT) ? 2u : 0u) +
+        ((event.mods & TV_GHOSTTY_MOD_CTRL) ? 4u : 0u) +
+        ((event.mods & TV_GHOSTTY_MOD_SUPER) ? 8u : 0u);
 
     std::string seq;
 
     auto emit_kitty_csi_u = [&](uint32_t key_num) {
         char tmp[64];
-        if (report_events && event.action != GHOSTTY_KEY_ACTION_PRESS) {
-            int act = (event.action == GHOSTTY_KEY_ACTION_REPEAT) ? 2 : 3;
+        if (report_events && event.action != TV_GHOSTTY_KEY_ACTION_PRESS) {
+            int act = (event.action == TV_GHOSTTY_KEY_ACTION_REPEAT) ? 2 : 3;
             std::snprintf(tmp, sizeof(tmp), "\x1b[%u;%u:%du", key_num, xterm_mod, act);
         } else if (xterm_mod > 1u) {
             std::snprintf(tmp, sizeof(tmp), "\x1b[%u;%uu", key_num, xterm_mod);
@@ -2032,14 +2032,14 @@ GhosttyResult ghostty_key_encoder_encode(
     bool kitty_all_keys = (encoder->kitty_flags & 0x8u) != 0u;
 
     switch (event.key) {
-        case GHOSTTY_KEY_ESCAPE:
+        case TV_GHOSTTY_KEY_ESCAPE:
             if (kitty_disambiguate || kitty_all_keys || xterm_mod > 1u) {
                 emit_kitty_csi_u(27u);
             } else {
                 seq = "\x1b";
             }
             break;
-        case GHOSTTY_KEY_ENTER:
+        case TV_GHOSTTY_KEY_ENTER:
             if (kitty_all_keys || (kitty_disambiguate && xterm_mod > 1u)) {
                 emit_kitty_csi_u(13u);
             } else if (encoder->modify_other_keys >= 1 && xterm_mod > 1u) {
@@ -2047,49 +2047,49 @@ GhosttyResult ghostty_key_encoder_encode(
                 std::snprintf(tmp, sizeof(tmp), "\x1b[27;%u;13~", xterm_mod);
                 seq.assign(tmp);
             } else {
-                if (event.mods & GHOSTTY_MOD_ALT) {
+                if (event.mods & TV_GHOSTTY_MOD_ALT) {
                     seq.push_back('\x1b');
                 }
                 seq.push_back('\r');
             }
             break;
-        case GHOSTTY_KEY_TAB:
-            if (kitty_all_keys || (kitty_disambiguate && (event.mods & (GHOSTTY_MOD_CTRL | GHOSTTY_MOD_ALT | GHOSTTY_MOD_SUPER)))) {
+        case TV_GHOSTTY_KEY_TAB:
+            if (kitty_all_keys || (kitty_disambiguate && (event.mods & (TV_GHOSTTY_MOD_CTRL | TV_GHOSTTY_MOD_ALT | TV_GHOSTTY_MOD_SUPER)))) {
                 emit_kitty_csi_u(9u);
-            } else if (event.mods & GHOSTTY_MOD_SHIFT) {
+            } else if (event.mods & TV_GHOSTTY_MOD_SHIFT) {
                 seq = "\x1b[Z";
             } else {
-                if (event.mods & GHOSTTY_MOD_ALT) {
+                if (event.mods & TV_GHOSTTY_MOD_ALT) {
                     seq.push_back('\x1b');
                 }
                 seq.push_back('\t');
             }
             break;
-        case GHOSTTY_KEY_BACKSPACE:
+        case TV_GHOSTTY_KEY_BACKSPACE:
             if (kitty_all_keys) {
                 emit_kitty_csi_u(127u);
             } else {
-                if (event.mods & GHOSTTY_MOD_ALT) {
+                if (event.mods & TV_GHOSTTY_MOD_ALT) {
                     seq.push_back('\x1b');
                 }
-                seq.push_back((event.mods & GHOSTTY_MOD_CTRL) ? '\x08' : '\x7f');
+                seq.push_back((event.mods & TV_GHOSTTY_MOD_CTRL) ? '\x08' : '\x7f');
             }
             break;
-        case GHOSTTY_KEY_UP: emit_cursor_letter('A', true); break;
-        case GHOSTTY_KEY_DOWN: emit_cursor_letter('B', true); break;
-        case GHOSTTY_KEY_RIGHT: emit_cursor_letter('C', true); break;
-        case GHOSTTY_KEY_LEFT: emit_cursor_letter('D', true); break;
-        case GHOSTTY_KEY_HOME: emit_cursor_letter('H', true); break;
-        case GHOSTTY_KEY_END: emit_cursor_letter('F', true); break;
-        case GHOSTTY_KEY_INSERT: emit_tilde_key(2); break;
-        case GHOSTTY_KEY_DELETE: emit_tilde_key(3); break;
-        case GHOSTTY_KEY_PAGE_UP: emit_tilde_key(5); break;
-        case GHOSTTY_KEY_PAGE_DOWN: emit_tilde_key(6); break;
-        case GHOSTTY_KEY_F1:
-        case GHOSTTY_KEY_F2:
-        case GHOSTTY_KEY_F3:
-        case GHOSTTY_KEY_F4: {
-            char letter = static_cast<char>('P' + (event.key - GHOSTTY_KEY_F1));
+        case TV_GHOSTTY_KEY_UP: emit_cursor_letter('A', true); break;
+        case TV_GHOSTTY_KEY_DOWN: emit_cursor_letter('B', true); break;
+        case TV_GHOSTTY_KEY_RIGHT: emit_cursor_letter('C', true); break;
+        case TV_GHOSTTY_KEY_LEFT: emit_cursor_letter('D', true); break;
+        case TV_GHOSTTY_KEY_HOME: emit_cursor_letter('H', true); break;
+        case TV_GHOSTTY_KEY_END: emit_cursor_letter('F', true); break;
+        case TV_GHOSTTY_KEY_INSERT: emit_tilde_key(2); break;
+        case TV_GHOSTTY_KEY_DELETE: emit_tilde_key(3); break;
+        case TV_GHOSTTY_KEY_PAGE_UP: emit_tilde_key(5); break;
+        case TV_GHOSTTY_KEY_PAGE_DOWN: emit_tilde_key(6); break;
+        case TV_GHOSTTY_KEY_F1:
+        case TV_GHOSTTY_KEY_F2:
+        case TV_GHOSTTY_KEY_F3:
+        case TV_GHOSTTY_KEY_F4: {
+            char letter = static_cast<char>('P' + (event.key - TV_GHOSTTY_KEY_F1));
             char tmp[32];
             if (xterm_mod > 1u) {
                 std::snprintf(tmp, sizeof(tmp), "\x1b[1;%u%c", xterm_mod, letter);
@@ -2099,22 +2099,22 @@ GhosttyResult ghostty_key_encoder_encode(
             seq.assign(tmp);
             break;
         }
-        case GHOSTTY_KEY_F5: emit_tilde_key(15); break;
-        case GHOSTTY_KEY_F6: emit_tilde_key(17); break;
-        case GHOSTTY_KEY_F7: emit_tilde_key(18); break;
-        case GHOSTTY_KEY_F8: emit_tilde_key(19); break;
-        case GHOSTTY_KEY_F9: emit_tilde_key(20); break;
-        case GHOSTTY_KEY_F10: emit_tilde_key(21); break;
-        case GHOSTTY_KEY_F11: emit_tilde_key(23); break;
-        case GHOSTTY_KEY_F12: emit_tilde_key(24); break;
-        case GHOSTTY_KEY_UNICODE: {
+        case TV_GHOSTTY_KEY_F5: emit_tilde_key(15); break;
+        case TV_GHOSTTY_KEY_F6: emit_tilde_key(17); break;
+        case TV_GHOSTTY_KEY_F7: emit_tilde_key(18); break;
+        case TV_GHOSTTY_KEY_F8: emit_tilde_key(19); break;
+        case TV_GHOSTTY_KEY_F9: emit_tilde_key(20); break;
+        case TV_GHOSTTY_KEY_F10: emit_tilde_key(21); break;
+        case TV_GHOSTTY_KEY_F11: emit_tilde_key(23); break;
+        case TV_GHOSTTY_KEY_F12: emit_tilde_key(24); break;
+        case TV_GHOSTTY_KEY_UNICODE: {
             uint32_t cp = event.unicode_codepoint;
-            if (kitty_all_keys || (kitty_disambiguate && (event.mods & (GHOSTTY_MOD_CTRL | GHOSTTY_MOD_ALT | GHOSTTY_MOD_SUPER)))) {
+            if (kitty_all_keys || (kitty_disambiguate && (event.mods & (TV_GHOSTTY_MOD_CTRL | TV_GHOSTTY_MOD_ALT | TV_GHOSTTY_MOD_SUPER)))) {
                 uint32_t base_cp = (cp >= 'A' && cp <= 'Z') ? (cp + 32u) : cp;
                 emit_kitty_csi_u(base_cp);
                 break;
             }
-            if (encoder->modify_other_keys >= 2 && (event.mods & (GHOSTTY_MOD_CTRL | GHOSTTY_MOD_ALT)) && cp >= 0x20u && cp <= 0x7Eu) {
+            if (encoder->modify_other_keys >= 2 && (event.mods & (TV_GHOSTTY_MOD_CTRL | TV_GHOSTTY_MOD_ALT)) && cp >= 0x20u && cp <= 0x7Eu) {
                 char tmp[32];
                 std::snprintf(tmp, sizeof(tmp), "\x1b[27;%u;%uu", xterm_mod, cp);
                 // Standard modifyOtherKeys terminates with '~'.
@@ -2122,10 +2122,10 @@ GhosttyResult ghostty_key_encoder_encode(
                 seq.assign(tmp);
                 break;
             }
-            if (event.mods & GHOSTTY_MOD_ALT) {
+            if (event.mods & TV_GHOSTTY_MOD_ALT) {
                 seq.push_back('\x1b');
             }
-            if (event.mods & GHOSTTY_MOD_CTRL) {
+            if (event.mods & TV_GHOSTTY_MOD_CTRL) {
                 uint32_t upper = (cp >= 'a' && cp <= 'z') ? (cp - 32u) : cp;
                 if (upper == ' ' || upper == '@') {
                     seq.push_back('\x00');
@@ -2151,37 +2151,37 @@ GhosttyResult ghostty_key_encoder_encode(
 
     *out_written = seq.size();
     if (seq.empty()) {
-        return GHOSTTY_SUCCESS;
+        return TV_GHOSTTY_SUCCESS;
     }
     if (out_buf == nullptr || buf_cap < seq.size()) {
-        return GHOSTTY_OUT_OF_SPACE;
+        return TV_GHOSTTY_OUT_OF_SPACE;
     }
     std::memcpy(out_buf, seq.data(), seq.size());
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-GhosttyResult ghostty_mouse_encoder_new(
-    const GhosttyAllocator* allocator,
-    GhosttyMouseEncoder* out_encoder) {
+TvGhosttyResult tv_ghostty_mouse_encoder_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyMouseEncoder* out_encoder) {
     (void)allocator;
     if (out_encoder == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    auto* enc = new (std::nothrow) GhosttyMouseEncoderImpl();
+    auto* enc = new (std::nothrow) TvGhosttyMouseEncoderImpl();
     if (enc == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     *out_encoder = enc;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_mouse_encoder_free(GhosttyMouseEncoder encoder) {
+void tv_ghostty_mouse_encoder_free(TvGhosttyMouseEncoder encoder) {
     delete encoder;
 }
 
-void ghostty_mouse_encoder_set_opts_from_terminal(
-    GhosttyMouseEncoder encoder,
-    GhosttyTerminal terminal) {
+void tv_ghostty_mouse_encoder_set_opts_from_terminal(
+    TvGhosttyMouseEncoder encoder,
+    TvGhosttyTerminal terminal) {
     if (encoder == nullptr || terminal == nullptr) {
         return;
     }
@@ -2191,62 +2191,62 @@ void ghostty_mouse_encoder_set_opts_from_terminal(
     encoder->last_motion_row = -1;
 }
 
-GhosttyResult ghostty_mouse_encoder_encode(
-    GhosttyMouseEncoder encoder,
-    GhosttyMouseEvent event,
+TvGhosttyResult tv_ghostty_mouse_encoder_encode(
+    TvGhosttyMouseEncoder encoder,
+    TvGhosttyMouseEvent event,
     uint8_t* out_buf,
     size_t buf_cap,
     size_t* out_written) {
     if (encoder == nullptr || out_written == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
     *out_written = 0;
     if (encoder->tracking_mode == 0) {
-        return GHOSTTY_SUCCESS;
+        return TV_GHOSTTY_SUCCESS;
     }
-    if (event.action == GHOSTTY_MOUSE_MOTION) {
+    if (event.action == TV_GHOSTTY_MOUSE_MOTION) {
         if (encoder->tracking_mode < 1002u) {
-            return GHOSTTY_SUCCESS;
+            return TV_GHOSTTY_SUCCESS;
         }
-        if (encoder->tracking_mode == 1002u && event.button == GHOSTTY_MOUSE_BUTTON_NONE) {
-            return GHOSTTY_SUCCESS;
+        if (encoder->tracking_mode == 1002u && event.button == TV_GHOSTTY_MOUSE_BUTTON_NONE) {
+            return TV_GHOSTTY_SUCCESS;
         }
         if (encoder->last_motion_col == static_cast<int32_t>(event.col) &&
             encoder->last_motion_row == static_cast<int32_t>(event.row)) {
-            return GHOSTTY_SUCCESS;
+            return TV_GHOSTTY_SUCCESS;
         }
         encoder->last_motion_col = static_cast<int32_t>(event.col);
         encoder->last_motion_row = static_cast<int32_t>(event.row);
     }
 
     int cb = 0;
-    if (event.action == GHOSTTY_MOUSE_WHEEL_UP) {
+    if (event.action == TV_GHOSTTY_MOUSE_WHEEL_UP) {
         cb = 64;
-    } else if (event.action == GHOSTTY_MOUSE_WHEEL_DOWN) {
+    } else if (event.action == TV_GHOSTTY_MOUSE_WHEEL_DOWN) {
         cb = 65;
-    } else if (event.action == GHOSTTY_MOUSE_RELEASE && encoder->format_mode != 1006u) {
+    } else if (event.action == TV_GHOSTTY_MOUSE_RELEASE && encoder->format_mode != 1006u) {
         cb = 3;
     } else {
         switch (event.button) {
-            case GHOSTTY_MOUSE_BUTTON_LEFT: cb = 0; break;
-            case GHOSTTY_MOUSE_BUTTON_MIDDLE: cb = 1; break;
-            case GHOSTTY_MOUSE_BUTTON_RIGHT: cb = 2; break;
+            case TV_GHOSTTY_MOUSE_BUTTON_LEFT: cb = 0; break;
+            case TV_GHOSTTY_MOUSE_BUTTON_MIDDLE: cb = 1; break;
+            case TV_GHOSTTY_MOUSE_BUTTON_RIGHT: cb = 2; break;
             default: cb = 3; break;
         }
     }
-    if (event.action == GHOSTTY_MOUSE_MOTION) {
+    if (event.action == TV_GHOSTTY_MOUSE_MOTION) {
         cb += 32;
     }
-    if (event.mods & GHOSTTY_MOD_SHIFT) cb += 4;
-    if (event.mods & GHOSTTY_MOD_ALT) cb += 8;
-    if (event.mods & GHOSTTY_MOD_CTRL) cb += 16;
+    if (event.mods & TV_GHOSTTY_MOD_SHIFT) cb += 4;
+    if (event.mods & TV_GHOSTTY_MOD_ALT) cb += 8;
+    if (event.mods & TV_GHOSTTY_MOD_CTRL) cb += 16;
 
     uint32_t cx1 = static_cast<uint32_t>(event.col) + 1u;
     uint32_t cy1 = static_cast<uint32_t>(event.row) + 1u;
 
     std::string seq;
     if (encoder->format_mode == 1006u) {
-        char final_c = (event.action == GHOSTTY_MOUSE_RELEASE) ? 'm' : 'M';
+        char final_c = (event.action == TV_GHOSTTY_MOUSE_RELEASE) ? 'm' : 'M';
         char tmp[48];
         std::snprintf(tmp, sizeof(tmp), "\x1b[<%d;%u;%u%c", cb, cx1, cy1, final_c);
         seq.assign(tmp);
@@ -2257,7 +2257,7 @@ GhosttyResult ghostty_mouse_encoder_encode(
         AppendUtf8(std::min<uint32_t>(cy1 + 32u, 2047u), &seq);
     } else {
         if (cx1 > 223u || cy1 > 223u) {
-            return GHOSTTY_SUCCESS;
+            return TV_GHOSTTY_SUCCESS;
         }
         seq.push_back('\x1b');
         seq.push_back('[');
@@ -2269,41 +2269,41 @@ GhosttyResult ghostty_mouse_encoder_encode(
 
     *out_written = seq.size();
     if (out_buf == nullptr || buf_cap < seq.size()) {
-        return GHOSTTY_OUT_OF_SPACE;
+        return TV_GHOSTTY_OUT_OF_SPACE;
     }
     std::memcpy(out_buf, seq.data(), seq.size());
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-GhosttyResult ghostty_formatter_terminal_new(
-    const GhosttyAllocator* allocator,
-    GhosttyFormatter* out_formatter,
-    GhosttyTerminal terminal,
-    GhosttyFormatterTerminalOptions opts) {
+TvGhosttyResult tv_ghostty_formatter_terminal_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyFormatter* out_formatter,
+    TvGhosttyTerminal terminal,
+    TvGhosttyFormatterTerminalOptions opts) {
     (void)allocator;
     if (out_formatter == nullptr || terminal == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    auto* fmt = new (std::nothrow) GhosttyFormatterImpl();
+    auto* fmt = new (std::nothrow) TvGhosttyFormatterImpl();
     if (fmt == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     fmt->terminal = terminal;
     fmt->opts = opts;
     *out_formatter = fmt;
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-GhosttyResult ghostty_formatter_format_alloc(
-    GhosttyFormatter formatter,
-    const GhosttyAllocator* allocator,
+TvGhosttyResult tv_ghostty_formatter_format_alloc(
+    TvGhosttyFormatter formatter,
+    const TvGhosttyAllocator* allocator,
     uint8_t** out_buf,
     size_t* out_len) {
     (void)allocator;
     if (formatter == nullptr || formatter->terminal == nullptr || out_buf == nullptr || out_len == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
-    GhosttyTerminal term = formatter->terminal;
+    TvGhosttyTerminal term = formatter->terminal;
     const auto& opts = formatter->opts;
 
     int32_t r0 = opts.start_row;
@@ -2316,11 +2316,11 @@ GhosttyResult ghostty_formatter_format_alloc(
         if (!term->selection_active) {
             *out_buf = static_cast<uint8_t*>(std::malloc(1));
             if (*out_buf == nullptr) {
-                return GHOSTTY_OUT_OF_MEMORY;
+                return TV_GHOSTTY_OUT_OF_MEMORY;
             }
             (*out_buf)[0] = 0;
             *out_len = 0;
-            return GHOSTTY_SUCCESS;
+            return TV_GHOSTTY_SUCCESS;
         }
         use_abs_rows = true;
         r0 = term->sel_start_abs_row;
@@ -2376,21 +2376,21 @@ GhosttyResult ghostty_formatter_format_alloc(
 
         std::string line;
         uint16_t prev_style = 0;
-        GhosttyColorValue prev_fg = {GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
+        TvGhosttyColorValue prev_fg = {TV_GHOSTTY_COLOR_DEFAULT, 0, 0, 0, 0};
 
         for (int32_t c = col_start; c <= col_end; ++c) {
             const CellData& cell = row->cells[static_cast<size_t>(c)];
             if (cell.continuation) {
                 continue;
             }
-            if (opts.emit == GHOSTTY_FORMATTER_EMIT_VT) {
+            if (opts.emit == TV_GHOSTTY_FORMATTER_EMIT_VT) {
                 if (cell.style_flags != prev_style || cell.fg.kind != prev_fg.kind ||
                     cell.fg.r != prev_fg.r || cell.fg.g != prev_fg.g || cell.fg.b != prev_fg.b) {
                     line.append("\x1b[0");
                     if (cell.style_flags & termvr::vt::kStyleBold) line.append(";1");
                     if (cell.style_flags & termvr::vt::kStyleItalic) line.append(";3");
                     if (cell.style_flags & termvr::vt::kStyleUnderlineMask) line.append(";4");
-                    if (cell.fg.kind != GHOSTTY_COLOR_DEFAULT) {
+                    if (cell.fg.kind != TV_GHOSTTY_COLOR_DEFAULT) {
                         char rgb_seq[32];
                         std::snprintf(rgb_seq, sizeof(rgb_seq), ";38;2;%u;%u;%u",
                                       cell.fg.r, cell.fg.g, cell.fg.b);
@@ -2407,10 +2407,10 @@ GhosttyResult ghostty_formatter_format_alloc(
                 line.push_back(' ');
             }
         }
-        if (opts.emit == GHOSTTY_FORMATTER_EMIT_VT && (prev_style != 0 || prev_fg.kind != GHOSTTY_COLOR_DEFAULT)) {
+        if (opts.emit == TV_GHOSTTY_FORMATTER_EMIT_VT && (prev_style != 0 || prev_fg.kind != TV_GHOSTTY_COLOR_DEFAULT)) {
             line.append("\x1b[0m");
         }
-        if (opts.trim_trailing_whitespace && opts.emit == GHOSTTY_FORMATTER_EMIT_PLAIN && !row->soft_wrapped) {
+        if (opts.trim_trailing_whitespace && opts.emit == TV_GHOSTTY_FORMATTER_EMIT_PLAIN && !row->soft_wrapped) {
             while (!line.empty() && line.back() == ' ') {
                 line.pop_back();
             }
@@ -2425,7 +2425,7 @@ GhosttyResult ghostty_formatter_format_alloc(
 
     auto* raw = static_cast<uint8_t*>(std::malloc(out.size() + 1u));
     if (raw == nullptr) {
-        return GHOSTTY_OUT_OF_MEMORY;
+        return TV_GHOSTTY_OUT_OF_MEMORY;
     }
     if (!out.empty()) {
         std::memcpy(raw, out.data(), out.size());
@@ -2433,15 +2433,15 @@ GhosttyResult ghostty_formatter_format_alloc(
     raw[out.size()] = 0;
     *out_buf = raw;
     *out_len = out.size();
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
-void ghostty_formatter_free(GhosttyFormatter formatter) {
+void tv_ghostty_formatter_free(TvGhosttyFormatter formatter) {
     delete formatter;
 }
 
-void ghostty_formatter_buffer_free(
-    const GhosttyAllocator* allocator,
+void tv_ghostty_formatter_buffer_free(
+    const TvGhosttyAllocator* allocator,
     uint8_t* buf,
     size_t len) {
     (void)allocator;
@@ -2449,7 +2449,7 @@ void ghostty_formatter_buffer_free(
     std::free(buf);
 }
 
-bool ghostty_paste_is_safe(const char* data, size_t len) {
+bool tv_ghostty_paste_is_safe(const char* data, size_t len) {
     if (data == nullptr || len == 0) {
         return true;
     }
@@ -2472,8 +2472,8 @@ bool ghostty_paste_is_safe(const char* data, size_t len) {
     return true;
 }
 
-GhosttyResult ghostty_terminal_paste(
-    GhosttyTerminal terminal,
+TvGhosttyResult tv_ghostty_terminal_paste(
+    TvGhosttyTerminal terminal,
     const char* data,
     size_t len,
     bool allow_unsafe,
@@ -2481,14 +2481,14 @@ GhosttyResult ghostty_terminal_paste(
     size_t buf_cap,
     size_t* out_written) {
     if (terminal == nullptr || out_written == nullptr) {
-        return GHOSTTY_INVALID_VALUE;
+        return TV_GHOSTTY_INVALID_VALUE;
     }
     *out_written = 0;
     if (data == nullptr || len == 0) {
-        return GHOSTTY_SUCCESS;
+        return TV_GHOSTTY_SUCCESS;
     }
-    if (!allow_unsafe && !ghostty_paste_is_safe(data, len)) {
-        return GHOSTTY_UNSAFE_PASTE;
+    if (!allow_unsafe && !tv_ghostty_paste_is_safe(data, len)) {
+        return TV_GHOSTTY_UNSAFE_PASTE;
     }
 
     std::string sanitized;
@@ -2516,17 +2516,17 @@ GhosttyResult ghostty_terminal_paste(
 
     *out_written = sanitized.size();
     if (out_buf == nullptr || buf_cap < sanitized.size()) {
-        return GHOSTTY_OUT_OF_SPACE;
+        return TV_GHOSTTY_OUT_OF_SPACE;
     }
     std::memcpy(out_buf, sanitized.data(), sanitized.size());
-    return GHOSTTY_SUCCESS;
+    return TV_GHOSTTY_SUCCESS;
 }
 
 }  // extern "C"
 
 namespace termvr::vt {
 
-void TerminalSetScrollbackOffset(GhosttyTerminal terminal, uint32_t lines_from_bottom) {
+void TerminalSetScrollbackOffset(TvGhosttyTerminal terminal, uint32_t lines_from_bottom) {
     if (terminal == nullptr) {
         return;
     }
@@ -2538,11 +2538,11 @@ void TerminalSetScrollbackOffset(GhosttyTerminal terminal, uint32_t lines_from_b
     }
 }
 
-uint32_t TerminalGetScrollbackOffset(GhosttyTerminal terminal) {
+uint32_t TerminalGetScrollbackOffset(TvGhosttyTerminal terminal) {
     return terminal == nullptr ? 0u : terminal->scrollback_offset;
 }
 
-uint32_t TerminalGetScrollbackCount(GhosttyTerminal terminal) {
+uint32_t TerminalGetScrollbackCount(TvGhosttyTerminal terminal) {
     if (terminal == nullptr || terminal->using_alt_screen) {
         return 0u;
     }
@@ -2550,7 +2550,7 @@ uint32_t TerminalGetScrollbackCount(GhosttyTerminal terminal) {
 }
 
 void TerminalSetSelection(
-    GhosttyTerminal terminal,
+    TvGhosttyTerminal terminal,
     bool active,
     int32_t start_row,
     int32_t start_col,
@@ -2573,34 +2573,34 @@ void TerminalSetSelection(
     terminal->MarkAllDirty();
 }
 
-void TerminalClearSelection(GhosttyTerminal terminal) {
+void TerminalClearSelection(TvGhosttyTerminal terminal) {
     if (terminal != nullptr && terminal->selection_active) {
         terminal->selection_active = false;
         terminal->MarkAllDirty();
     }
 }
 
-bool TerminalHasSelection(GhosttyTerminal terminal) {
+bool TerminalHasSelection(TvGhosttyTerminal terminal) {
     return terminal != nullptr && terminal->selection_active;
 }
 
-bool TerminalIsMouseTrackingActive(GhosttyTerminal terminal) {
+bool TerminalIsMouseTrackingActive(TvGhosttyTerminal terminal) {
     return terminal != nullptr && terminal->mouse_tracking_mode != 0;
 }
 
-bool TerminalIsBracketedPasteActive(GhosttyTerminal terminal) {
+bool TerminalIsBracketedPasteActive(TvGhosttyTerminal terminal) {
     return terminal != nullptr && terminal->mode_bracketed_paste;
 }
 
-bool TerminalIsApplicationCursorActive(GhosttyTerminal terminal) {
+bool TerminalIsApplicationCursorActive(TvGhosttyTerminal terminal) {
     return terminal != nullptr && terminal->mode_decckm;
 }
 
-std::string TerminalGetWindowTitle(GhosttyTerminal terminal) {
+std::string TerminalGetWindowTitle(TvGhosttyTerminal terminal) {
     return terminal == nullptr ? std::string() : terminal->window_title;
 }
 
-TerminalCursorSnapshot TerminalGetCursorSnapshot(GhosttyTerminal terminal) {
+TerminalCursorSnapshot TerminalGetCursorSnapshot(TvGhosttyTerminal terminal) {
     TerminalCursorSnapshot snap;
     if (terminal == nullptr) {
         return snap;
@@ -2655,7 +2655,7 @@ std::string ToLowerAscii(const std::string& s) {
 }  // namespace
 
 std::vector<SearchMatchNative> TerminalSearchScrollback(
-    GhosttyTerminal terminal,
+    TvGhosttyTerminal terminal,
     const std::string& query,
     bool use_regex,
     bool case_sensitive) {
@@ -2740,7 +2740,7 @@ std::vector<SearchMatchNative> TerminalSearchScrollback(
 }
 
 bool TerminalDetectLinkAt(
-    GhosttyTerminal terminal,
+    TvGhosttyTerminal terminal,
     uint16_t viewport_row,
     uint16_t viewport_col,
     DetectedLinkNative* out_link) {
@@ -2834,14 +2834,14 @@ bool TerminalDetectLinkAt(
     return false;
 }
 
-std::vector<KittyGraphicPlacement> TerminalGetKittyPlacements(GhosttyTerminal terminal) {
+std::vector<KittyGraphicPlacement> TerminalGetKittyPlacements(TvGhosttyTerminal terminal) {
     if (terminal == nullptr) {
         return {};
     }
     return terminal->kitty_placements;
 }
 
-uint64_t TerminalGetKittyGraphicsRevision(GhosttyTerminal terminal) {
+uint64_t TerminalGetKittyGraphicsRevision(TvGhosttyTerminal terminal) {
     return terminal == nullptr ? 0u : terminal->kitty_revision;
 }
 

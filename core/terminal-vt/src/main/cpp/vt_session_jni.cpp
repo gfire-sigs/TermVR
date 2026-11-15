@@ -49,20 +49,20 @@ void PaletteIndexToRgb256(uint8_t idx, const PaletteColors& pal, uint32_t* out_r
 
 VtSessionNative::VtSessionNative(uint16_t cols, uint16_t rows, uint32_t max_scrollback)
     : cols_(std::max<uint16_t>(1, cols)), rows_(std::max<uint16_t>(1, rows)) {
-    GhosttyTerminalOptions opts{};
+    TvGhosttyTerminalOptions opts{};
     opts.cols = cols_.load(std::memory_order_relaxed);
     opts.rows = rows_.load(std::memory_order_relaxed);
     opts.max_scrollback = max_scrollback == 0 ? kDefaultScrollbackLines : max_scrollback;
 
-    if (ghostty_terminal_new(nullptr, &terminal_, opts) != GHOSTTY_SUCCESS || terminal_ == nullptr) {
+    if (tv_ghostty_terminal_new(nullptr, &terminal_, opts) != TV_GHOSTTY_SUCCESS || terminal_ == nullptr) {
         Close();
         return;
     }
-    if (ghostty_render_state_new(nullptr, &render_state_) != GHOSTTY_SUCCESS ||
-        ghostty_render_state_row_iterator_new(nullptr, &row_iter_) != GHOSTTY_SUCCESS ||
-        ghostty_render_state_cell_iterator_new(nullptr, &cell_iter_) != GHOSTTY_SUCCESS ||
-        ghostty_key_encoder_new(nullptr, &key_encoder_) != GHOSTTY_SUCCESS ||
-        ghostty_mouse_encoder_new(nullptr, &mouse_encoder_) != GHOSTTY_SUCCESS) {
+    if (tv_ghostty_render_state_new(nullptr, &render_state_) != TV_GHOSTTY_SUCCESS ||
+        tv_ghostty_render_state_row_iterator_new(nullptr, &row_iter_) != TV_GHOSTTY_SUCCESS ||
+        tv_ghostty_render_state_cell_iterator_new(nullptr, &cell_iter_) != TV_GHOSTTY_SUCCESS ||
+        tv_ghostty_key_encoder_new(nullptr, &key_encoder_) != TV_GHOSTTY_SUCCESS ||
+        tv_ghostty_mouse_encoder_new(nullptr, &mouse_encoder_) != TV_GHOSTTY_SUCCESS) {
         Close();
         return;
     }
@@ -83,27 +83,27 @@ void VtSessionNative::Close() {
     std::lock_guard<std::mutex> lock(vt_mu_);
     // Deterministic reverse teardown order per Section 12.2.
     if (key_encoder_ != nullptr) {
-        ghostty_key_encoder_free(key_encoder_);
+        tv_ghostty_key_encoder_free(key_encoder_);
         key_encoder_ = nullptr;
     }
     if (mouse_encoder_ != nullptr) {
-        ghostty_mouse_encoder_free(mouse_encoder_);
+        tv_ghostty_mouse_encoder_free(mouse_encoder_);
         mouse_encoder_ = nullptr;
     }
     if (cell_iter_ != nullptr) {
-        ghostty_render_state_cell_iterator_free(cell_iter_);
+        tv_ghostty_render_state_cell_iterator_free(cell_iter_);
         cell_iter_ = nullptr;
     }
     if (row_iter_ != nullptr) {
-        ghostty_render_state_row_iterator_free(row_iter_);
+        tv_ghostty_render_state_row_iterator_free(row_iter_);
         row_iter_ = nullptr;
     }
     if (render_state_ != nullptr) {
-        ghostty_render_state_free(render_state_);
+        tv_ghostty_render_state_free(render_state_);
         render_state_ = nullptr;
     }
     if (terminal_ != nullptr) {
-        ghostty_terminal_free(terminal_);
+        tv_ghostty_terminal_free(terminal_);
         terminal_ = nullptr;
     }
 }
@@ -116,8 +116,8 @@ bool VtSessionNative::ResizeGrid(uint16_t cols, uint16_t rows, uint32_t cell_wid
     if (terminal_ == nullptr) {
         return false;
     }
-    GhosttyResult res = ghostty_terminal_resize(terminal_, cols, rows, cell_width_px, cell_height_px);
-    if (res != GHOSTTY_SUCCESS) {
+    TvGhosttyResult res = tv_ghostty_terminal_resize(terminal_, cols, rows, cell_width_px, cell_height_px);
+    if (res != TV_GHOSTTY_SUCCESS) {
         return false;
     }
     cols_.store(cols, std::memory_order_release);
@@ -141,7 +141,7 @@ void VtSessionNative::WritePtyBytes(const uint8_t* data, size_t len) {
             if (terminal_ == nullptr) {
                 return;
             }
-            ghostty_terminal_vt_write(terminal_, data + offset, chunk);
+            tv_ghostty_terminal_vt_write(terminal_, data + offset, chunk);
             dirty_flag_.store(true, std::memory_order_release);
         }
         offset += chunk;
@@ -252,7 +252,7 @@ TerminalCursorSnapshot VtSessionNative::GetCursorSnapshot() const {
     return terminal_ == nullptr ? TerminalCursorSnapshot{} : TerminalGetCursorSnapshot(terminal_);
 }
 
-std::vector<uint8_t> VtSessionNative::EncodeKey(const GhosttyKeyEvent& event) {
+std::vector<uint8_t> VtSessionNative::EncodeKey(const TvGhosttyKeyEvent& event) {
     if (closed_.load(std::memory_order_acquire)) {
         return {};
     }
@@ -260,22 +260,22 @@ std::vector<uint8_t> VtSessionNative::EncodeKey(const GhosttyKeyEvent& event) {
     if (terminal_ == nullptr || key_encoder_ == nullptr) {
         return {};
     }
-    ghostty_key_encoder_set_opts_from_terminal(key_encoder_, terminal_);
+    tv_ghostty_key_encoder_set_opts_from_terminal(key_encoder_, terminal_);
     std::vector<uint8_t> buf(128);
     size_t written = 0;
-    GhosttyResult res = ghostty_key_encoder_encode(key_encoder_, event, buf.data(), buf.size(), &written);
-    if (res == GHOSTTY_OUT_OF_SPACE && written > 0) {
+    TvGhosttyResult res = tv_ghostty_key_encoder_encode(key_encoder_, event, buf.data(), buf.size(), &written);
+    if (res == TV_GHOSTTY_OUT_OF_SPACE && written > 0) {
         buf.resize(written);
-        res = ghostty_key_encoder_encode(key_encoder_, event, buf.data(), buf.size(), &written);
+        res = tv_ghostty_key_encoder_encode(key_encoder_, event, buf.data(), buf.size(), &written);
     }
-    if (res != GHOSTTY_SUCCESS) {
+    if (res != TV_GHOSTTY_SUCCESS) {
         return {};
     }
     buf.resize(written);
     return buf;
 }
 
-std::vector<uint8_t> VtSessionNative::EncodeMouse(const GhosttyMouseEvent& event) {
+std::vector<uint8_t> VtSessionNative::EncodeMouse(const TvGhosttyMouseEvent& event) {
     if (closed_.load(std::memory_order_acquire)) {
         return {};
     }
@@ -283,15 +283,15 @@ std::vector<uint8_t> VtSessionNative::EncodeMouse(const GhosttyMouseEvent& event
     if (terminal_ == nullptr || mouse_encoder_ == nullptr) {
         return {};
     }
-    ghostty_mouse_encoder_set_opts_from_terminal(mouse_encoder_, terminal_);
+    tv_ghostty_mouse_encoder_set_opts_from_terminal(mouse_encoder_, terminal_);
     std::vector<uint8_t> buf(64);
     size_t written = 0;
-    GhosttyResult res = ghostty_mouse_encoder_encode(mouse_encoder_, event, buf.data(), buf.size(), &written);
-    if (res == GHOSTTY_OUT_OF_SPACE && written > 0) {
+    TvGhosttyResult res = tv_ghostty_mouse_encoder_encode(mouse_encoder_, event, buf.data(), buf.size(), &written);
+    if (res == TV_GHOSTTY_OUT_OF_SPACE && written > 0) {
         buf.resize(written);
-        res = ghostty_mouse_encoder_encode(mouse_encoder_, event, buf.data(), buf.size(), &written);
+        res = tv_ghostty_mouse_encoder_encode(mouse_encoder_, event, buf.data(), buf.size(), &written);
     }
-    if (res != GHOSTTY_SUCCESS) {
+    if (res != TV_GHOSTTY_SUCCESS) {
         return {};
     }
     buf.resize(written);
@@ -299,7 +299,7 @@ std::vector<uint8_t> VtSessionNative::EncodeMouse(const GhosttyMouseEvent& event
 }
 
 bool VtSessionNative::IsPasteSafe(const char* data, size_t len) {
-    return ghostty_paste_is_safe(data, len);
+    return tv_ghostty_paste_is_safe(data, len);
 }
 
 bool VtSessionNative::EncodePaste(const char* data, size_t len, bool allow_unsafe, std::vector<uint8_t>* out_bytes) {
@@ -313,14 +313,14 @@ bool VtSessionNative::EncodePaste(const char* data, size_t len, bool allow_unsaf
     }
     out_bytes->resize(len + 32u);
     size_t written = 0;
-    GhosttyResult res = ghostty_terminal_paste(
+    TvGhosttyResult res = tv_ghostty_terminal_paste(
         terminal_, data, len, allow_unsafe, out_bytes->data(), out_bytes->size(), &written);
-    if (res == GHOSTTY_OUT_OF_SPACE && written > 0) {
+    if (res == TV_GHOSTTY_OUT_OF_SPACE && written > 0) {
         out_bytes->resize(written);
-        res = ghostty_terminal_paste(
+        res = tv_ghostty_terminal_paste(
             terminal_, data, len, allow_unsafe, out_bytes->data(), out_bytes->size(), &written);
     }
-    if (res != GHOSTTY_SUCCESS) {
+    if (res != TV_GHOSTTY_SUCCESS) {
         out_bytes->clear();
         return false;
     }
@@ -344,8 +344,8 @@ std::string VtSessionNative::FormatText(
     if (terminal_ == nullptr) {
         return {};
     }
-    GhosttyFormatterTerminalOptions opts{};
-    opts.emit = emit_vt ? GHOSTTY_FORMATTER_EMIT_VT : GHOSTTY_FORMATTER_EMIT_PLAIN;
+    TvGhosttyFormatterTerminalOptions opts{};
+    opts.emit = emit_vt ? TV_GHOSTTY_FORMATTER_EMIT_VT : TV_GHOSTTY_FORMATTER_EMIT_PLAIN;
     opts.trim_trailing_whitespace = trim_trailing_ws;
     opts.unwrap_soft_wraps = unwrap_soft_wraps;
     opts.use_selection = use_selection;
@@ -354,18 +354,18 @@ std::string VtSessionNative::FormatText(
     opts.end_row = end_row;
     opts.end_col = end_col;
 
-    GhosttyFormatter fmt = nullptr;
-    if (ghostty_formatter_terminal_new(nullptr, &fmt, terminal_, opts) != GHOSTTY_SUCCESS || fmt == nullptr) {
+    TvGhosttyFormatter fmt = nullptr;
+    if (tv_ghostty_formatter_terminal_new(nullptr, &fmt, terminal_, opts) != TV_GHOSTTY_SUCCESS || fmt == nullptr) {
         return {};
     }
     uint8_t* raw = nullptr;
     size_t raw_len = 0;
     std::string result;
-    if (ghostty_formatter_format_alloc(fmt, nullptr, &raw, &raw_len) == GHOSTTY_SUCCESS && raw != nullptr) {
+    if (tv_ghostty_formatter_format_alloc(fmt, nullptr, &raw, &raw_len) == TV_GHOSTTY_SUCCESS && raw != nullptr) {
         result.assign(reinterpret_cast<const char*>(raw), raw_len);
-        ghostty_formatter_buffer_free(nullptr, raw, raw_len);
+        tv_ghostty_formatter_buffer_free(nullptr, raw, raw_len);
     }
-    ghostty_formatter_free(fmt);
+    tv_ghostty_formatter_free(fmt);
     return result;
 }
 
@@ -394,16 +394,16 @@ bool VtSessionNative::DetectLinkAt(uint16_t viewport_row, uint16_t viewport_col,
     return TerminalDetectLinkAt(terminal_, viewport_row, viewport_col, out_link);
 }
 
-uint32_t VtSessionNative::ResolveColor(const GhosttyColorValue& c, uint32_t default_rgba) const noexcept {
+uint32_t VtSessionNative::ResolveColor(const TvGhosttyColorValue& c, uint32_t default_rgba) const noexcept {
     switch (c.kind) {
-        case GHOSTTY_COLOR_DEFAULT:
+        case TV_GHOSTTY_COLOR_DEFAULT:
             return default_rgba;
-        case GHOSTTY_COLOR_PALETTE: {
+        case TV_GHOSTTY_COLOR_PALETTE: {
             uint32_t rgba = default_rgba;
             PaletteIndexToRgb256(c.palette_index, palette_, &rgba);
             return rgba;
         }
-        case GHOSTTY_COLOR_RGB:
+        case TV_GHOSTTY_COLOR_RGB:
             return PackRgba(c.r, c.g, c.b);
         default:
             return default_rgba;
@@ -419,17 +419,17 @@ bool VtSessionNative::ExtractDirtyFrame(bool force_full, ExtractedFrameSnapshot*
         return false;
     }
 
-    if (ghostty_render_state_update(render_state_, terminal_) != GHOSTTY_SUCCESS) {
+    if (tv_ghostty_render_state_update(render_state_, terminal_) != TV_GHOSTTY_SUCCESS) {
         return false;
     }
 
-    GhosttyRenderStateDirty dirty = ghostty_render_state_get_dirty(render_state_);
-    bool full = force_full || (dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL);
+    TvGhosttyRenderStateDirty dirty = tv_ghostty_render_state_get_dirty(render_state_);
+    bool full = force_full || (dirty == TV_GHOSTTY_RENDER_STATE_DIRTY_FULL);
 
     out_snapshot->cols = cols_.load(std::memory_order_relaxed);
     out_snapshot->rows = rows_.load(std::memory_order_relaxed);
     out_snapshot->full_redraw = full;
-    out_snapshot->any_dirty = full || (dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE);
+    out_snapshot->any_dirty = full || (dirty != TV_GHOSTTY_RENDER_STATE_DIRTY_FALSE);
     out_snapshot->palette = palette_;
     out_snapshot->cursor = TerminalGetCursorSnapshot(terminal_);
     out_snapshot->dirty_rows.clear();
@@ -442,17 +442,17 @@ bool VtSessionNative::ExtractDirtyFrame(bool force_full, ExtractedFrameSnapshot*
     }
 
     if (out_snapshot->any_dirty) {
-        ghostty_render_state_row_iterator_begin(row_iter_, render_state_, !full);
+        tv_ghostty_render_state_row_iterator_begin(row_iter_, render_state_, !full);
         uint16_t row_idx = 0;
-        while (full ? ghostty_render_state_row_iterator_next(row_iter_, &row_idx)
-                    : ghostty_render_state_row_iterator_next_dirty(row_iter_, &row_idx)) {
+        while (full ? tv_ghostty_render_state_row_iterator_next(row_iter_, &row_idx)
+                    : tv_ghostty_render_state_row_iterator_next_dirty(row_iter_, &row_idx)) {
             ExtractedRow erow;
             erow.row_index = row_idx;
             erow.cells.reserve(out_snapshot->cols);
 
-            ghostty_render_state_cell_iterator_begin(cell_iter_, render_state_, row_idx);
-            GhosttyCellSnapshot snap_cell{};
-            while (ghostty_render_state_cell_iterator_next(cell_iter_, &snap_cell)) {
+            tv_ghostty_render_state_cell_iterator_begin(cell_iter_, render_state_, row_idx);
+            TvGhosttyCellSnapshot snap_cell{};
+            while (tv_ghostty_render_state_cell_iterator_next(cell_iter_, &snap_cell)) {
                 ExtractedCell ec;
                 ec.col = snap_cell.col;
                 ec.width = snap_cell.width;
@@ -460,7 +460,7 @@ bool VtSessionNative::ExtractDirtyFrame(bool force_full, ExtractedFrameSnapshot*
                 ec.style_flags = snap_cell.style_flags;
                 ec.fg_rgba = ResolveColor(snap_cell.fg, palette_.foreground_rgba);
                 ec.bg_rgba = ResolveColor(snap_cell.bg, palette_.background_rgba);
-                ec.deco_rgba = (snap_cell.underline_color.kind == GHOSTTY_COLOR_DEFAULT)
+                ec.deco_rgba = (snap_cell.underline_color.kind == TV_GHOSTTY_COLOR_DEFAULT)
                     ? 0u
                     : ResolveColor(snap_cell.underline_color, ec.fg_rgba);
                 ec.primary_codepoint = snap_cell.primary_codepoint;
@@ -473,7 +473,7 @@ bool VtSessionNative::ExtractDirtyFrame(bool force_full, ExtractedFrameSnapshot*
         }
     }
 
-    ghostty_render_state_clean(render_state_);
+    tv_ghostty_render_state_clean(render_state_);
     dirty_flag_.store(false, std::memory_order_release);
     return true;
 }
@@ -726,9 +726,9 @@ Java_dev_gfire_termvr_core_vt_JniVtBindings_nativeEncodeKey(
         return env->NewByteArray(0);
     }
     std::string text = JStringToUtf8(env, utf8Text);
-    GhosttyKeyEvent ev{};
-    ev.key = static_cast<GhosttyKey>(keyCode);
-    ev.action = static_cast<GhosttyKeyAction>(action);
+    TvGhosttyKeyEvent ev{};
+    ev.key = static_cast<TvGhosttyKey>(keyCode);
+    ev.action = static_cast<TvGhosttyKeyAction>(action);
     ev.mods = static_cast<uint32_t>(mods);
     ev.unicode_codepoint = static_cast<uint32_t>(codepoint);
     ev.utf8_text = text.empty() ? nullptr : text.data();
@@ -743,9 +743,9 @@ Java_dev_gfire_termvr_core_vt_JniVtBindings_nativeEncodeMouse(
     if (sess == nullptr) {
         return env->NewByteArray(0);
     }
-    GhosttyMouseEvent ev{};
-    ev.action = static_cast<GhosttyMouseAction>(action);
-    ev.button = static_cast<GhosttyMouseButton>(button);
+    TvGhosttyMouseEvent ev{};
+    ev.action = static_cast<TvGhosttyMouseAction>(action);
+    ev.button = static_cast<TvGhosttyMouseButton>(button);
     ev.mods = static_cast<uint32_t>(mods);
     ev.col = static_cast<uint16_t>(std::max(0, col));
     ev.row = static_cast<uint16_t>(std::max(0, row));

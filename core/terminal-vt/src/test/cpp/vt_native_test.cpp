@@ -90,23 +90,23 @@ void TestEncodersPasteAndKittyGraphics() {
     const char* setup = "\x1b[?1h\x1b[>4;2m\x1b[>1u\x1b[?1002h\x1b[?1006h\x1b[?2004h";
     session.WritePtyBytes(reinterpret_cast<const uint8_t*>(setup), std::strlen(setup));
 
-    GhosttyKeyEvent up{};
-    up.key = GHOSTTY_KEY_UP;
-    up.action = GHOSTTY_KEY_ACTION_PRESS;
+    TvGhosttyKeyEvent up{};
+    up.key = TV_GHOSTTY_KEY_UP;
+    up.action = TV_GHOSTTY_KEY_ACTION_PRESS;
     auto up_bytes = session.EncodeKey(up);
     assert(std::string(up_bytes.begin(), up_bytes.end()) == "\x1bOA");
 
-    GhosttyKeyEvent ctrl_c{};
-    ctrl_c.key = GHOSTTY_KEY_UNICODE;
-    ctrl_c.action = GHOSTTY_KEY_ACTION_PRESS;
-    ctrl_c.mods = GHOSTTY_MOD_CTRL;
+    TvGhosttyKeyEvent ctrl_c{};
+    ctrl_c.key = TV_GHOSTTY_KEY_UNICODE;
+    ctrl_c.action = TV_GHOSTTY_KEY_ACTION_PRESS;
+    ctrl_c.mods = TV_GHOSTTY_MOD_CTRL;
     ctrl_c.unicode_codepoint = 'c';
     auto kitty_ctrl_c = session.EncodeKey(ctrl_c);
     assert(std::string(kitty_ctrl_c.begin(), kitty_ctrl_c.end()) == "\x1b[99;5u");
 
-    GhosttyMouseEvent mpress{};
-    mpress.action = GHOSTTY_MOUSE_PRESS;
-    mpress.button = GHOSTTY_MOUSE_BUTTON_LEFT;
+    TvGhosttyMouseEvent mpress{};
+    mpress.action = TV_GHOSTTY_MOUSE_PRESS;
+    mpress.button = TV_GHOSTTY_MOUSE_BUTTON_LEFT;
     mpress.col = 3;
     mpress.row = 4;
     auto mbytes = session.EncodeMouse(mpress);

@@ -67,7 +67,9 @@ set(TERMVR_VT_SOURCES
     gles3_renderer.cpp
 )
 
-if(NOT TERMVR_HAS_UPSTREAM_DEPS)
+if(TERMVR_HAS_UPSTREAM_DEPS)
+    list(APPEND TERMVR_VT_SOURCES ghostty_vt_upstream.cpp)
+else()
     list(APPEND TERMVR_VT_SOURCES ghostty_vt_fallback.cpp)
 endif()
 

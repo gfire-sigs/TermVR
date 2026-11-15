@@ -53,7 +53,10 @@ jobs:
             echo "Found forbidden em-dash, spaced en-dash, or prose arrow" >&2
             exit 1
           fi
-          if rg -ni '\b(seamless|seamlessly|robust|battle-tested|cutting-edge|next-generation|state-of-the-art|powerhouse|unleash|empower|supercharge|elevate|delve|tapestry|testament|holistic|synergy|paradigm|under the hood|heavy lifting|effortlessly|meticulously|crucial|pivotal|paramount|game-changer|utilize|utilizes|utilizing|leverage|leverages|leveraging)\b' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/; then
+          slop_matches="$(rg -ni '\b(seamless|seamlessly|robust|battle-tested|cutting-edge|next-generation|state-of-the-art|powerhouse|unleash|empower|supercharge|elevate|delve|tapestry|testament|holistic|synergy|paradigm|under the hood|heavy lifting|effortlessly|meticulously|crucial|pivotal|paramount|game-changer|utilize|utilizes|utilizing|leverage|leverages|leveraging)\b' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/ || { rc=$?; [ "${rc}" -eq 1 ]; })"
+          filtered_slop="$(printf '%s\n' "${slop_matches}" | rg -v '^(AGENTS\.md:[0-9]+:rg -ni |$)' || true)"
+          if [ -n "${filtered_slop}" ]; then
+            printf '%s\n' "${filtered_slop}"
             echo "Found forbidden AI-slop word" >&2
             exit 1
           fi

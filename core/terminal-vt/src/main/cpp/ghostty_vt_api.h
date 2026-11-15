@@ -9,157 +9,153 @@
 
 #include "termvr_vt_types.h"
 
-#if defined(TERMVR_HAS_UPSTREAM_DEPS) && TERMVR_HAS_UPSTREAM_DEPS
-#include <ghostty/vt.h>
-#else
-
 extern "C" {
 
-typedef enum GhosttyResult {
-    GHOSTTY_SUCCESS = 0,
-    GHOSTTY_OUT_OF_MEMORY = 1,
-    GHOSTTY_INVALID_VALUE = 2,
-    GHOSTTY_OUT_OF_SPACE = 3,
-    GHOSTTY_UNSAFE_PASTE = 4,
-} GhosttyResult;
+typedef enum TvGhosttyResult {
+    TV_GHOSTTY_SUCCESS = 0,
+    TV_GHOSTTY_OUT_OF_MEMORY = 1,
+    TV_GHOSTTY_INVALID_VALUE = 2,
+    TV_GHOSTTY_OUT_OF_SPACE = 3,
+    TV_GHOSTTY_UNSAFE_PASTE = 4,
+} TvGhosttyResult;
 
-typedef struct GhosttyAllocator {
+typedef struct TvGhosttyAllocator {
     void* ctx;
-} GhosttyAllocator;
+} TvGhosttyAllocator;
 
-typedef struct GhosttyTerminalImpl* GhosttyTerminal;
-typedef struct GhosttyRenderStateImpl* GhosttyRenderState;
-typedef struct GhosttyRenderStateRowIteratorImpl* GhosttyRenderStateRowIterator;
-typedef struct GhosttyRenderStateCellIteratorImpl* GhosttyRenderStateCellIterator;
-typedef struct GhosttyKeyEncoderImpl* GhosttyKeyEncoder;
-typedef struct GhosttyMouseEncoderImpl* GhosttyMouseEncoder;
-typedef struct GhosttyFormatterImpl* GhosttyFormatter;
+typedef struct TvGhosttyTerminalImpl* TvGhosttyTerminal;
+typedef struct TvGhosttyRenderStateImpl* TvGhosttyRenderState;
+typedef struct TvGhosttyRenderStateRowIteratorImpl* TvGhosttyRenderStateRowIterator;
+typedef struct TvGhosttyRenderStateCellIteratorImpl* TvGhosttyRenderStateCellIterator;
+typedef struct TvGhosttyKeyEncoderImpl* TvGhosttyKeyEncoder;
+typedef struct TvGhosttyMouseEncoderImpl* TvGhosttyMouseEncoder;
+typedef struct TvGhosttyFormatterImpl* TvGhosttyFormatter;
 
-typedef struct GhosttyTerminalOptions {
+typedef struct TvGhosttyTerminalOptions {
     uint16_t cols;
     uint16_t rows;
     uint32_t max_scrollback;
-} GhosttyTerminalOptions;
+} TvGhosttyTerminalOptions;
 
-typedef enum GhosttyRenderStateDirty {
-    GHOSTTY_RENDER_STATE_DIRTY_FALSE = 0,
-    GHOSTTY_RENDER_STATE_DIRTY_PARTIAL = 1,
-    GHOSTTY_RENDER_STATE_DIRTY_FULL = 2,
-} GhosttyRenderStateDirty;
+typedef enum TvGhosttyRenderStateDirty {
+    TV_GHOSTTY_RENDER_STATE_DIRTY_FALSE = 0,
+    TV_GHOSTTY_RENDER_STATE_DIRTY_PARTIAL = 1,
+    TV_GHOSTTY_RENDER_STATE_DIRTY_FULL = 2,
+} TvGhosttyRenderStateDirty;
 
-typedef enum GhosttyColorKind {
-    GHOSTTY_COLOR_DEFAULT = 0,
-    GHOSTTY_COLOR_PALETTE = 1,
-    GHOSTTY_COLOR_RGB = 2,
-} GhosttyColorKind;
+typedef enum TvGhosttyColorKind {
+    TV_GHOSTTY_COLOR_DEFAULT = 0,
+    TV_GHOSTTY_COLOR_PALETTE = 1,
+    TV_GHOSTTY_COLOR_RGB = 2,
+} TvGhosttyColorKind;
 
-typedef struct GhosttyColorValue {
-    GhosttyColorKind kind;
+typedef struct TvGhosttyColorValue {
+    TvGhosttyColorKind kind;
     uint8_t palette_index;
     uint8_t r;
     uint8_t g;
     uint8_t b;
-} GhosttyColorValue;
+} TvGhosttyColorValue;
 
-typedef struct GhosttyCellSnapshot {
+typedef struct TvGhosttyCellSnapshot {
     uint16_t col;
     uint8_t width;
     bool is_continuation;
     uint16_t style_flags;
-    GhosttyColorValue fg;
-    GhosttyColorValue bg;
-    GhosttyColorValue underline_color;
+    TvGhosttyColorValue fg;
+    TvGhosttyColorValue bg;
+    TvGhosttyColorValue underline_color;
     char grapheme_utf8[32];
     uint8_t grapheme_len;
     uint32_t primary_codepoint;
-} GhosttyCellSnapshot;
+} TvGhosttyCellSnapshot;
 
-typedef enum GhosttyKeyAction {
-    GHOSTTY_KEY_ACTION_PRESS = 1,
-    GHOSTTY_KEY_ACTION_REPEAT = 2,
-    GHOSTTY_KEY_ACTION_RELEASE = 3,
-} GhosttyKeyAction;
+typedef enum TvGhosttyKeyAction {
+    TV_GHOSTTY_KEY_ACTION_PRESS = 1,
+    TV_GHOSTTY_KEY_ACTION_REPEAT = 2,
+    TV_GHOSTTY_KEY_ACTION_RELEASE = 3,
+} TvGhosttyKeyAction;
 
-typedef enum GhosttyKey {
-    GHOSTTY_KEY_NONE = 0,
-    GHOSTTY_KEY_ESCAPE = 1,
-    GHOSTTY_KEY_ENTER = 2,
-    GHOSTTY_KEY_TAB = 3,
-    GHOSTTY_KEY_BACKSPACE = 4,
-    GHOSTTY_KEY_INSERT = 5,
-    GHOSTTY_KEY_DELETE = 6,
-    GHOSTTY_KEY_LEFT = 7,
-    GHOSTTY_KEY_RIGHT = 8,
-    GHOSTTY_KEY_UP = 9,
-    GHOSTTY_KEY_DOWN = 10,
-    GHOSTTY_KEY_PAGE_UP = 11,
-    GHOSTTY_KEY_PAGE_DOWN = 12,
-    GHOSTTY_KEY_HOME = 13,
-    GHOSTTY_KEY_END = 14,
-    GHOSTTY_KEY_F1 = 15,
-    GHOSTTY_KEY_F2 = 16,
-    GHOSTTY_KEY_F3 = 17,
-    GHOSTTY_KEY_F4 = 18,
-    GHOSTTY_KEY_F5 = 19,
-    GHOSTTY_KEY_F6 = 20,
-    GHOSTTY_KEY_F7 = 21,
-    GHOSTTY_KEY_F8 = 22,
-    GHOSTTY_KEY_F9 = 23,
-    GHOSTTY_KEY_F10 = 24,
-    GHOSTTY_KEY_F11 = 25,
-    GHOSTTY_KEY_F12 = 26,
-    GHOSTTY_KEY_UNICODE = 100,
-} GhosttyKey;
+typedef enum TvGhosttyKey {
+    TV_GHOSTTY_KEY_NONE = 0,
+    TV_GHOSTTY_KEY_ESCAPE = 1,
+    TV_GHOSTTY_KEY_ENTER = 2,
+    TV_GHOSTTY_KEY_TAB = 3,
+    TV_GHOSTTY_KEY_BACKSPACE = 4,
+    TV_GHOSTTY_KEY_INSERT = 5,
+    TV_GHOSTTY_KEY_DELETE = 6,
+    TV_GHOSTTY_KEY_LEFT = 7,
+    TV_GHOSTTY_KEY_RIGHT = 8,
+    TV_GHOSTTY_KEY_UP = 9,
+    TV_GHOSTTY_KEY_DOWN = 10,
+    TV_GHOSTTY_KEY_PAGE_UP = 11,
+    TV_GHOSTTY_KEY_PAGE_DOWN = 12,
+    TV_GHOSTTY_KEY_HOME = 13,
+    TV_GHOSTTY_KEY_END = 14,
+    TV_GHOSTTY_KEY_F1 = 15,
+    TV_GHOSTTY_KEY_F2 = 16,
+    TV_GHOSTTY_KEY_F3 = 17,
+    TV_GHOSTTY_KEY_F4 = 18,
+    TV_GHOSTTY_KEY_F5 = 19,
+    TV_GHOSTTY_KEY_F6 = 20,
+    TV_GHOSTTY_KEY_F7 = 21,
+    TV_GHOSTTY_KEY_F8 = 22,
+    TV_GHOSTTY_KEY_F9 = 23,
+    TV_GHOSTTY_KEY_F10 = 24,
+    TV_GHOSTTY_KEY_F11 = 25,
+    TV_GHOSTTY_KEY_F12 = 26,
+    TV_GHOSTTY_KEY_UNICODE = 100,
+} TvGhosttyKey;
 
-enum GhosttyModifierBits {
-    GHOSTTY_MOD_NONE = 0,
-    GHOSTTY_MOD_SHIFT = 1u << 0,
-    GHOSTTY_MOD_ALT = 1u << 1,
-    GHOSTTY_MOD_CTRL = 1u << 2,
-    GHOSTTY_MOD_SUPER = 1u << 3,
+enum TvGhosttyModifierBits {
+    TV_GHOSTTY_MOD_NONE = 0,
+    TV_GHOSTTY_MOD_SHIFT = 1u << 0,
+    TV_GHOSTTY_MOD_ALT = 1u << 1,
+    TV_GHOSTTY_MOD_CTRL = 1u << 2,
+    TV_GHOSTTY_MOD_SUPER = 1u << 3,
 };
 
-typedef struct GhosttyKeyEvent {
-    GhosttyKey key;
-    GhosttyKeyAction action;
+typedef struct TvGhosttyKeyEvent {
+    TvGhosttyKey key;
+    TvGhosttyKeyAction action;
     uint32_t mods;
     uint32_t unicode_codepoint;
     const char* utf8_text;
     size_t utf8_len;
-} GhosttyKeyEvent;
+} TvGhosttyKeyEvent;
 
-typedef enum GhosttyMouseAction {
-    GHOSTTY_MOUSE_PRESS = 0,
-    GHOSTTY_MOUSE_RELEASE = 1,
-    GHOSTTY_MOUSE_MOTION = 2,
-    GHOSTTY_MOUSE_WHEEL_UP = 3,
-    GHOSTTY_MOUSE_WHEEL_DOWN = 4,
-} GhosttyMouseAction;
+typedef enum TvGhosttyMouseAction {
+    TV_GHOSTTY_MOUSE_PRESS = 0,
+    TV_GHOSTTY_MOUSE_RELEASE = 1,
+    TV_GHOSTTY_MOUSE_MOTION = 2,
+    TV_GHOSTTY_MOUSE_WHEEL_UP = 3,
+    TV_GHOSTTY_MOUSE_WHEEL_DOWN = 4,
+} TvGhosttyMouseAction;
 
-typedef enum GhosttyMouseButton {
-    GHOSTTY_MOUSE_BUTTON_NONE = 0,
-    GHOSTTY_MOUSE_BUTTON_LEFT = 1,
-    GHOSTTY_MOUSE_BUTTON_MIDDLE = 2,
-    GHOSTTY_MOUSE_BUTTON_RIGHT = 3,
-} GhosttyMouseButton;
+typedef enum TvGhosttyMouseButton {
+    TV_GHOSTTY_MOUSE_BUTTON_NONE = 0,
+    TV_GHOSTTY_MOUSE_BUTTON_LEFT = 1,
+    TV_GHOSTTY_MOUSE_BUTTON_MIDDLE = 2,
+    TV_GHOSTTY_MOUSE_BUTTON_RIGHT = 3,
+} TvGhosttyMouseButton;
 
-typedef struct GhosttyMouseEvent {
-    GhosttyMouseAction action;
-    GhosttyMouseButton button;
+typedef struct TvGhosttyMouseEvent {
+    TvGhosttyMouseAction action;
+    TvGhosttyMouseButton button;
     uint32_t mods;
     uint16_t col;
     uint16_t row;
     uint32_t pixel_x;
     uint32_t pixel_y;
-} GhosttyMouseEvent;
+} TvGhosttyMouseEvent;
 
-typedef enum GhosttyFormatterEmit {
-    GHOSTTY_FORMATTER_EMIT_PLAIN = 0,
-    GHOSTTY_FORMATTER_EMIT_VT = 1,
-} GhosttyFormatterEmit;
+typedef enum TvGhosttyFormatterEmit {
+    TV_GHOSTTY_FORMATTER_EMIT_PLAIN = 0,
+    TV_GHOSTTY_FORMATTER_EMIT_VT = 1,
+} TvGhosttyFormatterEmit;
 
-typedef struct GhosttyFormatterTerminalOptions {
-    GhosttyFormatterEmit emit;
+typedef struct TvGhosttyFormatterTerminalOptions {
+    TvGhosttyFormatterEmit emit;
     bool trim_trailing_whitespace;
     bool unwrap_soft_wraps;
     bool use_selection;
@@ -167,132 +163,132 @@ typedef struct GhosttyFormatterTerminalOptions {
     int32_t start_col;
     int32_t end_row;
     int32_t end_col;
-} GhosttyFormatterTerminalOptions;
+} TvGhosttyFormatterTerminalOptions;
 
-GhosttyResult ghostty_terminal_new(
-    const GhosttyAllocator* allocator,
-    GhosttyTerminal* out_terminal,
-    GhosttyTerminalOptions opts);
+TvGhosttyResult tv_ghostty_terminal_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyTerminal* out_terminal,
+    TvGhosttyTerminalOptions opts);
 
-void ghostty_terminal_free(GhosttyTerminal terminal);
+void tv_ghostty_terminal_free(TvGhosttyTerminal terminal);
 
-GhosttyResult ghostty_terminal_resize(
-    GhosttyTerminal terminal,
+TvGhosttyResult tv_ghostty_terminal_resize(
+    TvGhosttyTerminal terminal,
     uint16_t cols,
     uint16_t rows,
     uint32_t cell_width_px,
     uint32_t cell_height_px);
 
-void ghostty_terminal_vt_write(
-    GhosttyTerminal terminal,
+void tv_ghostty_terminal_vt_write(
+    TvGhosttyTerminal terminal,
     const uint8_t* data,
     size_t len);
 
-GhosttyResult ghostty_render_state_new(
-    const GhosttyAllocator* allocator,
-    GhosttyRenderState* out_state);
+TvGhosttyResult tv_ghostty_render_state_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyRenderState* out_state);
 
-void ghostty_render_state_free(GhosttyRenderState state);
+void tv_ghostty_render_state_free(TvGhosttyRenderState state);
 
-GhosttyResult ghostty_render_state_update(
-    GhosttyRenderState state,
-    GhosttyTerminal terminal);
+TvGhosttyResult tv_ghostty_render_state_update(
+    TvGhosttyRenderState state,
+    TvGhosttyTerminal terminal);
 
-GhosttyRenderStateDirty ghostty_render_state_get_dirty(GhosttyRenderState state);
+TvGhosttyRenderStateDirty tv_ghostty_render_state_get_dirty(TvGhosttyRenderState state);
 
-void ghostty_render_state_clean(GhosttyRenderState state);
+void tv_ghostty_render_state_clean(TvGhosttyRenderState state);
 
-GhosttyResult ghostty_render_state_row_iterator_new(
-    const GhosttyAllocator* allocator,
-    GhosttyRenderStateRowIterator* out_iter);
+TvGhosttyResult tv_ghostty_render_state_row_iterator_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyRenderStateRowIterator* out_iter);
 
-void ghostty_render_state_row_iterator_free(GhosttyRenderStateRowIterator iter);
+void tv_ghostty_render_state_row_iterator_free(TvGhosttyRenderStateRowIterator iter);
 
-void ghostty_render_state_row_iterator_begin(
-    GhosttyRenderStateRowIterator iter,
-    GhosttyRenderState state,
+void tv_ghostty_render_state_row_iterator_begin(
+    TvGhosttyRenderStateRowIterator iter,
+    TvGhosttyRenderState state,
     bool dirty_only);
 
-bool ghostty_render_state_row_iterator_next(
-    GhosttyRenderStateRowIterator iter,
+bool tv_ghostty_render_state_row_iterator_next(
+    TvGhosttyRenderStateRowIterator iter,
     uint16_t* out_row);
 
-bool ghostty_render_state_row_iterator_next_dirty(
-    GhosttyRenderStateRowIterator iter,
+bool tv_ghostty_render_state_row_iterator_next_dirty(
+    TvGhosttyRenderStateRowIterator iter,
     uint16_t* out_row);
 
-GhosttyResult ghostty_render_state_cell_iterator_new(
-    const GhosttyAllocator* allocator,
-    GhosttyRenderStateCellIterator* out_iter);
+TvGhosttyResult tv_ghostty_render_state_cell_iterator_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyRenderStateCellIterator* out_iter);
 
-void ghostty_render_state_cell_iterator_free(GhosttyRenderStateCellIterator iter);
+void tv_ghostty_render_state_cell_iterator_free(TvGhosttyRenderStateCellIterator iter);
 
-void ghostty_render_state_cell_iterator_begin(
-    GhosttyRenderStateCellIterator iter,
-    GhosttyRenderState state,
+void tv_ghostty_render_state_cell_iterator_begin(
+    TvGhosttyRenderStateCellIterator iter,
+    TvGhosttyRenderState state,
     uint16_t row);
 
-bool ghostty_render_state_cell_iterator_next(
-    GhosttyRenderStateCellIterator iter,
-    GhosttyCellSnapshot* out_cell);
+bool tv_ghostty_render_state_cell_iterator_next(
+    TvGhosttyRenderStateCellIterator iter,
+    TvGhosttyCellSnapshot* out_cell);
 
-GhosttyResult ghostty_key_encoder_new(
-    const GhosttyAllocator* allocator,
-    GhosttyKeyEncoder* out_encoder);
+TvGhosttyResult tv_ghostty_key_encoder_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyKeyEncoder* out_encoder);
 
-void ghostty_key_encoder_free(GhosttyKeyEncoder encoder);
+void tv_ghostty_key_encoder_free(TvGhosttyKeyEncoder encoder);
 
-void ghostty_key_encoder_set_opts_from_terminal(
-    GhosttyKeyEncoder encoder,
-    GhosttyTerminal terminal);
+void tv_ghostty_key_encoder_set_opts_from_terminal(
+    TvGhosttyKeyEncoder encoder,
+    TvGhosttyTerminal terminal);
 
-GhosttyResult ghostty_key_encoder_encode(
-    GhosttyKeyEncoder encoder,
-    GhosttyKeyEvent event,
+TvGhosttyResult tv_ghostty_key_encoder_encode(
+    TvGhosttyKeyEncoder encoder,
+    TvGhosttyKeyEvent event,
     uint8_t* out_buf,
     size_t buf_cap,
     size_t* out_written);
 
-GhosttyResult ghostty_mouse_encoder_new(
-    const GhosttyAllocator* allocator,
-    GhosttyMouseEncoder* out_encoder);
+TvGhosttyResult tv_ghostty_mouse_encoder_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyMouseEncoder* out_encoder);
 
-void ghostty_mouse_encoder_free(GhosttyMouseEncoder encoder);
+void tv_ghostty_mouse_encoder_free(TvGhosttyMouseEncoder encoder);
 
-void ghostty_mouse_encoder_set_opts_from_terminal(
-    GhosttyMouseEncoder encoder,
-    GhosttyTerminal terminal);
+void tv_ghostty_mouse_encoder_set_opts_from_terminal(
+    TvGhosttyMouseEncoder encoder,
+    TvGhosttyTerminal terminal);
 
-GhosttyResult ghostty_mouse_encoder_encode(
-    GhosttyMouseEncoder encoder,
-    GhosttyMouseEvent event,
+TvGhosttyResult tv_ghostty_mouse_encoder_encode(
+    TvGhosttyMouseEncoder encoder,
+    TvGhosttyMouseEvent event,
     uint8_t* out_buf,
     size_t buf_cap,
     size_t* out_written);
 
-GhosttyResult ghostty_formatter_terminal_new(
-    const GhosttyAllocator* allocator,
-    GhosttyFormatter* out_formatter,
-    GhosttyTerminal terminal,
-    GhosttyFormatterTerminalOptions opts);
+TvGhosttyResult tv_ghostty_formatter_terminal_new(
+    const TvGhosttyAllocator* allocator,
+    TvGhosttyFormatter* out_formatter,
+    TvGhosttyTerminal terminal,
+    TvGhosttyFormatterTerminalOptions opts);
 
-GhosttyResult ghostty_formatter_format_alloc(
-    GhosttyFormatter formatter,
-    const GhosttyAllocator* allocator,
+TvGhosttyResult tv_ghostty_formatter_format_alloc(
+    TvGhosttyFormatter formatter,
+    const TvGhosttyAllocator* allocator,
     uint8_t** out_buf,
     size_t* out_len);
 
-void ghostty_formatter_free(GhosttyFormatter formatter);
+void tv_ghostty_formatter_free(TvGhosttyFormatter formatter);
 
-void ghostty_formatter_buffer_free(
-    const GhosttyAllocator* allocator,
+void tv_ghostty_formatter_buffer_free(
+    const TvGhosttyAllocator* allocator,
     uint8_t* buf,
     size_t len);
 
-bool ghostty_paste_is_safe(const char* data, size_t len);
+bool tv_ghostty_paste_is_safe(const char* data, size_t len);
 
-GhosttyResult ghostty_terminal_paste(
-    GhosttyTerminal terminal,
+TvGhosttyResult tv_ghostty_terminal_paste(
+    TvGhosttyTerminal terminal,
     const char* data,
     size_t len,
     bool allow_unsafe,
@@ -301,8 +297,6 @@ GhosttyResult ghostty_terminal_paste(
     size_t* out_written);
 
 }  // extern "C"
-
-#endif  // TERMVR_HAS_UPSTREAM_DEPS
 
 namespace termvr::vt {
 
@@ -331,45 +325,45 @@ struct ExtractedRow {
     std::vector<ExtractedCell> cells;
 };
 
-void TerminalSetScrollbackOffset(GhosttyTerminal terminal, uint32_t lines_from_bottom);
-uint32_t TerminalGetScrollbackOffset(GhosttyTerminal terminal);
-uint32_t TerminalGetScrollbackCount(GhosttyTerminal terminal);
+void TerminalSetScrollbackOffset(TvGhosttyTerminal terminal, uint32_t lines_from_bottom);
+uint32_t TerminalGetScrollbackOffset(TvGhosttyTerminal terminal);
+uint32_t TerminalGetScrollbackCount(TvGhosttyTerminal terminal);
 
 void TerminalSetSelection(
-    GhosttyTerminal terminal,
+    TvGhosttyTerminal terminal,
     bool active,
     int32_t start_row,
     int32_t start_col,
     int32_t end_row,
     int32_t end_col);
 
-void TerminalClearSelection(GhosttyTerminal terminal);
+void TerminalClearSelection(TvGhosttyTerminal terminal);
 
-bool TerminalHasSelection(GhosttyTerminal terminal);
+bool TerminalHasSelection(TvGhosttyTerminal terminal);
 
-bool TerminalIsMouseTrackingActive(GhosttyTerminal terminal);
-bool TerminalIsBracketedPasteActive(GhosttyTerminal terminal);
-bool TerminalIsApplicationCursorActive(GhosttyTerminal terminal);
+bool TerminalIsMouseTrackingActive(TvGhosttyTerminal terminal);
+bool TerminalIsBracketedPasteActive(TvGhosttyTerminal terminal);
+bool TerminalIsApplicationCursorActive(TvGhosttyTerminal terminal);
 
-std::string TerminalGetWindowTitle(GhosttyTerminal terminal);
+std::string TerminalGetWindowTitle(TvGhosttyTerminal terminal);
 
-TerminalCursorSnapshot TerminalGetCursorSnapshot(GhosttyTerminal terminal);
+TerminalCursorSnapshot TerminalGetCursorSnapshot(TvGhosttyTerminal terminal);
 
 std::vector<SearchMatchNative> TerminalSearchScrollback(
-    GhosttyTerminal terminal,
+    TvGhosttyTerminal terminal,
     const std::string& query,
     bool use_regex,
     bool case_sensitive);
 
 bool TerminalDetectLinkAt(
-    GhosttyTerminal terminal,
+    TvGhosttyTerminal terminal,
     uint16_t viewport_row,
     uint16_t viewport_col,
     DetectedLinkNative* out_link);
 
-std::vector<KittyGraphicPlacement> TerminalGetKittyPlacements(GhosttyTerminal terminal);
+std::vector<KittyGraphicPlacement> TerminalGetKittyPlacements(TvGhosttyTerminal terminal);
 
-uint64_t TerminalGetKittyGraphicsRevision(GhosttyTerminal terminal);
+uint64_t TerminalGetKittyGraphicsRevision(TvGhosttyTerminal terminal);
 
 }  // namespace termvr::vt
 

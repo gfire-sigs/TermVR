@@ -58,8 +58,8 @@ public:
     std::string GetWindowTitle() const;
     TerminalCursorSnapshot GetCursorSnapshot() const;
 
-    std::vector<uint8_t> EncodeKey(const GhosttyKeyEvent& event);
-    std::vector<uint8_t> EncodeMouse(const GhosttyMouseEvent& event);
+    std::vector<uint8_t> EncodeKey(const TvGhosttyKeyEvent& event);
+    std::vector<uint8_t> EncodeMouse(const TvGhosttyMouseEvent& event);
 
     static bool IsPasteSafe(const char* data, size_t len);
     bool EncodePaste(const char* data, size_t len, bool allow_unsafe, std::vector<uint8_t>* out_bytes);
@@ -96,12 +96,12 @@ public:
 
 private:
     mutable std::mutex vt_mu_;
-    GhosttyTerminal terminal_ = nullptr;
-    GhosttyRenderState render_state_ = nullptr;
-    GhosttyRenderStateRowIterator row_iter_ = nullptr;
-    GhosttyRenderStateCellIterator cell_iter_ = nullptr;
-    GhosttyKeyEncoder key_encoder_ = nullptr;
-    GhosttyMouseEncoder mouse_encoder_ = nullptr;
+    TvGhosttyTerminal terminal_ = nullptr;
+    TvGhosttyRenderState render_state_ = nullptr;
+    TvGhosttyRenderStateRowIterator row_iter_ = nullptr;
+    TvGhosttyRenderStateCellIterator cell_iter_ = nullptr;
+    TvGhosttyKeyEncoder key_encoder_ = nullptr;
+    TvGhosttyMouseEncoder mouse_encoder_ = nullptr;
 
     PaletteColors palette_;
     std::atomic<uint16_t> cols_{80};
@@ -116,7 +116,7 @@ private:
 
     uint64_t last_seen_kitty_rev_ = 0;
 
-    uint32_t ResolveColor(const GhosttyColorValue& c, uint32_t default_rgba) const noexcept;
+    uint32_t ResolveColor(const TvGhosttyColorValue& c, uint32_t default_rgba) const noexcept;
 };
 
 }  // namespace termvr::vt

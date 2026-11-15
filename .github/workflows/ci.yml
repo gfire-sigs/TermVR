@@ -35,7 +35,10 @@ jobs:
             echo "Found forbidden em-dash, spaced en-dash, or prose arrow" >&2
             exit 1
           fi
-          if rg -ni '\b(seamless|seamlessly|robust|battle-tested|cutting-edge|next-generation|state-of-the-art|powerhouse|unleash|empower|supercharge|elevate|delve|tapestry|testament|holistic|synergy|paradigm|under the hood|heavy lifting|effortlessly|meticulously|crucial|pivotal|paramount|game-changer|utilize|utilizes|utilizing|leverage|leverages|leveraging)\b' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/; then
+          slop_matches="$(rg -ni '\b(seamless|seamlessly|robust|battle-tested|cutting-edge|next-generation|state-of-the-art|powerhouse|unleash|empower|supercharge|elevate|delve|tapestry|testament|holistic|synergy|paradigm|under the hood|heavy lifting|effortlessly|meticulously|crucial|pivotal|paramount|game-changer|utilize|utilizes|utilizing|leverage|leverages|leveraging)\b' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/ || { rc=$?; [ "${rc}" -eq 1 ]; })"
+          filtered_slop="$(printf '%s\n' "${slop_matches}" | rg -v '^(AGENTS\.md:[0-9]+:rg -ni |$)' || true)"
+          if [ -n "${filtered_slop}" ]; then
+            printf '%s\n' "${filtered_slop}"
             echo "Found forbidden AI-slop word" >&2
             exit 1
           fi
@@ -154,6 +157,8 @@ jobs:
 
       - name: Compile native dependencies offline
         run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare -r -n ./scripts/build-native-deps.sh --abi arm64-v8a,x86_64
 
       - name: Run unit tests, lint, and assemble APKs
@@ -219,7 +224,11 @@ jobs:
             adb logcat -c
             adb shell monkey -p dev.gfire.termvr -c android.intent.category.LAUNCHER 1
             sleep 3
-            adb shell pidof dev.gfire.termvr
+            if ! adb shell pidof dev.gfire.termvr; then
+              echo "dev.gfire.termvr process is not running after launch" >&2
+              adb logcat -d -s AndroidRuntime:E libc:F DEBUG:F || true
+              exit 1
+            fi
             if adb logcat -d -s AndroidRuntime:E libc:F | grep -q "FATAL EXCEPTION"; then
               adb logcat -d -s AndroidRuntime:E libc:F
               exit 1
