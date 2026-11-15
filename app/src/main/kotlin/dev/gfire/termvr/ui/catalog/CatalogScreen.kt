@@ -381,8 +381,14 @@ private fun RecipeCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                TermVrBadge(text = "Min ${preflight.requiredRamMiB} MB RAM")
-                TermVrBadge(text = "Min ${preflight.requiredDiskMiB} MB Disk")
+                if (preflight.requiredRamMiB > 0) {
+                    TermVrBadge(text = "Min ${preflight.requiredRamMiB} MB RAM")
+                } else {
+                    TermVrBadge(text = "Unlimited CPU & RAM")
+                }
+                if (preflight.requiredDiskMiB > 0L) {
+                    TermVrBadge(text = "Min ${preflight.requiredDiskMiB} MB Disk")
+                }
                 if (runState == SandboxRunState.RUNNING) {
                     TermVrBadge(
                         text = if (probeReady) "Port ${recipe.readinessTcpPort} ready" else "Starting :${recipe.readinessTcpPort}",
@@ -401,10 +407,16 @@ private fun RecipeCard(
             }
 
             if (recipe.optionalAssetManifest != null) {
+                val variantRamMiB = recipe.optionalVariantMinProfileRamMiB
+                val calicoLabel = if (variantRamMiB != null && variantRamMiB > 0) {
+                    "Calico VXLAN ($variantRamMiB MB)"
+                } else {
+                    "Calico VXLAN"
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = calicoEnabled, onCheckedChange = { onToggleCalico() })
                     Text(
-                        text = "Calico VXLAN (${recipe.optionalVariantMinProfileRamMiB ?: 4096} MB)",
+                        text = calicoLabel,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -421,7 +433,7 @@ private fun RecipeCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TermVrButton(
                     onClick = onLaunch,
-                    enabled = !busy && preflight.diskOk,
+                    enabled = !busy,
                 ) {
                     Text(if (runState == SandboxRunState.RUNNING) "Open" else "Launch")
                 }

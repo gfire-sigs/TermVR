@@ -235,7 +235,7 @@ class AppViewModelsTest {
     }
 
     @Test
-    fun catalogViewModelRaisesCalicoRamFloorAndRewritesExportedKubeconfig() = runTest(testDispatcher) {
+    fun catalogViewModelKeepsUnlimitedResourcesWithCalicoAndRewritesExportedKubeconfig() = runTest(testDispatcher) {
         val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
         val coordinator = TerminalSessionCoordinator(
             runtimeGateway = gateway,
@@ -256,13 +256,15 @@ class AppViewModelsTest {
         advanceUntilIdle()
 
         val k3s = vm.uiState.value.recipes.first { it.id == "k3s-single-node" }
-        assertEquals(6144, vm.uiState.value.preflightFor(k3s).requiredRamMiB)
+        assertEquals(0, vm.uiState.value.preflightFor(k3s).requiredRamMiB)
+        assertEquals(0L, vm.uiState.value.preflightFor(k3s).requiredDiskMiB)
         assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, vm.uiState.value.preflightFor(k3s).profileRamMiB)
+        assertTrue(vm.uiState.value.preflightFor(k3s).passed)
 
         vm.toggleCalicoVxlan()
         advanceUntilIdle()
-        assertEquals(6144, vm.uiState.value.preflightFor(k3s).requiredRamMiB)
-        assertEquals(4096, vm.uiState.value.preflightFor(k3s).profileRamMiB)
+        assertEquals(0, vm.uiState.value.preflightFor(k3s).requiredRamMiB)
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, vm.uiState.value.preflightFor(k3s).profileRamMiB)
 
         var opened = false
         vm.launchRecipe(k3s) { opened = true }
@@ -270,12 +272,16 @@ class AppViewModelsTest {
         assertTrue(opened)
         val savedK3s = profileRepo.getProfile("k3s-single-node")
         assertNotNull(savedK3s)
-        assertEquals(4096, savedK3s!!.memoryMiB)
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, savedK3s!!.memoryMiB)
+        assertEquals(SandboxProfile.UNLIMITED_CPU_CORES, savedK3s.cpuCores)
+        assertEquals("legacy", savedK3s.envVars["IPTABLES_MODE"])
+        assertEquals("/workspace/k3s/kubeconfig.yaml", savedK3s.envVars["KUBECONFIG"])
         assertTrue(savedK3s.initDaemonArgv.contains("--flannel-backend=none"))
+        assertTrue(File(gateway.workspaceDir("k3s-single-node"), "k3s").isDirectory)
         assertTrue(File(gateway.workspaceDir("k3s-single-node"), "calico-vxlan.yaml").isFile)
 
         // Create kubeconfig and export via share sheet
-        val k3sDir = File(gateway.workspaceDir("k3s-single-node"), "k3s").apply { mkdirs() }
+        val k3sDir = File(gateway.workspaceDir("k3s-single-node"), "k3s")
         File(k3sDir, "kubeconfig.yaml").writeText("server: https://10.88.0.2:6443\n")
         vm.exportKubeconfig("k3s-single-node")
         advanceUntilIdle()
@@ -464,6 +470,14 @@ class AppViewModelsTest {
         val shellTab = coordinator.tabs.value.firstOrNull { !it.isDaemonLogs }
         assertNotNull(shellTab)
         assertEquals(shellTab!!.tabId, coordinator.activeTabId.value)
+
+        val savedDind = profileRepo.getProfile("docker-dind")
+        assertNotNull(savedDind)
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, savedDind!!.memoryMiB)
+        assertEquals(SandboxProfile.UNLIMITED_CPU_CORES, savedDind.cpuCores)
+        assertEquals("1", savedDind.envVars["DOCKER_IPTABLES_LEGACY"])
+        assertEquals("unix:///var/run/docker.sock", savedDind.envVars["DOCKER_HOST"])
+        assertFalse(savedDind.initDaemonArgv.any { it.startsWith("--host=") })
 
         vmScope.cancel()
     }

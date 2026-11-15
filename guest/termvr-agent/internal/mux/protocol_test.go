@@ -622,6 +622,20 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 		t.Fatal("expected error when no shell exists in root")
 	}
 
+	// Verify /bin/aux/sh fallback (used by minimal busybox/CRI images like rancher/k3s).
+	auxBinDir := filepath.Join(binDir, "aux")
+	if err := os.MkdirAll(auxBinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	auxShPath := filepath.Join(auxBinDir, "sh")
+	if err := os.WriteFile(auxShPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gotAux, err := mux.ResolveShellArgv(nil, root)
+	if err != nil || len(gotAux) != 1 || gotAux[0] != "/bin/aux/sh" {
+		t.Fatalf("expected [/bin/aux/sh], got %v (err=%v)", gotAux, err)
+	}
+
 	// Create /bin/sh first, then /bin/ash, then /bin/bash and verify strict precedence.
 	shPath := filepath.Join(binDir, "sh")
 	if err := os.WriteFile(shPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -678,6 +692,19 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 	}
 	if envMap["CUSTOM"] != "1" || envMap["FOO"] != "bar" {
 		t.Fatalf("env merge lost entries: %v", envMap)
+	}
+
+	// Default PATH fallback includes /bin/aux for k3s image compatibility.
+	defaultEnv := mux.BuildGuestEnv(nil, nil, "/run/termvr-agent/bin")
+	var defaultPath string
+	for _, kv := range defaultEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "PATH" {
+			defaultPath = v
+			break
+		}
+	}
+	if !strings.Contains(defaultPath, ":/bin/aux") {
+		t.Fatalf("expected default fallback PATH to include :/bin/aux, got %q", defaultPath)
 	}
 }
 

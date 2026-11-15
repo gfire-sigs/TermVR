@@ -72,8 +72,8 @@ data class CatalogUiState(
             requiredRamMiB = hostRamFloor,
             profileRamMiB = profileRam,
             requiredDiskMiB = recipe.minFreeDiskMiB.toLong(),
-            ramOk = hostReadiness.totalHostRamMiB <= 0 || hostReadiness.totalHostRamMiB >= hostRamFloor,
-            diskOk = hostReadiness.freeDiskMiB <= 0 || hostReadiness.freeDiskMiB >= recipe.minFreeDiskMiB,
+            ramOk = hostRamFloor <= 0 || hostReadiness.totalHostRamMiB <= 0 || hostReadiness.totalHostRamMiB >= hostRamFloor,
+            diskOk = recipe.minFreeDiskMiB <= 0 || hostReadiness.freeDiskMiB <= 0 || hostReadiness.freeDiskMiB >= recipe.minFreeDiskMiB,
         )
     }
 }
@@ -242,8 +242,8 @@ class CatalogViewModel(
     ) {
         scope.launch {
             val enableCalico = localState.value.calicoVxlanEnabled && recipe.optionalAssetManifest != null
-            val requestedRam = if (enableCalico) {
-                maxOf(recipe.defaultProfileRamMiB, recipe.optionalVariantMinProfileRamMiB ?: 4096)
+            val requestedRam = if (enableCalico && recipe.optionalVariantMinProfileRamMiB != null) {
+                maxOf(recipe.defaultProfileRamMiB, recipe.optionalVariantMinProfileRamMiB!!)
             } else {
                 recipe.defaultProfileRamMiB
             }
@@ -261,11 +261,14 @@ class CatalogViewModel(
                 )
                 profileRepository.upsertProfile(profile)
 
+                val workspace = runtimeGateway.workspaceDir(profile.id).apply { mkdirs() }
+                if (recipe.id == "k3s-single-node") {
+                    File(workspace, "k3s").mkdirs()
+                }
                 if (enableCalico) {
                     val assetPath = recipe.optionalAssetManifest
                     if (assetPath != null) {
                         val yaml = catalogRepository.loadRecipeAssetText(assetPath)
-                        val workspace = runtimeGateway.workspaceDir(profile.id).apply { mkdirs() }
                         File(workspace, File(assetPath).name).writeText(yaml)
                     }
                 }
@@ -491,7 +494,7 @@ class CatalogViewModel(
     ) {
         scope.launch {
             var attempts = 0
-            val maxAttempts = 240
+            val maxAttempts = 1200
             while (
                 attempts < maxAttempts &&
                 runtimeGateway.runStates.value[profile.id] == SandboxRunState.RUNNING &&

@@ -392,8 +392,12 @@ data class RecipeManifest(
         require(imageRef.isNotBlank() && !imageRef.any { it.isWhitespace() }) {
             "RecipeManifest imageRef must be a non-blank OCI reference without whitespace"
         }
-        require(minHostRamMiB >= SandboxProfile.MIN_MEMORY_MIB) {
-            "RecipeManifest minHostRamMiB must be at least ${SandboxProfile.MIN_MEMORY_MIB}"
+        require(
+            minHostRamMiB == SandboxProfile.UNLIMITED_MEMORY_MIB ||
+                minHostRamMiB >= SandboxProfile.MIN_MEMORY_MIB,
+        ) {
+            "RecipeManifest minHostRamMiB must be ${SandboxProfile.UNLIMITED_MEMORY_MIB} " +
+                "or at least ${SandboxProfile.MIN_MEMORY_MIB}"
         }
         require(
             defaultProfileRamMiB == SandboxProfile.UNLIMITED_MEMORY_MIB ||
@@ -402,7 +406,7 @@ data class RecipeManifest(
             "RecipeManifest defaultProfileRamMiB must be ${SandboxProfile.UNLIMITED_MEMORY_MIB} " +
                 "or at least ${SandboxProfile.MIN_MEMORY_MIB}"
         }
-        require(minFreeDiskMiB > 0) { "RecipeManifest minFreeDiskMiB must be positive" }
+        require(minFreeDiskMiB >= 0) { "RecipeManifest minFreeDiskMiB must be non-negative" }
         require(VOLUME_SUFFIX_REGEX.matches(volumeTemplateSuffix)) {
             "RecipeManifest volumeTemplateSuffix must match [a-z0-9._-]+"
         }
@@ -469,6 +473,7 @@ data class RecipeManifest(
             imageRef = imageRef,
             muxMode = MuxMode.STDIO_MUX,
             initDaemonArgv = daemonArgv,
+            cpuCores = SandboxProfile.UNLIMITED_CPU_CORES,
             memoryMiB = effectiveRam,
             guestPrivileged = guestPrivileged,
             volumes = listOf(recipeVolume),

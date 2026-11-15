@@ -281,12 +281,25 @@ class TerminalModelsTest {
         assertThrows(IllegalArgumentException::class.java) {
             k3s.copy(defaultProfileRamMiB = 128)
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            k3s.copy(minHostRamMiB = 128)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            k3s.copy(minFreeDiskMiB = -1)
+        }
 
-        val unlimitedRecipe = k3s.copy(defaultProfileRamMiB = 0)
+        val unlimitedRecipe = k3s.copy(
+            minHostRamMiB = 0,
+            defaultProfileRamMiB = 0,
+            minFreeDiskMiB = 0,
+            optionalVariantMinProfileRamMiB = null,
+        )
         assertEquals(0, unlimitedRecipe.defaultMemoryMiB)
-        val unlimitedProfile = unlimitedRecipe.toSandboxProfile(profileId = "dev-k3s-unlim")
-        assertEquals(0, unlimitedProfile.memoryMiB)
+        val unlimitedProfile = unlimitedRecipe.toSandboxProfile(profileId = "dev-k3s-unlim", enableOptionalVariant = true)
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, unlimitedProfile.memoryMiB)
+        assertEquals(SandboxProfile.UNLIMITED_CPU_CORES, unlimitedProfile.cpuCores)
         assertEquals(false, unlimitedProfile.hasMemoryLimit)
+        assertEquals(false, unlimitedProfile.hasCpuLimit)
     }
 
     private fun slotLabel(slot: KeySlotSpec): String = when (slot) {

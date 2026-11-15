@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	ErrNoShellFound   = errors.New("no guest shell found in /bin/bash, /bin/ash, or /bin/sh")
+	ErrNoShellFound   = errors.New("no guest shell found in /bin/bash, /bin/ash, /bin/sh, or /bin/aux/sh")
 	ErrInvalidWorkDir = errors.New("requested working directory does not exist")
 )
 
@@ -17,6 +17,7 @@ var defaultShellCandidates = []string{
 	"/bin/bash",
 	"/bin/ash",
 	"/bin/sh",
+	"/bin/aux/sh",
 }
 
 // PTYHandle abstracts one allocated guest pseudo-terminal and child process.
@@ -142,7 +143,7 @@ func BuildGuestEnv(baseEnv []string, overrides map[string]string, binDir string)
 	}
 	curPath := getEnvVal(out, "PATH")
 	if curPath == "" {
-		out = setEnvKV(out, "PATH", binDir+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+		out = setEnvKV(out, "PATH", binDir+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/bin/aux")
 	} else if !strings.HasPrefix(curPath, binDir+":") && curPath != binDir {
 		newPath := binDir
 		for rest := curPath; rest != ""; {

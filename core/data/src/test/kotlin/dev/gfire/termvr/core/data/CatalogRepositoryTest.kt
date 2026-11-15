@@ -42,38 +42,46 @@ class CatalogRepositoryTest {
 
         val docker = repo.loadRecipe("docker-dind")!!
         assertEquals("docker:28-dind", docker.imageRef)
-        assertEquals(4096, docker.minHostRamMiB)
+        assertEquals(0, docker.minHostRamMiB)
         assertEquals(0, docker.defaultProfileRamMiB)
-        assertEquals(2048, docker.minFreeDiskMiB)
+        assertEquals(0, docker.minFreeDiskMiB)
         assertEquals("docker", docker.volumeTemplateSuffix)
         assertEquals("/var/lib/docker", docker.volumeGuestMountPath)
         assertEquals("", docker.envVars["DOCKER_TLS_CERTDIR"])
+        assertEquals("1", docker.envVars["DOCKER_IPTABLES_LEGACY"])
+        assertEquals("unix:///var/run/docker.sock", docker.envVars["DOCKER_HOST"])
         assertFalse(docker.defaultAutoCheckpoint)
         assertEquals(2375, docker.readinessTcpPort)
         assertEquals(
             listOf(
                 "dockerd-entrypoint.sh",
-                "--storage-driver=overlay2",
-                "--iptables=true",
-                "--host=unix:///var/run/docker.sock",
-                "--host=tcp://127.0.0.1:2375",
+                "--tls=false",
+                "--userland-proxy=false",
             ),
             docker.initDaemonArgv,
         )
 
         val k3s = repo.loadRecipe("k3s-single-node")!!
         assertEquals("rancher/k3s:v1.32.2-k3s1", k3s.imageRef)
-        assertEquals(6144, k3s.minHostRamMiB)
+        assertEquals(0, k3s.minHostRamMiB)
         assertEquals(0, k3s.defaultProfileRamMiB)
-        assertEquals(3072, k3s.minFreeDiskMiB)
+        assertEquals(0, k3s.minFreeDiskMiB)
         assertEquals("k3s", k3s.volumeTemplateSuffix)
-        assertEquals("/var/lib/rancher/k3s", k3s.volumeGuestMountPath)
+        assertEquals("/var/lib/rancher", k3s.volumeGuestMountPath)
         assertTrue(k3s.makeRootRshared)
         assertEquals(6443, k3s.readinessTcpPort)
-        assertEquals(4096, k3s.optionalVariantMinProfileRamMiB)
+        assertEquals(null, k3s.optionalVariantMinProfileRamMiB)
+        assertEquals("legacy", k3s.envVars["IPTABLES_MODE"])
+        assertEquals("/workspace/k3s/kubeconfig.yaml", k3s.envVars["KUBECONFIG"])
         assertTrue(k3s.initDaemonArgv.contains("--flannel-backend=host-gw"))
+        assertTrue(k3s.initDaemonArgv.contains("--disable=traefik,servicelb"))
+        assertTrue(k3s.initDaemonArgv.contains("--write-kubeconfig=/workspace/k3s/kubeconfig.yaml"))
+        assertFalse(k3s.initDaemonArgv.contains("--snapshotter=native"))
         assertTrue(k3s.optionalVariantInitDaemonArgv.contains("--flannel-backend=none"))
         assertTrue(k3s.optionalVariantInitDaemonArgv.contains("--disable-network-policy"))
+        assertTrue(k3s.optionalVariantInitDaemonArgv.contains("--cluster-cidr=10.42.0.0/16"))
+        assertTrue(k3s.optionalVariantInitDaemonArgv.contains("--disable=traefik,servicelb"))
+        assertTrue(k3s.optionalVariantInitDaemonArgv.contains("--write-kubeconfig=/workspace/k3s/kubeconfig.yaml"))
 
         val calicoYaml = repo.loadRecipeAssetText(k3s.optionalAssetManifest!!)
         assertTrue(calicoYaml.contains("CALICO_IPV4POOL_VXLAN"))
