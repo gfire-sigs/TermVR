@@ -1,0 +1,3 @@
+interface:
+  display_name: "Type Driven"
+  short_description: "Use when modeling a domain, encoding a state machine, hardening APIs, making invalid states unrepresentable, or parsing instead of validating."

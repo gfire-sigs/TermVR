@@ -1,0 +1,3 @@
+interface:
+  display_name: "Optimize"
+  short_description: "Use when one named path or performance symptom needs a single measured fix."
