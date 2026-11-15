@@ -4,31 +4,34 @@ import android.content.Intent
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,15 +39,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.SandboxProfile
+import dev.gfire.termvr.core.runtime.VolumeDirEntry
 import dev.gfire.termvr.provider.TermVrDocumentsProvider
 import dev.gfire.termvr.provider.WorkspaceDocumentsEngine
 import dev.gfire.termvr.ui.home.formatBytes
+import dev.gfire.termvr.ui.theme.LocalTermVrMonoFontFamily
+import dev.gfire.termvr.ui.theme.TermVrBadge
+import dev.gfire.termvr.ui.theme.TermVrButton
+import dev.gfire.termvr.ui.theme.TermVrCard
+import dev.gfire.termvr.ui.theme.TermVrControlShape
+import dev.gfire.termvr.ui.theme.TermVrIcons
+import dev.gfire.termvr.ui.theme.TermVrNoticeBanner
+import dev.gfire.termvr.ui.theme.TermVrOutlinedButton
+import dev.gfire.termvr.ui.theme.TermVrSelectableChip
+import dev.gfire.termvr.ui.theme.TermVrTextButton
 
 /**
- * Renders the adaptive `/workspace` and `ext4lite` volume browser with checkpoint write locks.
+ * Renders the adaptive Workspace file browser and full Volume management console.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -56,6 +71,12 @@ fun FilesScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showNewFolderFor by remember { mutableStateOf<FileRootTab?>(null) }
+    var showNewVolumeDialog by remember { mutableStateOf(false) }
+    var mountDialogVolume by remember { mutableStateOf<ManagedVolumeItem?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshVolumeList()
+    }
 
     val importFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -73,18 +94,41 @@ fun FilesScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("Sandbox Files", style = MaterialTheme.typography.headlineSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Files", style = MaterialTheme.typography.headlineSmall)
+            if (isExpandedWidth || state.selectedRootTab == FileRootTab.VOLUME) {
+                TermVrOutlinedButton(
+                    onClick = { showNewVolumeDialog = true },
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Icon(
+                        imageVector = TermVrIcons.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("New Volume")
+                }
+            }
+        }
 
         if (state.profiles.isNotEmpty()) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 for (profile in state.profiles) {
-                    FilterChip(
+                    TermVrSelectableChip(
+                        label = profile.displayName,
                         selected = profile.id == state.selectedProfile?.id,
                         onClick = { viewModel.selectProfile(profile.id) },
-                        label = { Text(profile.displayName) },
                     )
                 }
             }
@@ -96,84 +140,76 @@ fun FilesScreen(
 
         val banner = state.errorMessage ?: state.statusMessage
         if (banner != null) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (state.errorMessage != null) {
-                        MaterialTheme.colorScheme.errorContainer
-                    } else {
-                        MaterialTheme.colorScheme.secondaryContainer
-                    },
-                ),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(banner, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                    TextButton(onClick = viewModel::clearBanners) { Text("Dismiss") }
-                }
-            }
+            val restartId = state.pendingRestartProfileId
+            TermVrNoticeBanner(
+                message = banner,
+                isError = state.errorMessage != null,
+                actionLabel = if (restartId != null) "Restart" else null,
+                onAction = if (restartId != null) {
+                    { viewModel.restartProfileForMount(restartId) }
+                } else {
+                    null
+                },
+                onDismiss = viewModel::clearBanners,
+            )
         }
 
         if (state.writeLocked) {
-            Card(
+            TermVrCard(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                borderColor = MaterialTheme.colorScheme.error.copy(alpha = 0.55f),
             ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "Workspace Write-Locked (Checkpoint Active)",
+                        text = "Locked while frozen",
                         style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.weight(1f),
                     )
-                    Text(
-                        text = "Editing workspace or volume files while frozen breaks checkpoint consistency.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Button(
+                    TermVrButton(
                         onClick = viewModel::discardCheckpointAndUnlock,
                         enabled = !state.busy,
                     ) {
-                        Text("Discard Checkpoint & Unlock Workspace")
+                        Text("Unlock")
                     }
                 }
             }
         }
 
-        if (state.selectedProfile == null) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Text("Select or create a sandbox profile on Home.", modifier = Modifier.padding(16.dp))
-            }
-            return@Column
-        }
-
-        val profile = state.selectedProfile!!
+        val profile = state.selectedProfile
         val openSafEditor: (HostFileItem) -> Unit = { item ->
-            val docId = "${WorkspaceDocumentsEngine.ENTRY_PREFIX}${profile.id}/${item.relativePath}"
-            val docUri = DocumentsContract.buildDocumentUri(TermVrDocumentsProvider.AUTHORITY, docId)
-            val flags = if (state.writeLocked) {
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
-            } else {
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            val editIntent = Intent(if (state.writeLocked) Intent.ACTION_VIEW else Intent.ACTION_EDIT).apply {
-                setDataAndType(docUri, "*/*")
-                addFlags(flags)
-            }
-            runCatching { context.startActivity(editIntent) }.onFailure {
-                viewModel.shareWorkspaceFile(item)
+            if (profile != null) {
+                val docId = "${WorkspaceDocumentsEngine.ENTRY_PREFIX}${profile.id}/${item.relativePath}"
+                val docUri = DocumentsContract.buildDocumentUri(TermVrDocumentsProvider.AUTHORITY, docId)
+                val flags = if (state.writeLocked) {
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
+                } else {
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                        Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                val editIntent = Intent(if (state.writeLocked) Intent.ACTION_VIEW else Intent.ACTION_EDIT).apply {
+                    setDataAndType(docUri, "*/*")
+                    addFlags(flags)
+                }
+                runCatching { context.startActivity(editIntent) }.onFailure {
+                    viewModel.shareWorkspaceFile(item)
+                }
             }
         }
 
         if (isExpandedWidth) {
             Row(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 WorkspacePane(
@@ -186,12 +222,22 @@ fun FilesScreen(
                     onOpenSafEditor = openSafEditor,
                     onShareFile = viewModel::shareWorkspaceFile,
                     onDeleteItem = viewModel::deleteWorkspaceItem,
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
                 )
-                VolumePane(
+                VolumesPane(
                     state = state,
-                    onSelectVolume = viewModel::selectVolumeName,
-                    onRefresh = viewModel::refreshVolume,
+                    onRefreshList = viewModel::refreshVolumeList,
+                    onNewVolume = { showNewVolumeDialog = true },
+                    onMountVolume = { mountDialogVolume = it },
+                    onUnmountFromSelected = { volName ->
+                        profile?.let { viewModel.unmountVolumeFromProfile(volName, it.id) }
+                    },
+                    onBrowseVolume = { viewModel.browseVolume(it.name) },
+                    onDeleteVolume = { viewModel.deleteNamedVolume(it.name) },
+                    onCloseBrowser = viewModel::closeVolumeBrowser,
+                    onRefreshFiles = viewModel::refreshVolume,
                     onUp = viewModel::navigateVolumeUp,
                     onOpenDir = { entry ->
                         val next = if (state.volumePath == "/") "/${entry.name}" else "${state.volumePath}/${entry.name}"
@@ -200,20 +246,26 @@ fun FilesScreen(
                     onNewFolder = { showNewFolderFor = FileRootTab.VOLUME },
                     onShareEntry = viewModel::shareVolumeFile,
                     onDeleteEntry = viewModel::deleteVolumeEntry,
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
                 )
             }
         } else {
-            TabRow(selectedTabIndex = state.selectedRootTab.ordinal) {
+            TabRow(
+                selectedTabIndex = state.selectedRootTab.ordinal,
+                containerColor = MaterialTheme.colorScheme.surface,
+                divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outline) },
+            ) {
                 Tab(
                     selected = state.selectedRootTab == FileRootTab.WORKSPACE,
                     onClick = { viewModel.selectRootTab(FileRootTab.WORKSPACE) },
-                    text = { Text("/workspace") },
+                    text = { Text("Workspace") },
                 )
                 Tab(
                     selected = state.selectedRootTab == FileRootTab.VOLUME,
                     onClick = { viewModel.selectRootTab(FileRootTab.VOLUME) },
-                    text = { Text("ext4lite Volumes") },
+                    text = { Text("Volumes") },
                 )
             }
             if (state.selectedRootTab == FileRootTab.WORKSPACE) {
@@ -227,13 +279,23 @@ fun FilesScreen(
                     onOpenSafEditor = openSafEditor,
                     onShareFile = viewModel::shareWorkspaceFile,
                     onDeleteItem = viewModel::deleteWorkspaceItem,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
                 )
             } else {
-                VolumePane(
+                VolumesPane(
                     state = state,
-                    onSelectVolume = viewModel::selectVolumeName,
-                    onRefresh = viewModel::refreshVolume,
+                    onRefreshList = viewModel::refreshVolumeList,
+                    onNewVolume = { showNewVolumeDialog = true },
+                    onMountVolume = { mountDialogVolume = it },
+                    onUnmountFromSelected = { volName ->
+                        profile?.let { viewModel.unmountVolumeFromProfile(volName, it.id) }
+                    },
+                    onBrowseVolume = { viewModel.browseVolume(it.name) },
+                    onDeleteVolume = { viewModel.deleteNamedVolume(it.name) },
+                    onCloseBrowser = viewModel::closeVolumeBrowser,
+                    onRefreshFiles = viewModel::refreshVolume,
                     onUp = viewModel::navigateVolumeUp,
                     onOpenDir = { entry ->
                         val next = if (state.volumePath == "/") "/${entry.name}" else "${state.volumePath}/${entry.name}"
@@ -242,7 +304,9 @@ fun FilesScreen(
                     onNewFolder = { showNewFolderFor = FileRootTab.VOLUME },
                     onShareEntry = viewModel::shareVolumeFile,
                     onDeleteEntry = viewModel::deleteVolumeEntry,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
                 )
             }
         }
@@ -262,6 +326,34 @@ fun FilesScreen(
             },
         )
     }
+
+    if (showNewVolumeDialog) {
+        NewVolumeDialog(
+            onDismiss = { showNewVolumeDialog = false },
+            onCreate = { name ->
+                viewModel.createNamedVolume(name)
+                showNewVolumeDialog = false
+            },
+        )
+    }
+
+    val targetVol = mountDialogVolume
+    if (targetVol != null) {
+        MountVolumeDialog(
+            volume = targetVol,
+            profiles = state.profiles,
+            initialProfileId = state.selectedProfile?.id,
+            onMount = { profileId, mountPath ->
+                viewModel.mountVolumeToProfile(targetVol.name, profileId, mountPath)
+                mountDialogVolume = null
+            },
+            onUnmount = { profileId ->
+                viewModel.unmountVolumeFromProfile(targetVol.name, profileId)
+                mountDialogVolume = null
+            },
+            onDismiss = { mountDialogVolume = null },
+        )
+    }
 }
 
 @Composable
@@ -277,53 +369,143 @@ private fun WorkspacePane(
     onDeleteItem: (HostFileItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(modifier = modifier) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val mono = LocalTermVrMonoFontFamily.current
+    if (state.selectedProfile == null) {
+        TermVrCard(modifier = modifier.fillMaxWidth()) {
             Text(
-                text = "/workspace/${state.workspacePath}",
-                style = MaterialTheme.typography.titleSmall,
+                text = "Create a container to browse its workspace.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(onClick = onUp, enabled = state.workspacePath.isNotEmpty()) { Text("Up") }
-                OutlinedButton(onClick = onRefresh) { Text("Refresh") }
-                OutlinedButton(onClick = onNewFolder, enabled = !state.writeLocked) { Text("+ Dir") }
-                OutlinedButton(onClick = onImportFile, enabled = !state.writeLocked) { Text("Import") }
-            }
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+        }
+        return
+    }
+
+    TermVrCard(modifier = modifier) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                items(state.workspaceEntries, key = { it.relativePath }) { item ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                Text(
+                    text = "/workspace/${state.workspacePath}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = mono,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(
+                        onClick = onUp,
+                        enabled = state.workspacePath.isNotEmpty(),
+                        modifier = Modifier.size(32.dp),
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (item.isDirectory) "[dir] ${item.name}" else item.name,
-                                style = MaterialTheme.typography.bodyMedium,
+                        Icon(TermVrIcons.ArrowUp, contentDescription = "Up", modifier = Modifier.size(16.dp))
+                    }
+                    IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
+                        Icon(TermVrIcons.Refresh, contentDescription = "Refresh", modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TermVrOutlinedButton(onClick = onNewFolder, enabled = !state.writeLocked) {
+                    Text("+ Folder")
+                }
+                TermVrOutlinedButton(onClick = onImportFile, enabled = !state.writeLocked) {
+                    Text("Import")
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            if (state.workspaceEntries.isEmpty()) {
+                Text(
+                    text = "Empty directory",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(state.workspaceEntries, key = { it.relativePath }) { item ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = item.isDirectory) { onOpenDir(item) }
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = if (item.isDirectory) TermVrIcons.Folder else TermVrIcons.FileDoc,
+                                contentDescription = null,
+                                tint = if (item.isDirectory) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(18.dp),
                             )
-                            if (!item.isDirectory) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = formatBytes(item.sizeBytes),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    text = item.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
+                                if (!item.isDirectory) {
+                                    Text(
+                                        text = formatBytes(item.sizeBytes),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = mono,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
-                        }
-                        Row {
                             if (item.isDirectory) {
-                                TextButton(onClick = { onOpenDir(item) }) { Text("Open") }
+                                IconButton(onClick = { onOpenDir(item) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(
+                                        TermVrIcons.ChevronRight,
+                                        contentDescription = "Open",
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
                             } else {
-                                TextButton(onClick = { onOpenSafEditor(item) }) { Text("Edit") }
-                                TextButton(onClick = { onShareFile(item) }) { Text("Share") }
+                                IconButton(onClick = { onOpenSafEditor(item) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(
+                                        TermVrIcons.Edit,
+                                        contentDescription = "Edit",
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                                IconButton(onClick = { onShareFile(item) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(
+                                        TermVrIcons.Share,
+                                        contentDescription = "Share",
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
                             }
-                            TextButton(
+                            IconButton(
                                 onClick = { onDeleteItem(item) },
                                 enabled = !state.writeLocked,
+                                modifier = Modifier.size(30.dp),
                             ) {
-                                Text("Del")
+                                Icon(
+                                    TermVrIcons.Delete,
+                                    contentDescription = "Delete",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(16.dp),
+                                )
                             }
                         }
                     }
@@ -335,74 +517,270 @@ private fun WorkspacePane(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun VolumePane(
+private fun VolumesPane(
     state: FilesUiState,
-    onSelectVolume: (String) -> Unit,
-    onRefresh: () -> Unit,
+    onRefreshList: () -> Unit,
+    onNewVolume: () -> Unit,
+    onMountVolume: (ManagedVolumeItem) -> Unit,
+    onUnmountFromSelected: (String) -> Unit,
+    onBrowseVolume: (ManagedVolumeItem) -> Unit,
+    onDeleteVolume: (ManagedVolumeItem) -> Unit,
+    onCloseBrowser: () -> Unit,
+    onRefreshFiles: () -> Unit,
     onUp: () -> Unit,
-    onOpenDir: (dev.gfire.termvr.core.runtime.VolumeDirEntry) -> Unit,
+    onOpenDir: (VolumeDirEntry) -> Unit,
     onNewFolder: () -> Unit,
-    onShareEntry: (dev.gfire.termvr.core.runtime.VolumeDirEntry) -> Unit,
-    onDeleteEntry: (dev.gfire.termvr.core.runtime.VolumeDirEntry) -> Unit,
+    onShareEntry: (VolumeDirEntry) -> Unit,
+    onDeleteEntry: (VolumeDirEntry) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val volumes = state.selectedProfile?.volumes
-        ?.filter { it.kind == VolumeKind.NAMED_EXT4LITE }
-        ?.map { it.sourceName }
-        .orEmpty()
-        .ifEmpty { listOf("data") }
+    val mono = LocalTermVrMonoFontFamily.current
+    val selectedProfileId = state.selectedProfile?.id
 
-    Card(modifier = modifier) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (vol in volumes) {
-                    FilterChip(
-                        selected = vol == state.selectedVolumeName,
-                        onClick = { onSelectVolume(vol) },
-                        label = { Text(vol) },
-                    )
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Named Volumes (${state.volumes.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(onClick = onRefreshList, modifier = Modifier.size(32.dp)) {
+                        Icon(TermVrIcons.Refresh, contentDescription = "Refresh volumes", modifier = Modifier.size(16.dp))
+                    }
+                    TermVrOutlinedButton(
+                        onClick = onNewVolume,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text("+ New Volume", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
-            Text(text = "ext4lite:${state.selectedVolumeName} ${state.volumePath}", style = MaterialTheme.typography.titleSmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(onClick = onUp, enabled = state.volumePath != "/") { Text("Up") }
-                OutlinedButton(onClick = onRefresh) { Text("Load") }
-                OutlinedButton(onClick = onNewFolder, enabled = !state.writeLocked) { Text("+ Dir") }
-            }
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                items(state.volumeEntries, key = { it.name }) { entry ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+        }
+
+        if (state.volumes.isEmpty()) {
+            item {
+                TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (entry.isDir) "[dir] ${entry.name}" else entry.name,
-                                style = MaterialTheme.typography.bodyMedium,
+                        Text("No volumes yet", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = "Create a persistent volume to share data across container restarts.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        } else {
+            items(state.volumes, key = { it.name }) { vol ->
+                val mountedOnSelected = selectedProfileId != null &&
+                    vol.mounts.any { it.profileId == selectedProfileId }
+
+                TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = TermVrIcons.VolumeDisk,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
                             )
-                            if (!entry.isDir) {
-                                Text(
-                                    text = formatBytes(entry.size),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                            Text(
+                                text = vol.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontFamily = mono,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (vol.sizeBytes > 0L) {
+                                TermVrBadge(text = formatBytes(vol.sizeBytes))
                             }
                         }
-                        Row {
-                            if (entry.isDir) {
-                                TextButton(onClick = { onOpenDir(entry) }) { Text("Open") }
-                            } else {
-                                TextButton(onClick = { onShareEntry(entry) }) { Text("Share") }
-                            }
-                            TextButton(
-                                onClick = { onDeleteEntry(entry) },
-                                enabled = !state.writeLocked,
+
+                        if (vol.mounts.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                Text("Del")
+                                for (mount in vol.mounts) {
+                                    TermVrBadge(
+                                        text = "${mount.profileDisplayName}:${mount.guestMountPath}",
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    )
+                                }
+                            }
+                        }
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            TermVrOutlinedButton(
+                                onClick = { onMountVolume(vol) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Text("Mount", style = MaterialTheme.typography.labelMedium)
+                            }
+                            if (mountedOnSelected) {
+                                TermVrOutlinedButton(
+                                    onClick = { onUnmountFromSelected(vol.name) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                ) {
+                                    Text("Unmount", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                            TermVrOutlinedButton(
+                                onClick = { onBrowseVolume(vol) },
+                                enabled = state.selectedProfile != null,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Text("Browse", style = MaterialTheme.typography.labelMedium)
+                            }
+                            TermVrTextButton(
+                                onClick = { onDeleteVolume(vol) },
+                                enabled = !vol.hasRunningMount && !state.busy,
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ) {
+                                Text("Delete")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        val activeVolume = state.selectedVolumeName
+        if (activeVolume != null) {
+            item {
+                TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "$activeVolume:${state.volumePath}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = mono,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                IconButton(
+                                    onClick = onUp,
+                                    enabled = state.volumePath != "/",
+                                    modifier = Modifier.size(30.dp),
+                                ) {
+                                    Icon(TermVrIcons.ArrowUp, contentDescription = "Up", modifier = Modifier.size(16.dp))
+                                }
+                                IconButton(onClick = onRefreshFiles, modifier = Modifier.size(30.dp)) {
+                                    Icon(TermVrIcons.Refresh, contentDescription = "Refresh", modifier = Modifier.size(16.dp))
+                                }
+                                IconButton(onClick = onCloseBrowser, modifier = Modifier.size(30.dp)) {
+                                    Icon(TermVrIcons.Close, contentDescription = "Close browser", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                        TermVrOutlinedButton(
+                            onClick = onNewFolder,
+                            enabled = !state.writeLocked,
+                        ) {
+                            Text("+ Folder")
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        if (state.volumeEntries.isEmpty()) {
+                            Text(
+                                text = "Empty directory",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 8.dp),
+                            )
+                        } else {
+                            for (entry in state.volumeEntries) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = entry.isDir) { onOpenDir(entry) }
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        imageVector = if (entry.isDir) TermVrIcons.Folder else TermVrIcons.FileDoc,
+                                        contentDescription = null,
+                                        tint = if (entry.isDir) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = entry.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (!entry.isDir) {
+                                            Text(
+                                                text = formatBytes(entry.size),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontFamily = mono,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                    if (entry.isDir) {
+                                        IconButton(onClick = { onOpenDir(entry) }, modifier = Modifier.size(30.dp)) {
+                                            Icon(
+                                                TermVrIcons.ChevronRight,
+                                                contentDescription = "Open",
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }
+                                    } else {
+                                        IconButton(onClick = { onShareEntry(entry) }, modifier = Modifier.size(30.dp)) {
+                                            Icon(
+                                                TermVrIcons.Share,
+                                                contentDescription = "Share",
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { onDeleteEntry(entry) },
+                                        enabled = !state.writeLocked,
+                                        modifier = Modifier.size(30.dp),
+                                    ) {
+                                        Icon(
+                                            TermVrIcons.Delete,
+                                            contentDescription = "Delete",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -420,20 +798,127 @@ private fun NewFolderDialog(
     var name by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Create Folder") },
+        shape = TermVrControlShape,
+        title = { Text("New Folder") },
         text = {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
                 label = { Text("Folder Name") },
                 singleLine = true,
+                shape = TermVrControlShape,
             )
         },
         confirmButton = {
-            Button(onClick = { onCreate(name) }) { Text("Create") }
+            TermVrButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) {
+                Text("Create")
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TermVrTextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun NewVolumeDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = TermVrControlShape,
+        title = { Text("New Volume") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Volume Name") },
+                placeholder = { Text("e.g. data") },
+                singleLine = true,
+                shape = TermVrControlShape,
+            )
+        },
+        confirmButton = {
+            TermVrButton(onClick = { onCreate(name) }, enabled = name.isNotBlank()) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TermVrTextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MountVolumeDialog(
+    volume: ManagedVolumeItem,
+    profiles: List<SandboxProfile>,
+    initialProfileId: String?,
+    onMount: (String, String) -> Unit,
+    onUnmount: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedProfileId by remember {
+        mutableStateOf(initialProfileId ?: profiles.firstOrNull()?.id)
+    }
+    var mountPath by remember { mutableStateOf("/data") }
+    val selectedAttachment = volume.mounts.firstOrNull { it.profileId == selectedProfileId }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = TermVrControlShape,
+        title = { Text("Mount ${volume.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (profiles.isEmpty()) {
+                    Text("No containers available.", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        for (profile in profiles) {
+                            TermVrSelectableChip(
+                                label = profile.displayName,
+                                selected = profile.id == selectedProfileId,
+                                onClick = { selectedProfileId = profile.id },
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = mountPath,
+                        onValueChange = { mountPath = it },
+                        label = { Text("Guest Path") },
+                        singleLine = true,
+                        shape = TermVrControlShape,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            val pid = selectedProfileId
+            if (pid != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (selectedAttachment != null) {
+                        TermVrOutlinedButton(onClick = { onUnmount(pid) }) {
+                            Text("Unmount")
+                        }
+                    }
+                    TermVrButton(
+                        onClick = { onMount(pid, mountPath) },
+                        enabled = mountPath.startsWith("/"),
+                    ) {
+                        Text("Mount")
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TermVrTextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
 }

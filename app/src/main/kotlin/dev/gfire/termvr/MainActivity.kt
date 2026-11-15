@@ -70,6 +70,10 @@ class MainActivity : ComponentActivity() {
         )
         settingsViewModel = SettingsViewModel(
             profileRepository = container.profileRepository,
+            runtimeGateway = container.runtimeGateway,
+            licenseLoader = dev.gfire.termvr.ui.licenses.LicenseCatalogLoader(assets),
+            appVersionName = BuildConfig.VERSION_NAME,
+            gvxVersion = BuildConfig.GVX_VERSION,
         )
 
         syncNotificationsPermissionState(container)

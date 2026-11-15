@@ -9,11 +9,15 @@ import dev.gfire.termvr.core.model.MuxMode
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
+import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.runtime.SandboxRuntimeGateway
 import dev.gfire.termvr.ui.terminal.TerminalSessionCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,32 +25,37 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * UI state for the Home dashboard, active sandbox cards, and Host Readiness diagnostics.
+ * UI state for the Containers dashboard and concurrent multi-container controls.
  */
 data class HomeUiState(
     val profiles: List<SandboxProfile> = emptyList(),
     val runStates: Map<String, SandboxRunState> = emptyMap(),
     val telemetry: Map<String, SandboxTelemetrySnapshot> = emptyMap(),
     val hostReadiness: HostReadinessReport = HostReadinessReport(hostSdkInt = 31, hostAbi = "arm64-v8a"),
-    val readinessExpanded: Boolean = false,
-    val busyProfileId: String? = null,
+    val availableVolumes: List<String> = emptyList(),
+    val busyProfileIds: Set<String> = emptySet(),
     val serviceNotice: String? = null,
+    val statusMessage: String? = null,
     val errorMessage: String? = null,
-    val recommendedAdbCommand: String = ADB_DISABLE_PHANTOM_KILLER_CMD,
 ) {
-    companion object {
-        const val ADB_DISABLE_PHANTOM_KILLER_CMD =
-            "adb shell device_config set_sync_disabled_for_tests persistent && " +
-                "adb shell device_config put activity_manager max_phantom_processes 2147483647 && " +
-                "adb shell settings put global settings_enable_monitor_phantom_procs false"
-    }
+    val hasReadinessWarning: Boolean
+        get() = hostReadiness.phantomKillerDetected || hostReadiness.exceedsRecommendedProcessBudget
+
+    val runningCount: Int
+        get() = runStates.values.count { it == SandboxRunState.RUNNING }
+
+    val activeOrFrozenCount: Int
+        get() = runStates.values.count {
+            it == SandboxRunState.RUNNING || it == SandboxRunState.FROZEN
+        }
 }
 
 /**
- * Coordinates Quick Shell launch, sandbox lifecycle transitions, and Host Readiness diagnostics.
+ * Coordinates Quick Debian launch, concurrent multi-container actions, and volume mounts.
  */
 class HomeViewModel(
     private val profileRepository: ProfileRepository,
@@ -55,8 +64,9 @@ class HomeViewModel(
     private val sessionCoordinator: TerminalSessionCoordinator,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
 ) {
-    private val readinessExpanded = MutableStateFlow(false)
-    private val busyProfileId = MutableStateFlow<String?>(null)
+    private val busyProfileIds = MutableStateFlow<Set<String>>(emptySet())
+    private val availableVolumes = MutableStateFlow<List<String>>(emptyList())
+    private val statusMessage = MutableStateFlow<String?>(null)
     private val errorMessage = MutableStateFlow<String?>(null)
 
     private val baseFlow = combine(
@@ -69,24 +79,31 @@ class HomeViewModel(
     }
 
     private val localFlow = combine(
-        readinessExpanded,
-        busyProfileId,
+        busyProfileIds,
+        availableVolumes,
         runtimeGateway.activeServiceNotice,
+        statusMessage,
         errorMessage,
-    ) { expanded, busyId, notice, err ->
-        LocalHomeData(expanded, busyId, notice, err)
+    ) { busyIds, volumes, notice, status, err ->
+        LocalHomeData(busyIds, volumes, notice, status, err)
     }
 
     val uiState: StateFlow<HomeUiState> = combine(baseFlow, localFlow) { base, local ->
-        val autoExpand = local.expanded || base.readiness.phantomKillerDetected || base.readiness.exceedsRecommendedProcessBudget
+        val profileVolumes = base.profiles.flatMap { profile ->
+            profile.volumes
+                .filter { it.kind == VolumeKind.NAMED_EXT4LITE }
+                .map { it.sourceName }
+        }
+        val mergedVolumes = (local.volumes + profileVolumes).distinct().sorted()
         HomeUiState(
             profiles = base.profiles,
             runStates = base.states,
             telemetry = base.telemetry,
             hostReadiness = base.readiness,
-            readinessExpanded = autoExpand,
-            busyProfileId = local.busyId,
+            availableVolumes = mergedVolumes,
+            busyProfileIds = local.busyIds,
             serviceNotice = local.notice,
+            statusMessage = local.status,
             errorMessage = local.err,
         )
     }.stateIn(
@@ -95,36 +112,37 @@ class HomeViewModel(
         initialValue = HomeUiState(hostReadiness = runtimeGateway.hostReadiness.value),
     )
 
-    fun toggleReadinessExpanded() {
-        readinessExpanded.value = !readinessExpanded.value
-    }
-
-    fun refreshHostReadiness() {
-        runtimeGateway.refreshHostReadiness()
-    }
-
     fun clearNotice() {
         runtimeGateway.clearNotice()
+        statusMessage.value = null
         errorMessage.value = null
     }
 
-    /**
-     * Ensures an Alpine quick shell profile exists, starts it, opens a terminal tab, and navigates.
-     */
-    fun launchQuickAlpine(onOpenTerminal: () -> Unit) {
+    fun refreshAvailableVolumes() {
         scope.launch {
-            busyProfileId.value = QUICK_ALPINE_PROFILE_ID
+            runCatching { runtimeGateway.listVolumes().map { it.name } }
+                .onSuccess { names -> availableVolumes.value = names }
+        }
+    }
+
+    /**
+     * Ensures the default Debian container exists, starts it, opens a terminal tab, and navigates.
+     */
+    fun launchQuickDebian(onOpenTerminal: () -> Unit) {
+        scope.launch {
+            markBusy(QUICK_DEBIAN_PROFILE_ID)
             errorMessage.value = null
+            statusMessage.value = null
             runCatching {
-                val existing = profileRepository.getProfile(QUICK_ALPINE_PROFILE_ID)
-                val profile = existing ?: buildQuickAlpineProfile().also {
+                val existing = profileRepository.getProfile(QUICK_DEBIAN_PROFILE_ID)
+                val profile = existing ?: buildQuickDebianProfile().also {
                     profileRepository.upsertProfile(it)
                 }
                 startAndAttachProfile(profile, onOpenTerminal)
             }.onFailure { err ->
-                errorMessage.value = err.message ?: "Failed to start Quick Shell"
+                errorMessage.value = err.message ?: "Failed to start Debian"
             }
-            busyProfileId.value = null
+            clearBusy(QUICK_DEBIAN_PROFILE_ID)
         }
     }
 
@@ -137,8 +155,9 @@ class HomeViewModel(
         onOpenTerminal: () -> Unit,
     ) {
         scope.launch {
-            busyProfileId.value = profile.id
+            markBusy(profile.id)
             errorMessage.value = null
+            statusMessage.value = null
             runCatching {
                 val currentState = runtimeGateway.runStates.value[profile.id] ?: SandboxRunState.STOPPED
                 if (currentState == SandboxRunState.RUNNING) {
@@ -153,55 +172,123 @@ class HomeViewModel(
                     startAndAttachProfile(profile, onOpenTerminal, reconfirmLan)
                 }
             }.onFailure { err ->
-                errorMessage.value = err.message ?: "Sandbox start failed"
+                errorMessage.value = err.message ?: "Container start failed"
             }
-            busyProfileId.value = null
+            clearBusy(profile.id)
+        }
+    }
+
+    /**
+     * Opens an additional interactive shell tab for a running container and switches to Terminal.
+     */
+    fun openNewShellForProfile(
+        profile: SandboxProfile,
+        onOpenTerminal: () -> Unit,
+    ) {
+        scope.launch {
+            errorMessage.value = null
+            runCatching {
+                val currentState = runtimeGateway.runStates.value[profile.id] ?: SandboxRunState.STOPPED
+                if (currentState != SandboxRunState.RUNNING) {
+                    startAndAttachProfile(profile, onOpenTerminal)
+                    return@runCatching
+                }
+                val settings = profileRepository.observeAppSettings().first()
+                val palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK
+                sessionCoordinator.openNewShellTab(
+                    profile = profile,
+                    maxScrollbackLines = settings.defaultScrollbackLines,
+                    palette = palette,
+                )
+                onOpenTerminal()
+            }.onFailure { err ->
+                errorMessage.value = err.message ?: "Failed to open shell"
+            }
         }
     }
 
     fun freezeProfile(profileId: String) {
         scope.launch {
-            busyProfileId.value = profileId
+            markBusy(profileId)
             errorMessage.value = null
             runCatching {
                 runtimeGateway.freezeSandbox(profileId)
             }.onFailure { err ->
-                errorMessage.value = err.message ?: "Failed to freeze sandbox"
+                errorMessage.value = err.message ?: "Failed to freeze container"
             }
-            busyProfileId.value = null
+            clearBusy(profileId)
         }
     }
 
     fun stopProfile(profileId: String) {
         scope.launch {
-            busyProfileId.value = profileId
+            markBusy(profileId)
             errorMessage.value = null
             runCatching {
                 runtimeGateway.stopSandbox(profileId)
                 sessionCoordinator.closeProfileTabs(profileId)
             }.onFailure { err ->
-                errorMessage.value = err.message ?: "Failed to stop sandbox"
+                errorMessage.value = err.message ?: "Failed to stop container"
             }
-            busyProfileId.value = null
+            clearBusy(profileId)
+        }
+    }
+
+    fun freezeAllRunning() {
+        scope.launch {
+            errorMessage.value = null
+            val runningIds = runtimeGateway.runStates.value
+                .filterValues { it == SandboxRunState.RUNNING }
+                .keys
+                .toList()
+            if (runningIds.isEmpty()) return@launch
+            runningIds.forEach(::markBusy)
+            runCatching {
+                runningIds.map { id ->
+                    async { runtimeGateway.freezeSandbox(id) }
+                }.awaitAll()
+            }.onFailure { err ->
+                errorMessage.value = err.message ?: "Failed to freeze all containers"
+            }
+            runningIds.forEach(::clearBusy)
+        }
+    }
+
+    fun stopAllRunning() {
+        scope.launch {
+            errorMessage.value = null
+            val activeIds = runtimeGateway.runStates.value
+                .filterValues { it != SandboxRunState.STOPPED }
+                .keys
+                .toList()
+            activeIds.forEach(::markBusy)
+            runCatching {
+                runtimeGateway.stopAllSandboxes()
+                activeIds.forEach { sessionCoordinator.closeProfileTabs(it) }
+            }.onFailure { err ->
+                errorMessage.value = err.message ?: "Failed to stop all containers"
+            }
+            activeIds.forEach(::clearBusy)
         }
     }
 
     fun createProfile(
         displayName: String,
         imageRef: String,
-        memoryMiB: Int,
-        cpuCores: Double,
-        muxMode: MuxMode,
+        memoryMiB: Int = SandboxProfile.UNLIMITED_MEMORY_MIB,
+        cpuCores: Double = SandboxProfile.UNLIMITED_CPU_CORES,
+        muxMode: MuxMode = MuxMode.STDIO_MUX,
     ) {
         scope.launch {
             errorMessage.value = null
+            statusMessage.value = null
             runCatching {
-                val cleanName = displayName.trim().ifEmpty { "Linux Shell" }
-                val cleanImage = imageRef.trim().ifEmpty { "alpine:3.21" }
+                val cleanName = displayName.trim().ifEmpty { "Debian Shell" }
+                val cleanImage = imageRef.trim().ifEmpty { DEFAULT_DEBIAN_IMAGE_REF }
                 val baseSlug = cleanName.lowercase()
                     .replace(Regex("""[^a-z0-9._-]+"""), "-")
                     .trim('-')
-                    .ifEmpty { "sandbox" }
+                    .ifEmpty { "container" }
                     .take(24)
                 val existingIds = profileRepository.observeProfiles().first().map { it.id }.toSet()
                 var candidateId = baseSlug
@@ -218,23 +305,97 @@ class HomeViewModel(
                     defaultShellArgv = listOf("/bin/sh"),
                     memoryMiB = SandboxProfile.clampMemoryMiB(memoryMiB),
                     cpuCores = SandboxProfile.clampCpuCores(cpuCores),
+                    volumes = listOf(
+                        VolumeMountSpec(
+                            sourceName = candidateId,
+                            guestMountPath = "/workspace",
+                            kind = VolumeKind.WORKSPACE_HOSTFS,
+                            readOnly = false,
+                        ),
+                    ),
                 )
                 profileRepository.upsertProfile(profile)
             }.onFailure { err ->
-                errorMessage.value = err.message ?: "Failed to save profile"
+                errorMessage.value = err.message ?: "Failed to create container"
+            }
+        }
+    }
+
+    fun attachVolumeToProfile(
+        profileId: String,
+        volumeName: String,
+        guestMountPath: String = "/data",
+    ) {
+        scope.launch {
+            errorMessage.value = null
+            statusMessage.value = null
+            runCatching {
+                val cleanVol = volumeName.trim()
+                val cleanPath = guestMountPath.trim().ifEmpty { "/data" }
+                val profile = profileRepository.getProfile(profileId)
+                    ?: error("Container not found")
+                if (cleanVol !in availableVolumes.value) {
+                    runCatching { runtimeGateway.createVolume(cleanVol) }
+                }
+                val mount = VolumeMountSpec(
+                    sourceName = cleanVol,
+                    guestMountPath = cleanPath,
+                    kind = VolumeKind.NAMED_EXT4LITE,
+                    readOnly = false,
+                )
+                val updatedVolumes = profile.volumes
+                    .filterNot {
+                        it.kind == VolumeKind.NAMED_EXT4LITE &&
+                            (it.sourceName == cleanVol || it.guestMountPath == cleanPath)
+                    } + mount
+                profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
+                availableVolumes.value = (availableVolumes.value + cleanVol).distinct().sorted()
+                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
+                statusMessage.value = if (isRunning) {
+                    "Attached $cleanVol at $cleanPath. Restart container to apply."
+                } else {
+                    "Attached $cleanVol at $cleanPath."
+                }
+            }.onFailure { err ->
+                errorMessage.value = err.message ?: "Failed to attach volume"
+            }
+        }
+    }
+
+    fun detachVolumeFromProfile(profileId: String, volumeName: String) {
+        scope.launch {
+            errorMessage.value = null
+            statusMessage.value = null
+            runCatching {
+                val profile = profileRepository.getProfile(profileId)
+                    ?: error("Container not found")
+                val updatedVolumes = profile.volumes.filterNot {
+                    it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == volumeName
+                }
+                profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
+                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
+                statusMessage.value = if (isRunning) {
+                    "Detached $volumeName. Restart container to apply."
+                } else {
+                    "Detached $volumeName."
+                }
+            }.onFailure { err ->
+                errorMessage.value = err.message ?: "Failed to detach volume"
             }
         }
     }
 
     fun deleteProfile(profileId: String) {
         scope.launch {
+            markBusy(profileId)
             runCatching {
                 runtimeGateway.stopSandbox(profileId)
                 sessionCoordinator.closeProfileTabs(profileId)
                 profileRepository.deleteProfile(profileId)
             }.onFailure { err ->
-                errorMessage.value = err.message ?: "Failed to delete profile"
+                errorMessage.value = err.message ?: "Failed to delete container"
             }
+            clearBusy(profileId)
         }
     }
 
@@ -265,14 +426,25 @@ class HomeViewModel(
         }
     }
 
-    private fun buildQuickAlpineProfile(): SandboxProfile {
-        val alpine = catalogRepository.getCuratedDistributions()
-            .firstOrNull { it.id == "alpine-3.21" }
+    private fun buildQuickDebianProfile(): SandboxProfile {
+        val debian = catalogRepository.getCuratedDistributions()
+            .firstOrNull { it.id == "debian-trixie" }
             ?: DistributionCatalogEntry.CURATED_ENTRIES.first()
-        return alpine.toSandboxProfile(
-            profileId = QUICK_ALPINE_PROFILE_ID,
-            profileDisplayName = "Quick Shell (Alpine)",
+        return debian.toSandboxProfile(
+            profileId = QUICK_DEBIAN_PROFILE_ID,
+            profileDisplayName = "Debian",
+        ).copy(
+            memoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
+            cpuCores = SandboxProfile.UNLIMITED_CPU_CORES,
         )
+    }
+
+    private fun markBusy(profileId: String) {
+        busyProfileIds.update { it + profileId }
+    }
+
+    private fun clearBusy(profileId: String) {
+        busyProfileIds.update { it - profileId }
     }
 
     fun close() {
@@ -287,13 +459,15 @@ class HomeViewModel(
     )
 
     private data class LocalHomeData(
-        val expanded: Boolean,
-        val busyId: String?,
+        val busyIds: Set<String>,
+        val volumes: List<String>,
         val notice: String?,
+        val status: String?,
         val err: String?,
     )
 
     companion object {
-        const val QUICK_ALPINE_PROFILE_ID = "quick-alpine"
+        const val QUICK_DEBIAN_PROFILE_ID = "debian-main"
+        const val DEFAULT_DEBIAN_IMAGE_REF = "docker.io/library/debian:trixie-slim"
     }
 }

@@ -1,6 +1,7 @@
 package dev.gfire.termvr.ui.terminal
 
 import android.content.res.Configuration
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -9,45 +10,64 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.ui.AuxiliaryKeyBar
 import dev.gfire.termvr.core.ui.SplitDirection
+import dev.gfire.termvr.core.ui.TerminalSplitNode
 import dev.gfire.termvr.core.ui.TerminalSurfaceController
 import dev.gfire.termvr.core.ui.TerminalViewport
+import dev.gfire.termvr.ui.theme.LocalTermVrMonoFontFamily
+import dev.gfire.termvr.ui.theme.LocalTermVrPaletteTokens
+import dev.gfire.termvr.ui.theme.TermVrBadge
+import dev.gfire.termvr.ui.theme.TermVrButton
+import dev.gfire.termvr.ui.theme.TermVrCard
+import dev.gfire.termvr.ui.theme.TermVrControlShape
+import dev.gfire.termvr.ui.theme.TermVrIcons
+import dev.gfire.termvr.ui.theme.TermVrNoticeBanner
+import dev.gfire.termvr.ui.theme.TermVrOutlinedButton
+import dev.gfire.termvr.ui.theme.TermVrRunStateDot
+import dev.gfire.termvr.ui.theme.TermVrSelectableChip
+import dev.gfire.termvr.ui.theme.TermVrStatusDot
+import dev.gfire.termvr.ui.theme.TermVrTextButton
+import dev.gfire.termvr.ui.theme.runStateLabel
+import dev.gfire.termvr.ui.theme.shortImageRef
 import dev.gfire.termvr.ui.theme.toComposeBackground
 import kotlinx.coroutines.launch
 
@@ -80,6 +100,10 @@ fun TerminalScreen(
                     viewModel.switchToOrStartProfile(profile)
                     scope.launch { drawerState.close() }
                 },
+                onNewShellForProfile = { profile ->
+                    viewModel.openNewTabForProfile(profile)
+                    scope.launch { drawerState.close() }
+                },
                 onFreezeProfile = viewModel::freezeProfile,
                 onStopProfile = viewModel::stopProfile,
                 onAcquireWakeLock = viewModel::acquireWakeLock,
@@ -93,7 +117,7 @@ fun TerminalScreen(
                 .background(state.palette.toComposeBackground())
                 .imePadding(),
         ) {
-            TerminalTabHeader(
+            TerminalTopBar(
                 state = state,
                 onOpenDrawer = { scope.launch { drawerState.open() } },
                 onSelectTab = viewModel::selectTab,
@@ -109,24 +133,12 @@ fun TerminalScreen(
             )
 
             if (state.errorMessage != null) {
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = state.errorMessage.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(onClick = viewModel::clearError) {
-                            Text("Dismiss")
-                        }
-                    }
+                Box(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    TermVrNoticeBanner(
+                        message = state.errorMessage.orEmpty(),
+                        isError = true,
+                        onDismiss = viewModel::clearError,
+                    )
                 }
             }
 
@@ -155,21 +167,22 @@ fun TerminalScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.padding(24.dp),
                     ) {
+                        Icon(
+                            imageVector = TermVrIcons.Terminal,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(32.dp),
+                        )
                         Text(
-                            text = "No Active Terminal Session",
+                            text = "No active session",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onBackground,
                         )
-                        Text(
-                            text = "Start a sandbox from Home or open the session drawer to switch profiles.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = onNavigateHome) {
-                                Text("Go to Home")
+                            TermVrButton(onClick = onNavigateHome) {
+                                Text("Containers")
                             }
-                            OutlinedButton(onClick = { scope.launch { drawerState.open() } }) {
+                            TermVrOutlinedButton(onClick = { scope.launch { drawerState.open() } }) {
                                 Text("Sessions")
                             }
                         }
@@ -222,19 +235,18 @@ fun TerminalScreen(
     if (prompt != null) {
         AlertDialog(
             onDismissRequest = { viewModel.resolveClipboardPrompt(false) },
-            title = { Text("Allow Clipboard Read?") },
+            shape = TermVrControlShape,
+            title = { Text("Allow clipboard read?") },
             text = {
-                Text(
-                    "Sandbox profile \"${prompt.profileId}\" requested read access to the Android clipboard.",
-                )
+                Text("\"${prompt.profileId}\" requested read access to the clipboard.")
             },
             confirmButton = {
-                Button(onClick = { viewModel.resolveClipboardPrompt(true) }) {
+                TermVrButton(onClick = { viewModel.resolveClipboardPrompt(true) }) {
                     Text("Allow Once")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.resolveClipboardPrompt(false) }) {
+                TermVrTextButton(onClick = { viewModel.resolveClipboardPrompt(false) }) {
                     Text("Deny")
                 }
             },
@@ -243,7 +255,7 @@ fun TerminalScreen(
 }
 
 @Composable
-private fun TerminalTabHeader(
+private fun TerminalTopBar(
     state: TerminalUiState,
     onOpenDrawer: () -> Unit,
     onSelectTab: (String) -> Unit,
@@ -255,60 +267,240 @@ private fun TerminalTabHeader(
     onToggleSearch: () -> Unit,
     onToggleKeyBar: () -> Unit,
 ) {
+    val mono = LocalTermVrMonoFontFamily.current
+    val tokens = LocalTermVrPaletteTokens.current
+    val activeTab = state.activeTab
+    val activeProfile = activeTab?.let { tab -> state.profiles.firstOrNull { it.id == tab.profileId } }
+    val activeRunState = activeProfile?.let { state.runStates[it.id] } ?: SandboxRunState.STOPPED
+    val runningCount = state.runStates.values.count { it == SandboxRunState.RUNNING }
+    val openContainerCount = state.tabs.map { it.profileId }.distinct().size
+    val hasMultiplePanes = activeTab?.splitRoot is TerminalSplitNode.Split
+
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    .height(42.dp)
+                    .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                OutlinedButton(onClick = onOpenDrawer) {
-                    Text("Sessions")
-                }
-
-                for (tab in state.tabs) {
-                    val selected = tab.tabId == state.activeTab?.tabId
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectTab(tab.tabId) },
-                        label = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                // Left: Container / Sessions Drawer Button
+                Surface(
+                    modifier = Modifier
+                        .clip(TermVrControlShape)
+                        .clickable(onClick = onOpenDrawer),
+                    shape = TermVrControlShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        if (activeProfile != null) {
+                            TermVrRunStateDot(runState = activeRunState, size = 7.dp)
+                            Text(
+                                text = activeProfile.displayName,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = mono,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = TermVrIcons.Menu,
+                                contentDescription = "Sessions",
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = "Sessions",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = mono,
+                            )
+                        }
+                        if (runningCount > 1) {
+                            Surface(
+                                shape = TermVrControlShape,
+                                color = tokens.statusRunning.copy(alpha = 0.2f),
                             ) {
                                 Text(
-                                    text = tab.title,
+                                    text = "$runningCount",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = mono,
+                                    color = tokens.statusRunning,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Middle: Scrollable Session Tabs + compact '+' button
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    for (tab in state.tabs) {
+                        val selected = tab.tabId == activeTab?.tabId
+                        val tabLabel = formatTabLabel(tab, state.profiles, openContainerCount)
+                        Surface(
+                            modifier = Modifier
+                                .clip(TermVrControlShape)
+                                .clickable { onSelectTab(tab.tabId) },
+                            shape = TermVrControlShape,
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 8.dp, end = if (tab.isDaemonLogs) 8.dp else 4.dp, top = 5.dp, bottom = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = tabLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = mono,
                                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    maxLines = 1,
+                                    softWrap = false,
                                 )
                                 if (!tab.isDaemonLogs) {
-                                    Text(
-                                        text = "x",
-                                        modifier = Modifier.clickable { onCloseTab(tab.tabId) },
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    Icon(
+                                        imageVector = TermVrIcons.Close,
+                                        contentDescription = "Close tab",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .clickable { onCloseTab(tab.tabId) },
                                     )
                                 }
                             }
-                        },
-                    )
+                        }
+                    }
+
+                    if (activeTab != null) {
+                        IconButton(
+                            onClick = onNewTab,
+                            modifier = Modifier.size(30.dp),
+                        ) {
+                            Icon(
+                                imageVector = TermVrIcons.Add,
+                                contentDescription = "New tab",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
                 }
 
-                if (state.activeTab != null) {
-                    TextButton(onClick = onNewTab) { Text("+ Tab") }
-                    TextButton(onClick = onSplitHorizontal) { Text("Split H") }
-                    TextButton(onClick = onSplitVertical) { Text("Split V") }
-                    TextButton(onClick = onClosePane) { Text("Close Pane") }
-                    TextButton(onClick = onToggleSearch) { Text("Find") }
-                    TextButton(onClick = onToggleKeyBar) {
-                        Text(if (state.keyBarCollapsed) "Show Keys" else "Hide Keys")
+                // Right: Compact icon buttons
+                if (activeTab != null) {
+                    IconButton(
+                        onClick = onSplitHorizontal,
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            imageVector = TermVrIcons.SplitHorizontal,
+                            contentDescription = "Split Horizontal",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    IconButton(
+                        onClick = onSplitVertical,
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            imageVector = TermVrIcons.SplitVertical,
+                            contentDescription = "Split Vertical",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    if (hasMultiplePanes) {
+                        IconButton(
+                            onClick = onClosePane,
+                            modifier = Modifier.size(30.dp),
+                        ) {
+                            Icon(
+                                imageVector = TermVrIcons.Close,
+                                contentDescription = "Close Pane",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = onToggleSearch,
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            imageVector = TermVrIcons.Search,
+                            contentDescription = "Find",
+                            tint = if (state.searchVisible) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    IconButton(
+                        onClick = onToggleKeyBar,
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            imageVector = TermVrIcons.Keyboard,
+                            contentDescription = if (state.keyBarCollapsed) "Show Keys" else "Hide Keys",
+                            tint = if (!state.keyBarCollapsed) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(16.dp),
+                        )
                     }
                 }
             }
-            HorizontalDivider()
+            HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
         }
     }
+}
+
+private fun formatTabLabel(
+    tab: TerminalTabState,
+    profiles: List<SandboxProfile>,
+    openContainerCount: Int,
+): String {
+    if (openContainerCount >= 2) {
+        if (tab.isDaemonLogs) {
+            val containerName = profiles.firstOrNull { it.id == tab.profileId }?.displayName ?: tab.profileId
+            return "$containerName Logs"
+        }
+        return tab.title
+    }
+    if (tab.isDaemonLogs) return "Logs"
+    val hashIdx = tab.title.lastIndexOf('#')
+    return if (hashIdx >= 0) tab.title.substring(hashIdx) else tab.title
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -326,47 +518,54 @@ private fun ScrollbackSearchBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OutlinedTextField(
                     value = state.searchQuery,
                     onValueChange = onQueryChange,
-                    placeholder = { Text("Search terminal scrollback") },
+                    placeholder = { Text("Search scrollback") },
                     singleLine = true,
+                    shape = TermVrControlShape,
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(onClick = onClose) { Text("Done") }
+                IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        imageVector = TermVrIcons.Close,
+                        contentDescription = "Close search",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
             FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                FilterChip(
+                TermVrSelectableChip(
+                    label = "Regex",
                     selected = state.searchUseRegex,
                     onClick = onToggleRegex,
-                    label = { Text("Regex") },
                 )
-                FilterChip(
+                TermVrSelectableChip(
+                    label = "Case",
                     selected = state.searchCaseSensitive,
                     onClick = onToggleCaseSensitive,
-                    label = { Text("Case") },
                 )
                 val statusLabel = if (state.searchMatches.isEmpty()) {
                     "0 matches"
                 } else {
                     "${state.selectedMatchIndex + 1}/${state.searchMatches.size}"
                 }
-                AssistChip(onClick = {}, label = { Text(statusLabel) })
-                TextButton(onClick = onPrev, enabled = state.searchMatches.isNotEmpty()) {
+                TermVrBadge(text = statusLabel)
+                TermVrTextButton(onClick = onPrev, enabled = state.searchMatches.isNotEmpty()) {
                     Text("Prev")
                 }
-                TextButton(onClick = onNext, enabled = state.searchMatches.isNotEmpty()) {
+                TermVrTextButton(onClick = onNext, enabled = state.searchMatches.isNotEmpty()) {
                     Text("Next")
                 }
             }
@@ -379,78 +578,179 @@ private fun ScrollbackSearchBar(
 private fun TerminalSessionDrawer(
     state: TerminalUiState,
     onSelectTab: (String) -> Unit,
-    onActivateProfile: (dev.gfire.termvr.core.model.SandboxProfile) -> Unit,
+    onActivateProfile: (SandboxProfile) -> Unit,
+    onNewShellForProfile: (SandboxProfile) -> Unit,
     onFreezeProfile: (String) -> Unit,
     onStopProfile: (String) -> Unit,
     onAcquireWakeLock: (Int) -> Unit,
     onReleaseWakeLock: () -> Unit,
 ) {
-    ModalDrawerSheet(modifier = Modifier.width(300.dp)) {
+    val mono = LocalTermVrMonoFontFamily.current
+    val tokens = LocalTermVrPaletteTokens.current
+
+    ModalDrawerSheet(
+        modifier = Modifier.width(310.dp),
+        drawerContainerColor = MaterialTheme.colorScheme.surface,
+    ) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
+                .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
-                Text("Wake Lock", style = MaterialTheme.typography.titleMedium)
+                Text("Containers & Sessions", style = MaterialTheme.typography.titleMedium)
+            }
+
+            items(state.profiles, key = { it.id }) { profile ->
+                val runState = state.runStates[profile.id] ?: SandboxRunState.STOPPED
+                val containerTabs = state.tabs.filter { it.profileId == profile.id }
+
+                TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TermVrRunStateDot(runState = runState, size = 8.dp)
+                                Column {
+                                    Text(
+                                        text = profile.displayName,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = shortImageRef(profile.imageRef),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = mono,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            TermVrBadge(text = runStateLabel(runState))
+                        }
+
+                        if (containerTabs.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                for (tab in containerTabs) {
+                                    val isCurrent = tab.tabId == state.activeTab?.tabId
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(TermVrControlShape)
+                                            .clickable { onSelectTab(tab.tabId) },
+                                        shape = TermVrControlShape,
+                                        color = if (isCurrent) {
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceVariant
+                                        },
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = tab.title,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontFamily = mono,
+                                                color = if (isCurrent) {
+                                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
+                                            )
+                                            if (isCurrent) {
+                                                TermVrStatusDot(color = tokens.statusRunning, size = 6.dp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            TermVrOutlinedButton(
+                                onClick = { onActivateProfile(profile) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Text(
+                                    text = when (runState) {
+                                        SandboxRunState.RUNNING -> "Open"
+                                        SandboxRunState.FROZEN -> "Resume"
+                                        else -> "Start"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                            if (runState == SandboxRunState.RUNNING) {
+                                TermVrOutlinedButton(
+                                    onClick = { onNewShellForProfile(profile) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                ) {
+                                    Text("+ New Shell", style = MaterialTheme.typography.labelMedium)
+                                }
+                                TermVrTextButton(onClick = { onFreezeProfile(profile.id) }) {
+                                    Text("Freeze")
+                                }
+                            }
+                            if (runState != SandboxRunState.STOPPED) {
+                                TermVrTextButton(
+                                    onClick = { onStopProfile(profile.id) },
+                                    contentColor = MaterialTheme.colorScheme.error,
+                                ) {
+                                    Text("Stop")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                Spacer(Modifier.height(4.dp))
+                Text("Wake Lock", style = MaterialTheme.typography.titleSmall)
                 val remaining = state.wakeLockRemainingSeconds
                 Text(
                     text = if (remaining != null) {
-                        "Active: ${(remaining / 60L)}m ${(remaining % 60L)}s left"
+                        "${remaining / 60L}m ${remaining % 60L}s left"
                     } else {
                         "Inactive"
                     },
                     style = MaterialTheme.typography.bodySmall,
+                    fontFamily = mono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(modifier = Modifier.padding(top = 4.dp))
+                Spacer(Modifier.height(6.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(15, 30, 60).forEach { mins ->
-                        OutlinedButton(onClick = { onAcquireWakeLock(mins) }) {
-                            Text("${mins}m")
+                        TermVrOutlinedButton(
+                            onClick = { onAcquireWakeLock(mins) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text("${mins}m", style = MaterialTheme.typography.labelSmall, fontFamily = mono)
                         }
                     }
                     if (remaining != null) {
-                        TextButton(onClick = onReleaseWakeLock) {
+                        TermVrTextButton(onClick = onReleaseWakeLock) {
                             Text("Release")
-                        }
-                    }
-                }
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-            }
-
-            item {
-                Text("Open Tabs (${state.tabs.size})", style = MaterialTheme.typography.titleMedium)
-            }
-            items(state.tabs, key = { it.tabId }) { tab ->
-                TextButton(
-                    onClick = { onSelectTab(tab.tabId) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("${tab.title} [${tab.profileId}]")
-                }
-            }
-
-            item {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                Text("Sandbox Profiles", style = MaterialTheme.typography.titleMedium)
-            }
-            items(state.profiles, key = { it.id }) { profile ->
-                val runState = state.runStates[profile.id] ?: SandboxRunState.STOPPED
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "${profile.displayName} (${runState.name})",
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = { onActivateProfile(profile) }) {
-                            Text(if (runState == SandboxRunState.RUNNING) "Open" else "Start")
-                        }
-                        if (runState == SandboxRunState.RUNNING) {
-                            TextButton(onClick = { onFreezeProfile(profile.id) }) { Text("Freeze") }
-                        }
-                        if (runState != SandboxRunState.STOPPED) {
-                            TextButton(onClick = { onStopProfile(profile.id) }) { Text("Stop") }
                         }
                     }
                 }

@@ -7,8 +7,10 @@ import dev.gfire.termvr.core.data.CatalogRepository
 import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.data.RungvCommandExecutor
 import dev.gfire.termvr.core.data.RungvCommandResult
+import dev.gfire.termvr.core.data.RungvVolumeLsEntry
 import dev.gfire.termvr.core.data.SecretStore
 import dev.gfire.termvr.core.model.ColorPalette
+import dev.gfire.termvr.core.model.FontConfig
 import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.HostReadinessReport
 import dev.gfire.termvr.core.model.ListenHost
@@ -19,6 +21,7 @@ import dev.gfire.termvr.core.model.ProxyProtocol
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
+import dev.gfire.termvr.core.model.VolumeKind
 import dev.gfire.termvr.core.runtime.HostPtyHandle
 import dev.gfire.termvr.core.runtime.MuxSessionClient
 import dev.gfire.termvr.core.runtime.ProxyTestResult
@@ -37,10 +40,14 @@ import dev.gfire.termvr.core.vt.VtSessionBackend
 import dev.gfire.termvr.runtime.ClipboardReadPrompt
 import dev.gfire.termvr.runtime.SandboxRuntimeGateway
 import dev.gfire.termvr.ui.catalog.CatalogViewModel
+import dev.gfire.termvr.ui.files.FileRootTab
 import dev.gfire.termvr.ui.files.FilesViewModel
 import dev.gfire.termvr.ui.home.HomeViewModel
+import dev.gfire.termvr.ui.licenses.LicenseCatalogLoader
 import dev.gfire.termvr.ui.network.NetworkViewModel
 import dev.gfire.termvr.ui.network.resolveEffectiveHostPort
+import dev.gfire.termvr.ui.settings.SettingsTab
+import dev.gfire.termvr.ui.settings.SettingsViewModel
 import dev.gfire.termvr.ui.terminal.TerminalSessionCoordinator
 import dev.gfire.termvr.ui.terminal.TerminalViewModel
 import java.io.File
@@ -148,7 +155,7 @@ class AppViewModelsTest {
     }
 
     @Test
-    fun homeViewModelLaunchesQuickAlpineAndTransitionsStates() = runTest(testDispatcher) {
+    fun homeViewModelLaunchesQuickDebianWithUnlimitedDefaultsAndTransitionsStates() = runTest(testDispatcher) {
         val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
         val coordinator = TerminalSessionCoordinator(
             runtimeGateway = gateway,
@@ -161,20 +168,68 @@ class AppViewModelsTest {
         advanceUntilIdle()
 
         var navigated = false
-        vm.launchQuickAlpine { navigated = true }
+        vm.launchQuickDebian { navigated = true }
         advanceUntilIdle()
 
         assertTrue(navigated)
-        assertEquals(SandboxRunState.RUNNING, vm.uiState.value.runStates[HomeViewModel.QUICK_ALPINE_PROFILE_ID])
-        assertTrue(vm.uiState.value.profiles.any { it.id == HomeViewModel.QUICK_ALPINE_PROFILE_ID })
+        assertEquals(SandboxRunState.RUNNING, vm.uiState.value.runStates[HomeViewModel.QUICK_DEBIAN_PROFILE_ID])
+        val debian = vm.uiState.value.profiles.first { it.id == HomeViewModel.QUICK_DEBIAN_PROFILE_ID }
+        assertEquals("docker.io/library/debian:trixie-slim", debian.imageRef)
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, debian.memoryMiB)
+        assertEquals(SandboxProfile.UNLIMITED_CPU_CORES, debian.cpuCores)
 
-        vm.freezeProfile(HomeViewModel.QUICK_ALPINE_PROFILE_ID)
+        vm.freezeProfile(HomeViewModel.QUICK_DEBIAN_PROFILE_ID)
         advanceUntilIdle()
-        assertEquals(SandboxRunState.FROZEN, vm.uiState.value.runStates[HomeViewModel.QUICK_ALPINE_PROFILE_ID])
+        assertEquals(SandboxRunState.FROZEN, vm.uiState.value.runStates[HomeViewModel.QUICK_DEBIAN_PROFILE_ID])
 
-        vm.stopProfile(HomeViewModel.QUICK_ALPINE_PROFILE_ID)
+        vm.stopProfile(HomeViewModel.QUICK_DEBIAN_PROFILE_ID)
         advanceUntilIdle()
-        assertEquals(SandboxRunState.STOPPED, vm.uiState.value.runStates[HomeViewModel.QUICK_ALPINE_PROFILE_ID])
+        assertEquals(SandboxRunState.STOPPED, vm.uiState.value.runStates[HomeViewModel.QUICK_DEBIAN_PROFILE_ID])
+
+        vmScope.cancel()
+    }
+
+    @Test
+    fun homeViewModelSupportsConcurrentContainersFreezeAllStopAllAndVolumeAttach() = runTest(testDispatcher) {
+        val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
+        gateway.namedVolumes.add(RungvVolumeLsEntry(name = "shared-data", sizeBytes = 4096))
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = HomeViewModel(profileRepo, catalogRepo, gateway, coordinator, scope = vmScope)
+        advanceUntilIdle()
+
+        vm.createProfile("Worker A", "docker.io/library/debian:trixie-slim")
+        vm.createProfile("Worker B", "docker.io/library/alpine:3.21")
+        advanceUntilIdle()
+
+        val pA = vm.uiState.value.profiles.first { it.displayName == "Worker A" }
+        val pB = vm.uiState.value.profiles.first { it.displayName == "Worker B" }
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, pA.memoryMiB)
+        assertEquals(SandboxProfile.UNLIMITED_CPU_CORES, pA.cpuCores)
+
+        vm.startOrOpenProfile(pA) {}
+        vm.startOrOpenProfile(pB) {}
+        advanceUntilIdle()
+        assertEquals(2, vm.uiState.value.runningCount)
+
+        vm.attachVolumeToProfile(pA.id, "shared-data", "/data")
+        advanceUntilIdle()
+        val updatedA = profileRepo.getProfile(pA.id)!!
+        assertTrue(updatedA.volumes.any { it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == "shared-data" && it.guestMountPath == "/data" })
+
+        vm.freezeAllRunning()
+        advanceUntilIdle()
+        assertEquals(SandboxRunState.FROZEN, vm.uiState.value.runStates[pA.id])
+        assertEquals(SandboxRunState.FROZEN, vm.uiState.value.runStates[pB.id])
+
+        vm.stopAllRunning()
+        advanceUntilIdle()
+        assertEquals(0, vm.uiState.value.runningCount)
 
         vmScope.cancel()
     }
@@ -202,7 +257,7 @@ class AppViewModelsTest {
 
         val k3s = vm.uiState.value.recipes.first { it.id == "k3s-single-node" }
         assertEquals(6144, vm.uiState.value.preflightFor(k3s).requiredRamMiB)
-        assertEquals(2560, vm.uiState.value.preflightFor(k3s).profileRamMiB)
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, vm.uiState.value.preflightFor(k3s).profileRamMiB)
 
         vm.toggleCalicoVxlan()
         advanceUntilIdle()
@@ -410,6 +465,144 @@ class AppViewModelsTest {
         vmScope.cancel()
     }
 
+    @Test
+    fun terminalViewModelHidesSearchByDefaultAndOpensTabsAcrossMultipleContainers() = runTest(testDispatcher) {
+        val (profileRepo, _, gateway) = createFixtures(backgroundScope)
+        val p1 = SandboxProfile(id = "deb-1", displayName = "Debian 1", imageRef = "docker.io/library/debian:trixie-slim")
+        val p2 = SandboxProfile(id = "alp-2", displayName = "Alpine 2", imageRef = "docker.io/library/alpine:3.21")
+        profileRepo.upsertProfile(p1)
+        profileRepo.upsertProfile(p2)
+        gateway.runStates.value = mapOf(p1.id to SandboxRunState.RUNNING, p2.id to SandboxRunState.RUNNING)
+
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = TerminalViewModel(profileRepo, gateway, coordinator, scope = vmScope)
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.searchVisible)
+
+        vm.openNewTabForProfile(p1)
+        vm.openNewTabForProfile(p2)
+        advanceUntilIdle()
+        assertEquals(2, vm.uiState.value.tabs.size)
+        assertEquals(p2.id, vm.uiState.value.activeTab?.profileId)
+
+        vm.openSearch()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.searchVisible)
+
+        vm.closeSearch()
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.searchVisible)
+
+        vmScope.cancel()
+    }
+
+    @Test
+    fun catalogViewModelListsDebianFirstWithUnlimitedDefaults() = runTest(testDispatcher) {
+        val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = CatalogViewModel(
+            catalogRepository = catalogRepo,
+            profileRepository = profileRepo,
+            runtimeGateway = gateway,
+            sessionCoordinator = coordinator,
+            scope = vmScope,
+            probeIntervalMs = null,
+        )
+        advanceUntilIdle()
+
+        val firstDistro = vm.uiState.value.distributions.first()
+        assertEquals("debian-trixie", firstDistro.id)
+        assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, firstDistro.defaultMemoryMiB)
+
+        vmScope.cancel()
+    }
+
+    @Test
+    fun filesViewModelCreatesMountsUnmountsAndDeletesNamedVolumes() = runTest(testDispatcher) {
+        val (profileRepo, _, gateway) = createFixtures(backgroundScope)
+        val profile = SandboxProfile(id = "deb-vol", displayName = "Debian", imageRef = "docker.io/library/debian:trixie-slim")
+        profileRepo.upsertProfile(profile)
+
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = FilesViewModel(profileRepo, gateway, scope = vmScope, ioDispatcher = testDispatcher)
+        advanceUntilIdle()
+
+        vm.selectRootTab(FileRootTab.VOLUME)
+        vm.createNamedVolume("cache-vol")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.volumes.any { it.name == "cache-vol" })
+
+        vm.mountVolumeToProfile("cache-vol", profile.id, "/data")
+        advanceUntilIdle()
+        val mountedVol = vm.uiState.value.volumes.first { it.name == "cache-vol" }
+        assertEquals(1, mountedVol.mounts.size)
+        assertEquals("/data", mountedVol.mounts.first().guestMountPath)
+
+        // Running container blocks volume deletion
+        gateway.runStates.value = mapOf(profile.id to SandboxRunState.RUNNING)
+        advanceUntilIdle()
+        vm.deleteNamedVolume("cache-vol")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.volumes.any { it.name == "cache-vol" })
+
+        // Unmount & stop, then delete succeeds
+        gateway.runStates.value = mapOf(profile.id to SandboxRunState.STOPPED)
+        vm.unmountVolumeFromProfile("cache-vol", profile.id)
+        advanceUntilIdle()
+        vm.deleteNamedVolume("cache-vol")
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.volumes.any { it.name == "cache-vol" })
+
+        vmScope.cancel()
+    }
+
+    @Test
+    fun settingsViewModelLoadsLicensesSystemInfoAndTermVrMonoDefault() = runTest(testDispatcher) {
+        val (profileRepo, _, gateway) = createFixtures(backgroundScope)
+        val assetsRoot = listOf(File("src/main/assets"), File("app/src/main/assets"))
+            .first { File(it, LicenseCatalogLoader.INDEX_ASSET_PATH).isFile }
+        val loader = LicenseCatalogLoader { rel -> File(assetsRoot, rel).inputStream() }
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = SettingsViewModel(
+            profileRepository = profileRepo,
+            runtimeGateway = gateway,
+            licenseLoader = loader,
+            appVersionName = "0.1.0-test",
+            gvxVersion = "0.1.0-gvx",
+            scope = vmScope,
+        )
+        advanceUntilIdle()
+
+        assertEquals(FontConfig.DEFAULT_FAMILY_ID, vm.uiState.value.fontConfig.familyId)
+        assertEquals(8, vm.uiState.value.licenses.size)
+        assertEquals("arm64-v8a", vm.uiState.value.hostReadiness?.hostAbi)
+
+        vm.selectTab(SettingsTab.LICENSES)
+        val entry = vm.uiState.value.licenses.first { it.id == "termvr-mono-nf" }
+        vm.openLicense(entry)
+        advanceUntilIdle()
+        assertNotNull(vm.uiState.value.activeLicenseText)
+        assertTrue(vm.uiState.value.activeLicenseText!!.isNotBlank())
+
+        vm.closeLicense()
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.activeLicenseText)
+        vmScope.cancel()
+    }
+
     private fun createFixtures(scope: CoroutineScope): Triple<ProfileRepository, CatalogRepository, FakeGateway> {
         val secretStore = InMemorySecretStore()
         val dataStore = InMemoryDataStore()
@@ -487,6 +680,7 @@ private class FakeGateway(private val rootDir: File) : SandboxRuntimeGateway {
     val activeCheckpoints = mutableSetOf<String>()
     val appliedPortCalls = mutableListOf<Triple<String, Int, Boolean>>()
     val sharedFiles = mutableMapOf<String, ByteArray>()
+    val namedVolumes = mutableListOf<RungvVolumeLsEntry>()
     var lastLiveProxyUpdate: OutboundProxyConfig? = null
 
     override fun refreshHostReadiness() = Unit
@@ -546,6 +740,18 @@ private class FakeGateway(private val rootDir: File) : SandboxRuntimeGateway {
 
     override suspend fun testProxy(config: OutboundProxyConfig): ProxyTestResult =
         ProxyTestResult(success = true, latencyMillis = 12L, effectiveMode = config.mode, detail = "OK")
+
+    override suspend fun listVolumes(): List<RungvVolumeLsEntry> = namedVolumes.toList()
+
+    override suspend fun createVolume(name: String) {
+        if (namedVolumes.none { it.name == name }) {
+            namedVolumes.add(RungvVolumeLsEntry(name = name, sizeBytes = 0L))
+        }
+    }
+
+    override suspend fun removeVolume(name: String, force: Boolean) {
+        namedVolumes.removeAll { it.name == name }
+    }
 
     override suspend fun <T> withVolumeClient(
         profile: SandboxProfile,

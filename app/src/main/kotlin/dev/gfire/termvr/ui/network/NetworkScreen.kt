@@ -7,10 +7,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,18 +20,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,11 +34,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -54,9 +52,27 @@ import dev.gfire.termvr.core.model.PortForwardRule
 import dev.gfire.termvr.core.model.ProxyEndpointSpec
 import dev.gfire.termvr.core.model.ProxyProtocol
 import dev.gfire.termvr.network.QrCodeEncoder
+import dev.gfire.termvr.ui.theme.LocalTermVrMonoFontFamily
+import dev.gfire.termvr.ui.theme.TermVrBadge
+import dev.gfire.termvr.ui.theme.TermVrButton
+import dev.gfire.termvr.ui.theme.TermVrCard
+import dev.gfire.termvr.ui.theme.TermVrControlShape
+import dev.gfire.termvr.ui.theme.TermVrIcons
+import dev.gfire.termvr.ui.theme.TermVrNoticeBanner
+import dev.gfire.termvr.ui.theme.TermVrOutlinedButton
+import dev.gfire.termvr.ui.theme.TermVrSectionHeader
+import dev.gfire.termvr.ui.theme.TermVrSelectableChip
+import dev.gfire.termvr.ui.theme.TermVrTextButton
+import dev.gfire.termvr.ui.theme.runStateColor
+
+private enum class NetworkSubTab(val label: String) {
+    PORTS("Ports"),
+    PROXY("Proxy"),
+    WIREGUARD("WireGuard"),
+}
 
 /**
- * Renders Inbound Ports, LAN QR codes, Outbound Proxy controls, and WireGuard mode selectors.
+ * Renders container network controls across Ports, Proxy, and WireGuard sub-tabs.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -66,8 +82,10 @@ fun NetworkScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val monoFont = LocalTermVrMonoFontFamily.current
     val selectedProfile = state.selectedProfile
 
+    var activeTab by remember { mutableStateOf(NetworkSubTab.PORTS) }
     var hostPortText by remember { mutableStateOf("8080") }
     var guestPortText by remember { mutableStateOf("8080") }
     var selectedHost by remember { mutableStateOf(ListenHost.LOOPBACK_V4) }
@@ -90,23 +108,43 @@ fun NetworkScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Network & Ports", style = MaterialTheme.typography.headlineSmall)
-            if (state.profiles.isNotEmpty()) {
+            TermVrSectionHeader(title = "Network")
+        }
+
+        if (state.profiles.isNotEmpty()) {
+            item {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     for (profile in state.profiles) {
-                        FilterChip(
+                        val runState = state.runStates[profile.id]
+                        TermVrSelectableChip(
+                            label = profile.displayName,
                             selected = profile.id == selectedProfile?.id,
                             onClick = { viewModel.selectProfile(profile.id) },
-                            label = { Text(profile.displayName) },
+                            leadingDotColor = runState?.let { runStateColor(it) },
                         )
                     }
+                }
+            }
+        }
+
+        item {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                NetworkSubTab.entries.forEach { tab ->
+                    TermVrSelectableChip(
+                        label = tab.label,
+                        selected = activeTab == tab,
+                        onClick = { activeTab = tab },
+                    )
                 }
             }
         }
@@ -114,34 +152,22 @@ fun NetworkScreen(
         val banner = state.errorMessage ?: state.statusMessage
         if (banner != null) {
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (state.errorMessage != null) {
-                            MaterialTheme.colorScheme.errorContainer
-                        } else {
-                            MaterialTheme.colorScheme.secondaryContainer
-                        },
-                    ),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(banner, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                        TextButton(onClick = viewModel::clearBanners) { Text("Dismiss") }
-                    }
-                }
+                TermVrNoticeBanner(
+                    message = banner,
+                    isError = state.errorMessage != null,
+                    onDismiss = viewModel::clearBanners,
+                )
             }
         }
 
         if (selectedProfile == null) {
             item {
-                Card(modifier = Modifier.fillMaxWidth()) {
+                TermVrCard(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Create or launch a sandbox profile on Home before configuring network rules.",
+                        text = "Create or start a container before configuring network rules.",
                         modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -150,28 +176,36 @@ fun NetworkScreen(
 
         if (selectedProfile.id in state.lanReconfirmationProfiles) {
             item {
-                Card(
+                TermVrCard(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    borderColor = MaterialTheme.colorScheme.error.copy(alpha = 0.55f),
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            text = "Wi-Fi Network Changed: Re-confirm LAN Exposure",
+                            text = "Wi-Fi Changed: Confirm LAN Exposure",
                             style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
                         )
                         Text(
-                            text = "Active Wi-Fi IP: ${state.activeWifiIpv4 ?: "Unavailable"}. Confirm LAN port exposure or downgrade rules to 127.0.0.1.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Wi-Fi IP: ${state.activeWifiIpv4 ?: "Unavailable"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = monoFont,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { viewModel.reconfirmLanExposure(selectedProfile.id) }) {
-                                Text("Re-confirm LAN")
+                            TermVrButton(onClick = { viewModel.reconfirmLanExposure(selectedProfile.id) }) {
+                                Text("Confirm LAN")
                             }
-                            OutlinedButton(onClick = { viewModel.downgradeLanRulesToLoopback(selectedProfile.id) }) {
-                                Text("Downgrade to 127.0.0.1")
+                            TermVrOutlinedButton(
+                                onClick = { viewModel.downgradeLanRulesToLoopback(selectedProfile.id) },
+                                borderColor = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.5f),
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            ) {
+                                Text("Use 127.0.0.1")
                             }
                         }
                     }
@@ -179,202 +213,251 @@ fun NetworkScreen(
             }
         }
 
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text("Inbound Port Forwards", style = MaterialTheme.typography.titleMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = hostPortText,
-                            onValueChange = { hostPortText = it },
-                            label = { Text("Host Port") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedTextField(
-                            value = guestPortText,
-                            onValueChange = { guestPortText = it },
-                            label = { Text("Guest Port") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ListenHost.entries.forEach { lh ->
-                            FilterChip(
-                                selected = selectedHost == lh,
-                                onClick = { selectedHost = lh },
-                                label = { Text(lh.wireLiteral) },
-                            )
-                        }
-                    }
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ForwardProtocol.entries.forEach { proto ->
-                            FilterChip(
-                                selected = selectedProto == proto,
-                                onClick = { selectedProto = proto },
-                                label = { Text(proto.name) },
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = {
-                            val hp = hostPortText.toIntOrNull() ?: 0
-                            val gp = guestPortText.toIntOrNull() ?: 0
-                            if (selectedHost.exposesLan &&
-                                !PortForwardRule.isLanDockerPortBlocked(selectedHost, hp, hp, gp, gp)
-                            ) {
-                                pendingLanRule = PendingLanRule(selectedProto, selectedHost, hp, gp)
-                            } else {
-                                viewModel.addPortRule(selectedProto, selectedHost, hp, gp)
-                            }
-                        },
-                        enabled = !state.busy,
-                    ) {
-                        Text("Add Port Rule")
-                    }
-
-                    if (selectedProfile.portForwards.isNotEmpty()) {
-                        HorizontalDivider()
-                    }
-                    val profilePublishedPorts = state.publishedPorts[selectedProfile.id].orEmpty()
-                    for (rule in selectedProfile.portForwards) {
-                        val effectiveIp = if (rule.exposesLan) {
-                            state.activeWifiIpv4 ?: "127.0.0.1"
-                        } else {
-                            "127.0.0.1"
-                        }
-                        val effectiveHostPort = resolveEffectiveHostPort(rule, profilePublishedPorts)
-                        val hostPortLabel = effectiveHostPort?.toString() ?: "ephemeral (pending)"
-                        val endpointUrl = effectiveHostPort?.let { "http://$effectiveIp:$it" }
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = "${rule.protocol.name} ${rule.listenHost.wireLiteral}:$hostPortLabel to guest :${rule.guestPortStart}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontFamily = FontFamily.Monospace,
+        when (activeTab) {
+            NetworkSubTab.PORTS -> {
+                item {
+                    TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Text("Port Forwarding", style = MaterialTheme.typography.titleMedium)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = hostPortText,
+                                    onValueChange = { hostPortText = it },
+                                    label = { Text("Host Port") },
+                                    singleLine = true,
+                                    shape = TermVrControlShape,
                                     modifier = Modifier.weight(1f),
                                 )
-                                TextButton(onClick = { viewModel.removePortRule(rule.id) }) {
-                                    Text("Remove")
+                                OutlinedTextField(
+                                    value = guestPortText,
+                                    onValueChange = { guestPortText = it },
+                                    label = { Text("Guest Port") },
+                                    singleLine = true,
+                                    shape = TermVrControlShape,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                ListenHost.entries.forEach { lh ->
+                                    TermVrSelectableChip(
+                                        label = lh.wireLiteral,
+                                        selected = selectedHost == lh,
+                                        onClick = { selectedHost = lh },
+                                    )
                                 }
                             }
-                            if (rule.protocol == ForwardProtocol.TCP) {
-                                if (endpointUrl != null) {
+
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                ForwardProtocol.entries.forEach { proto ->
+                                    TermVrSelectableChip(
+                                        label = proto.name,
+                                        selected = selectedProto == proto,
+                                        onClick = { selectedProto = proto },
+                                    )
+                                }
+                            }
+
+                            TermVrButton(
+                                onClick = {
+                                    val hp = hostPortText.toIntOrNull() ?: 0
+                                    val gp = guestPortText.toIntOrNull() ?: 0
+                                    if (selectedHost.exposesLan &&
+                                        !PortForwardRule.isLanDockerPortBlocked(selectedHost, hp, hp, gp, gp)
+                                    ) {
+                                        pendingLanRule = PendingLanRule(selectedProto, selectedHost, hp, gp)
+                                    } else {
+                                        viewModel.addPortRule(selectedProto, selectedHost, hp, gp)
+                                    }
+                                },
+                                enabled = !state.busy,
+                            ) {
+                                Icon(
+                                    imageVector = TermVrIcons.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Text("Add Rule", modifier = Modifier.padding(start = 6.dp))
+                            }
+
+                            if (selectedProfile.portForwards.isNotEmpty()) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            }
+
+                            val profilePublishedPorts = state.publishedPorts[selectedProfile.id].orEmpty()
+                            for (rule in selectedProfile.portForwards) {
+                                val effectiveIp = if (rule.exposesLan) {
+                                    state.activeWifiIpv4 ?: "127.0.0.1"
+                                } else {
+                                    "127.0.0.1"
+                                }
+                                val effectiveHostPort = resolveEffectiveHostPort(rule, profilePublishedPorts)
+                                val hostPortLabel = effectiveHostPort?.toString() ?: "pending"
+                                val endpointUrl = effectiveHostPort?.let { "http://$effectiveIp:$it" }
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Row(
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        QrCodeCanvas(
-                                            content = endpointUrl,
-                                            modifier = Modifier.size(92.dp),
+                                        Text(
+                                            text = "${rule.protocol.name} ${rule.listenHost.wireLiteral}:$hostPortLabel -> :${rule.guestPortStart}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontFamily = monoFont,
+                                            modifier = Modifier.weight(1f),
                                         )
-                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(
-                                                text = endpointUrl,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                fontFamily = FontFamily.Monospace,
+                                        IconButton(
+                                            onClick = { viewModel.removePortRule(rule.id) },
+                                            modifier = Modifier.size(32.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = TermVrIcons.Delete,
+                                                contentDescription = "Remove rule",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(16.dp),
                                             )
-                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                OutlinedButton(onClick = { viewModel.openUrlInCustomTab(endpointUrl) }) {
-                                                    Text("Open")
-                                                }
-                                                OutlinedButton(onClick = {
-                                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                    cm.setPrimaryClip(ClipData.newPlainText("TermVR Endpoint", endpointUrl))
-                                                }) {
-                                                    Text("Copy")
-                                                }
-                                            }
                                         }
                                     }
-                                } else {
-                                    Text(
-                                        text = "Assigned ephemeral host port pending sandbox start.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                                    if (rule.protocol == ForwardProtocol.TCP) {
+                                        if (endpointUrl != null) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                QrCodeCanvas(
+                                                    content = endpointUrl,
+                                                    modifier = Modifier
+                                                        .size(88.dp)
+                                                        .clip(TermVrControlShape)
+                                                        .border(1.dp, MaterialTheme.colorScheme.outline, TermVrControlShape),
+                                                )
+                                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Text(
+                                                        text = endpointUrl,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        fontFamily = monoFont,
+                                                    )
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                        TermVrOutlinedButton(
+                                                            onClick = { viewModel.openUrlInCustomTab(endpointUrl) },
+                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                        ) {
+                                                            Text("Open", style = MaterialTheme.typography.labelMedium)
+                                                        }
+                                                        TermVrOutlinedButton(
+                                                            onClick = {
+                                                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                                cm.setPrimaryClip(ClipData.newPlainText("TermVR Endpoint", endpointUrl))
+                                                            },
+                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                        ) {
+                                                            Text("Copy", style = MaterialTheme.typography.labelMedium)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            Text(
+                                                text = "Port assigns when container starts.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        item {
-            OutboundProxyCard(
-                profileProxy = selectedProfile.network.outboundProxy,
-                restartRequired = state.transparentTcpRestartRequired,
-                testingProxy = state.testingProxy,
-                lastProxyTest = state.lastProxyTest,
-                onSaveProxy = viewModel::saveOutboundProxy,
-                onTestProxy = viewModel::testProxyConfig,
-                onRestartNetRaw = viewModel::restartForNetRawChange,
-            )
-        }
+            NetworkSubTab.PROXY -> {
+                item {
+                    OutboundProxyCard(
+                        profileProxy = selectedProfile.network.outboundProxy,
+                        restartRequired = state.transparentTcpRestartRequired,
+                        testingProxy = state.testingProxy,
+                        lastProxyTest = state.lastProxyTest,
+                        onSaveProxy = viewModel::saveOutboundProxy,
+                        onTestProxy = viewModel::testProxyConfig,
+                        onRestartNetRaw = viewModel::restartForNetRawChange,
+                    )
+                }
+            }
 
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text("Network Backend & WireGuard", style = MaterialTheme.typography.titleMedium)
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        NetBackend.entries.forEach { backend ->
-                            FilterChip(
-                                selected = selectedProfile.network.backend == backend,
-                                onClick = {
-                                    viewModel.updateNetworkBackend(
-                                        backend = backend,
-                                        isolateLanEgress = selectedProfile.network.isolateLanEgress,
-                                        wireGuardName = selectedProfile.network.wireGuardConfigName ?: state.wireGuardConfigs.firstOrNull(),
+            NetworkSubTab.WIREGUARD -> {
+                item {
+                    TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Text("Backend & WireGuard", style = MaterialTheme.typography.titleMedium)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                NetBackend.entries.forEach { backend ->
+                                    TermVrSelectableChip(
+                                        label = backend.name.lowercase(),
+                                        selected = selectedProfile.network.backend == backend,
+                                        onClick = {
+                                            viewModel.updateNetworkBackend(
+                                                backend = backend,
+                                                isolateLanEgress = selectedProfile.network.isolateLanEgress,
+                                                wireGuardName = selectedProfile.network.wireGuardConfigName ?: state.wireGuardConfigs.firstOrNull(),
+                                            )
+                                        },
                                     )
-                                },
-                                label = { Text("-net=${backend.name.lowercase()}") },
-                            )
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = selectedProfile.network.isolateLanEgress,
-                            onCheckedChange = { checked ->
-                                viewModel.updateNetworkBackend(
-                                    backend = selectedProfile.network.backend,
-                                    isolateLanEgress = checked,
-                                    wireGuardName = selectedProfile.network.wireGuardConfigName,
-                                )
-                            },
-                        )
-                        Text("Block outbound LAN egress (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)")
-                    }
-                    OutlinedButton(onClick = { wgLauncher.launch(arrayOf("*/*")) }) {
-                        Text("Import WireGuard .conf")
-                    }
-                    if (state.wireGuardConfigs.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            for (wgName in state.wireGuardConfigs) {
-                                FilterChip(
-                                    selected = selectedProfile.network.wireGuardConfigName == wgName,
-                                    onClick = {
+                                }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = selectedProfile.network.isolateLanEgress,
+                                    onCheckedChange = { checked ->
                                         viewModel.updateNetworkBackend(
-                                            backend = NetBackend.WIREGUARD,
-                                            isolateLanEgress = selectedProfile.network.isolateLanEgress,
-                                            wireGuardName = wgName,
+                                            backend = selectedProfile.network.backend,
+                                            isolateLanEgress = checked,
+                                            wireGuardName = selectedProfile.network.wireGuardConfigName,
                                         )
                                     },
-                                    label = { Text(wgName) },
                                 )
+                                Text(
+                                    text = "Block private LAN egress",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                            TermVrOutlinedButton(onClick = { wgLauncher.launch(arrayOf("*/*")) }) {
+                                Text("Import .conf")
+                            }
+                            if (state.wireGuardConfigs.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    for (wgName in state.wireGuardConfigs) {
+                                        TermVrSelectableChip(
+                                            label = wgName,
+                                            selected = selectedProfile.network.wireGuardConfigName == wgName,
+                                            onClick = {
+                                                viewModel.updateNetworkBackend(
+                                                    backend = NetBackend.WIREGUARD,
+                                                    isolateLanEgress = selectedProfile.network.isolateLanEgress,
+                                                    wireGuardName = wgName,
+                                                )
+                                            },
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -390,20 +473,19 @@ fun NetworkScreen(
             title = { Text("Expose Port on LAN?") },
             text = {
                 Text(
-                    "Binding ${confirmLan.host.wireLiteral}:${confirmLan.hostPort} exposes guest port ${confirmLan.guestPort} on your local network " +
-                        "(active Wi-Fi IP: ${state.activeWifiIpv4 ?: "Unavailable"}).",
+                    "Binding ${confirmLan.host.wireLiteral}:${confirmLan.hostPort} exposes guest port ${confirmLan.guestPort} on Wi-Fi (${state.activeWifiIpv4 ?: "Unavailable"}).",
                 )
             },
             confirmButton = {
-                Button(onClick = {
+                TermVrButton(onClick = {
                     viewModel.addPortRule(confirmLan.protocol, confirmLan.host, confirmLan.hostPort, confirmLan.guestPort)
                     pendingLanRule = null
                 }) {
-                    Text("Expose on LAN")
+                    Text("Expose")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingLanRule = null }) { Text("Cancel") }
+                TermVrTextButton(onClick = { pendingLanRule = null }) { Text("Cancel") }
             },
         )
     }
@@ -411,20 +493,20 @@ fun NetworkScreen(
     if (state.stagedPortApply != null) {
         AlertDialog(
             onDismissRequest = viewModel::dismissStagedPortApply,
-            title = { Text("Apply Port Changes to Running Sandbox?") },
+            title = { Text("Apply Port Changes?") },
             text = {
-                Text("gvx locks host port bindings at boot. Choose Checkpoint & Restore to preserve memory state, or Cold Restart.")
+                Text("Host port bindings apply on restore or cold restart.")
             },
             confirmButton = {
-                Button(onClick = { viewModel.confirmStagedPortApply(checkpointAndRestore = true) }) {
-                    Text("Checkpoint & Restore")
+                TermVrButton(onClick = { viewModel.confirmStagedPortApply(checkpointAndRestore = true) }) {
+                    Text("Restore")
                 }
             },
             dismissButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextButton(onClick = viewModel::dismissStagedPortApply) { Text("Later") }
-                    OutlinedButton(onClick = { viewModel.confirmStagedPortApply(checkpointAndRestore = false) }) {
-                        Text("Cold Restart")
+                    TermVrTextButton(onClick = viewModel::dismissStagedPortApply) { Text("Later") }
+                    TermVrOutlinedButton(onClick = { viewModel.confirmStagedPortApply(checkpointAndRestore = false) }) {
+                        Text("Restart")
                     }
                 }
             },
@@ -443,6 +525,7 @@ private fun OutboundProxyCard(
     onTestProxy: (OutboundProxyConfig) -> Unit,
     onRestartNetRaw: () -> Unit,
 ) {
+    val monoFont = LocalTermVrMonoFontFamily.current
     var mode by remember(profileProxy) { mutableStateOf(profileProxy.mode) }
     var protocol by remember(profileProxy) { mutableStateOf(profileProxy.customEndpoint?.protocol ?: ProxyProtocol.HTTP) }
     var host by remember(profileProxy) { mutableStateOf(profileProxy.customEndpoint?.host ?: "127.0.0.1") }
@@ -476,30 +559,36 @@ private fun OutboundProxyCard(
         )
     }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
+    TermVrCard(modifier = Modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text("Outbound Proxy", style = MaterialTheme.typography.titleMedium)
 
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 OutboundProxyMode.entries.forEach { m ->
-                    FilterChip(
+                    TermVrSelectableChip(
+                        label = m.name,
                         selected = mode == m,
                         onClick = { mode = m },
-                        label = { Text(m.name) },
                     )
                 }
             }
 
             if (mode == OutboundProxyMode.CUSTOM) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     ProxyProtocol.entries.forEach { proto ->
-                        FilterChip(
+                        TermVrSelectableChip(
+                            label = proto.name,
                             selected = protocol == proto,
                             onClick = { protocol = proto },
-                            label = { Text(proto.name) },
                         )
                     }
                 }
@@ -507,8 +596,9 @@ private fun OutboundProxyCard(
                     OutlinedTextField(
                         value = host,
                         onValueChange = { host = it },
-                        label = { Text("Proxy Host") },
+                        label = { Text("Host") },
                         singleLine = true,
+                        shape = TermVrControlShape,
                         modifier = Modifier.weight(2f),
                     )
                     OutlinedTextField(
@@ -516,6 +606,7 @@ private fun OutboundProxyCard(
                         onValueChange = { portText = it },
                         label = { Text("Port") },
                         singleLine = true,
+                        shape = TermVrControlShape,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -525,37 +616,49 @@ private fun OutboundProxyCard(
                         onValueChange = { username = it },
                         label = { Text("Username") },
                         singleLine = true,
+                        shape = TermVrControlShape,
                         modifier = Modifier.weight(1f),
                     )
                     OutlinedTextField(
                         value = password,
                         onValueChange = { password = it },
-                        label = { Text("Password (Keystore)") },
+                        label = { Text("Password") },
                         singleLine = true,
+                        shape = TermVrControlShape,
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.weight(1f),
                     )
                 }
             }
 
-            Text("NO_PROXY Exceptions", style = MaterialTheme.typography.titleSmall)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                noProxyEntries.forEach { entry ->
-                    AssistChip(
-                        onClick = { noProxyEntries = noProxyEntries - entry },
-                        label = { Text("$entry x") },
-                    )
+            Text("Bypass Hosts (NO_PROXY)", style = MaterialTheme.typography.labelLarge)
+            if (noProxyEntries.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    noProxyEntries.forEach { entry ->
+                        TermVrSelectableChip(
+                            label = "$entry ×",
+                            selected = false,
+                            onClick = { noProxyEntries = noProxyEntries - entry },
+                        )
+                    }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 OutlinedTextField(
                     value = newNoProxy,
                     onValueChange = { newNoProxy = it },
-                    label = { Text("Add host or CIDR") },
+                    label = { Text("Host or CIDR") },
                     singleLine = true,
+                    shape = TermVrControlShape,
                     modifier = Modifier.weight(1f),
                 )
-                OutlinedButton(onClick = {
+                TermVrOutlinedButton(onClick = {
                     val trimmed = newNoProxy.trim()
                     if (trimmed.isNotEmpty() && trimmed !in noProxyEntries) {
                         noProxyEntries = noProxyEntries + trimmed
@@ -568,30 +671,24 @@ private fun OutboundProxyCard(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = routeDns, onCheckedChange = { routeDns = it })
-                Text("Route DNS via Proxy")
+                Text("Route DNS through proxy", style = MaterialTheme.typography.bodyMedium)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = transparentTcp, onCheckedChange = { transparentTcp = it })
-                Text("Transparent TCP Redirect (--net-raw)")
+                Text("Transparent TCP redirect", style = MaterialTheme.typography.bodyMedium)
             }
 
             if (restartRequired) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "Restart required to update --net-raw mode.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    OutlinedButton(onClick = onRestartNetRaw) { Text("Restart") }
-                }
+                TermVrNoticeBanner(
+                    message = "Restart container to update TCP redirect mode.",
+                    isError = true,
+                    actionLabel = "Restart",
+                    onAction = onRestartNetRaw,
+                )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
+                TermVrButton(onClick = {
                     onSaveProxy(
                         mode,
                         protocol,
@@ -604,27 +701,32 @@ private fun OutboundProxyCard(
                         noProxyEntries,
                     )
                 }) {
-                    Text("Apply Live")
+                    Text("Apply")
                 }
-                OutlinedButton(
+                TermVrOutlinedButton(
                     onClick = { onTestProxy(buildDraftConfig()) },
                     enabled = !testingProxy,
                 ) {
-                    Text(if (testingProxy) "Testing..." else "Test Proxy")
+                    Text(if (testingProxy) "Testing..." else "Test")
                 }
             }
 
             if (lastProxyTest != null) {
-                AssistChip(
-                    onClick = {},
-                    label = {
-                        Text(
-                            if (lastProxyTest.success) {
-                                "${lastProxyTest.latencyMillis} ms: ${lastProxyTest.detail}"
-                            } else {
-                                "Failed (${lastProxyTest.latencyMillis} ms): ${lastProxyTest.detail}"
-                            },
-                        )
+                TermVrBadge(
+                    text = if (lastProxyTest.success) {
+                        "${lastProxyTest.latencyMillis} ms · ${lastProxyTest.detail}"
+                    } else {
+                        "Failed (${lastProxyTest.latencyMillis} ms) · ${lastProxyTest.detail}"
+                    },
+                    containerColor = if (lastProxyTest.success) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.errorContainer
+                    },
+                    contentColor = if (lastProxyTest.success) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onErrorContainer
                     },
                 )
             }

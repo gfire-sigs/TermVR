@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -70,14 +71,14 @@ import kotlinx.coroutines.launch
 enum class TermVrRoute(
     val route: String,
     val label: String,
-    val shortGlyph: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
 ) {
-    HOME("home", "Home", "H"),
-    TERMINAL("terminal", "Terminal", ">_"),
-    CATALOG("catalog", "Catalog", "C"),
-    NETWORK("network", "Network", "N"),
-    FILES("files", "Files", "F"),
-    SETTINGS("settings", "Settings", "S"),
+    HOME("home", "Containers", dev.gfire.termvr.ui.theme.TermVrIcons.Containers),
+    TERMINAL("terminal", "Terminal", dev.gfire.termvr.ui.theme.TermVrIcons.Terminal),
+    CATALOG("catalog", "Catalog", dev.gfire.termvr.ui.theme.TermVrIcons.Catalog),
+    NETWORK("network", "Network", dev.gfire.termvr.ui.theme.TermVrIcons.Network),
+    FILES("files", "Files", dev.gfire.termvr.ui.theme.TermVrIcons.Files),
+    SETTINGS("settings", "Settings", dev.gfire.termvr.ui.theme.TermVrIcons.Settings),
 }
 
 /**
@@ -129,28 +130,45 @@ fun TermVrNavHost(
             .safeDrawingPadding(),
         bottomBar = {
             if (showBottomBar) {
-                NavigationBar {
-                    TermVrRoute.entries.forEach { dest ->
-                        NavigationBarItem(
-                            selected = currentRoute == dest.route,
-                            onClick = { navigateTo(dest) },
-                            icon = {
-                                Text(
-                                    text = dest.shortGlyph,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = dest.label,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    fontSize = 11.sp,
-                                )
-                            },
-                        )
+                val navBarTokens = dev.gfire.termvr.ui.theme.LocalTermVrPaletteTokens.current
+                Column {
+                    androidx.compose.material3.HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                    NavigationBar(
+                        containerColor = navBarTokens.navBarBackground,
+                        tonalElevation = 0.dp,
+                    ) {
+                        TermVrRoute.entries.forEach { dest ->
+                            NavigationBarItem(
+                                selected = currentRoute == dest.route,
+                                onClick = { navigateTo(dest) },
+                                colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
+                                icon = {
+                                    androidx.compose.material3.Icon(
+                                        imageVector = dest.icon,
+                                        contentDescription = dest.label,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = dest.label,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontSize = 11.sp,
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -163,16 +181,27 @@ fun TermVrNavHost(
                 .background(MaterialTheme.colorScheme.background),
         ) {
             if (isExpandedWidth) {
-                NavigationRail(modifier = Modifier.fillMaxHeight()) {
+                val navBarTokens = dev.gfire.termvr.ui.theme.LocalTermVrPaletteTokens.current
+                NavigationRail(
+                    modifier = Modifier.fillMaxHeight(),
+                    containerColor = navBarTokens.navBarBackground,
+                ) {
                     TermVrRoute.entries.forEach { dest ->
                         NavigationRailItem(
                             selected = currentRoute == dest.route,
                             onClick = { navigateTo(dest) },
+                            colors = androidx.compose.material3.NavigationRailItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
                             icon = {
-                                Text(
-                                    text = dest.shortGlyph,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
+                                androidx.compose.material3.Icon(
+                                    imageVector = dest.icon,
+                                    contentDescription = dest.label,
+                                    modifier = Modifier.size(20.dp),
                                 )
                             },
                             label = {
@@ -185,6 +214,10 @@ fun TermVrNavHost(
                         )
                     }
                 }
+                androidx.compose.material3.VerticalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outline,
+                )
             }
 
             Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -218,6 +251,10 @@ fun TermVrNavHost(
                             HomeScreen(
                                 viewModel = homeViewModel,
                                 onOpenTerminal = { navigateTo(TermVrRoute.TERMINAL) },
+                                onOpenSystemDiagnostics = {
+                                    settingsViewModel.selectTab(dev.gfire.termvr.ui.settings.SettingsTab.SYSTEM)
+                                    navigateTo(TermVrRoute.SETTINGS)
+                                },
                             )
                         }
                         composable(TermVrRoute.TERMINAL.route) {

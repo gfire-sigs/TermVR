@@ -162,6 +162,10 @@ class TerminalViewModel(
     fun openNewTabForActiveSandbox() {
         val activeTab = uiState.value.activeTab ?: return
         val profile = uiState.value.profiles.firstOrNull { it.id == activeTab.profileId } ?: return
+        openNewTabForProfile(profile)
+    }
+
+    fun openNewTabForProfile(profile: SandboxProfile) {
         sessionCoordinator.openNewShellTab(
             profile = profile,
             maxScrollbackLines = uiState.value.appSettings.defaultScrollbackLines,

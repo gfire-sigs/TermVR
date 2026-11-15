@@ -8,9 +8,11 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.NetworkCapabilities
 import android.os.IBinder
+import dev.gfire.termvr.core.data.CatalogRepository
 import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.data.RungvCommandExecutor
 import dev.gfire.termvr.core.data.RungvCommandResult
+import dev.gfire.termvr.core.data.RungvVolumeLsEntry
 import dev.gfire.termvr.core.data.SecretStore
 import dev.gfire.termvr.core.model.HostReadinessReport
 import dev.gfire.termvr.core.model.OutboundProxyConfig
@@ -45,6 +47,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
 
 /**
  * Decouples `:app` ViewModels from Android `Service` bindings, `ProcessBuilder`, and `SandboxSupervisor`.
@@ -80,6 +83,9 @@ interface SandboxRuntimeGateway {
     suspend fun discardCheckpoint(profileId: String): Boolean
     suspend fun hasActiveCheckpoint(profileId: String): Boolean
     suspend fun testProxy(config: OutboundProxyConfig): ProxyTestResult
+    suspend fun listVolumes(): List<RungvVolumeLsEntry>
+    suspend fun createVolume(name: String)
+    suspend fun removeVolume(name: String, force: Boolean = false)
     suspend fun <T> withVolumeClient(
         profile: SandboxProfile,
         volumeName: String,
@@ -204,36 +210,43 @@ class AndroidSandboxRuntimeGateway(
         appContext.bindService(bindIntent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
+    private val volumeJson = Json { ignoreUnknownKeys = true }
+
     /**
      * Creates a `RungvCommandExecutor` executing `librungv.so` directly for image catalog operations.
      */
     fun createRungvCommandExecutor(): RungvCommandExecutor = RungvCommandExecutor { args, env ->
-        withContext(Dispatchers.IO) {
-            val rungv = File(appContext.applicationInfo.nativeLibraryDir, "librungv.so")
-            if (!rungv.isFile) {
-                return@withContext RungvCommandResult(
-                    exitCode = 127,
-                    stdout = "",
-                    stderr = "librungv.so not found in ${appContext.applicationInfo.nativeLibraryDir}",
-                )
-            }
-            val cmd = ArrayList<String>(1 + args.size).apply {
-                add(rungv.absolutePath)
-                addAll(args)
-            }
-            val pb = ProcessBuilder(cmd)
-            pb.environment().putAll(buildRungvHostEnv())
-            pb.environment().putAll(env)
-            val proc = pb.start()
-            val stdout = proc.inputStream.bufferedReader().readText()
-            val stderr = proc.errorStream.bufferedReader().readText()
-            val finished = proc.waitFor(120L, TimeUnit.SECONDS)
-            if (!finished) {
-                proc.destroyForcibly()
-                RungvCommandResult(exitCode = 124, stdout = stdout, stderr = "rungv command timed out")
-            } else {
-                RungvCommandResult(exitCode = proc.exitValue(), stdout = stdout, stderr = stderr)
-            }
+        executeRungvCommand(args, env)
+    }
+
+    private suspend fun executeRungvCommand(
+        args: List<String>,
+        env: Map<String, String> = emptyMap(),
+    ): RungvCommandResult = withContext(Dispatchers.IO) {
+        val rungv = File(appContext.applicationInfo.nativeLibraryDir, "librungv.so")
+        if (!rungv.isFile) {
+            return@withContext RungvCommandResult(
+                exitCode = 127,
+                stdout = "",
+                stderr = "librungv.so not found in ${appContext.applicationInfo.nativeLibraryDir}",
+            )
+        }
+        val cmd = ArrayList<String>(1 + args.size).apply {
+            add(rungv.absolutePath)
+            addAll(args)
+        }
+        val pb = ProcessBuilder(cmd)
+        pb.environment().putAll(buildRungvHostEnv())
+        pb.environment().putAll(env)
+        val proc = pb.start()
+        val stdout = proc.inputStream.bufferedReader().readText()
+        val stderr = proc.errorStream.bufferedReader().readText()
+        val finished = proc.waitFor(120L, TimeUnit.SECONDS)
+        if (!finished) {
+            proc.destroyForcibly()
+            RungvCommandResult(exitCode = 124, stdout = stdout, stderr = "rungv command timed out")
+        } else {
+            RungvCommandResult(exitCode = proc.exitValue(), stdout = stdout, stderr = stderr)
         }
     }
 
@@ -316,6 +329,32 @@ class AndroidSandboxRuntimeGateway(
 
     override suspend fun testProxy(config: OutboundProxyConfig): ProxyTestResult {
         return catalogProxyBridge.testProxy(config)
+    }
+
+    override suspend fun listVolumes(): List<RungvVolumeLsEntry> {
+        val result = executeRungvCommand(CatalogRepository.buildVolumeLsArgs())
+        check(result.exitCode == 0) {
+            result.stderr.ifBlank { "rungv volume ls failed (${result.exitCode})" }
+        }
+        return result.stdout.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { volumeJson.decodeFromString<RungvVolumeLsEntry>(it) }
+            .toList()
+    }
+
+    override suspend fun createVolume(name: String) {
+        val result = executeRungvCommand(CatalogRepository.buildVolumeCreateArgs(name))
+        check(result.exitCode == 0) {
+            result.stderr.ifBlank { "rungv volume create failed (${result.exitCode})" }
+        }
+    }
+
+    override suspend fun removeVolume(name: String, force: Boolean) {
+        val result = executeRungvCommand(CatalogRepository.buildVolumeRmArgs(name, force))
+        check(result.exitCode == 0) {
+            result.stderr.ifBlank { "rungv volume rm failed (${result.exitCode})" }
+        }
     }
 
     override suspend fun <T> withVolumeClient(
