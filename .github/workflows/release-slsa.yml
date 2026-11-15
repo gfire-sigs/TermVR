@@ -68,7 +68,7 @@ jobs:
       - name: Provision toolchains and vendor caches
         run: ./scripts/provision-toolchains-and-vendor.sh
 
-      - name: Build offline native dependencies and release APK
+      - name: Build offline native dependencies and unsigned release APK
         run: |
           set -euo pipefail
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
@@ -79,18 +79,11 @@ jobs:
           fi
           "${GRADLE_EXE}" --no-daemon :app:assembleRelease "-PtermvrAbis=${{ matrix.abi }}"
 
-          TAG_NAME="${GITHUB_REF_NAME}"
-          OUT_APK="dist/TermVR-${TAG_NAME}-${{ matrix.abi }}.apk"
-          mkdir -p dist
           BUILT_APK="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
           test -n "${BUILT_APK}"
-          cp -f "${BUILT_APK}" "${OUT_APK}"
+          cp -f "${BUILT_APK}" "/tmp/unsigned-${{ matrix.abi }}.apk"
 
-      - name: Verify 16 KB ELF alignment
-        run: |
-          ./scripts/verify-16kb-alignment.sh "dist/TermVR-${GITHUB_REF_NAME}-${{ matrix.abi }}.apk"
-
-      - name: Verify clean-room APK reproducibility
+      - name: Verify clean-room unsigned APK reproducibility
         run: |
           set -euo pipefail
           CLEAN_DIR="/tmp/termvr-clean-repro-${{ matrix.abi }}"
@@ -108,8 +101,86 @@ jobs:
             "${GRADLE_EXE}" --no-daemon :app:assembleRelease "-PtermvrAbis=${{ matrix.abi }}"
           )
           CLEAN_APK="$(find "${CLEAN_DIR}/app/build/outputs/apk/release" -type f -name '*.apk' | head -n 1)"
-          ./scripts/verify-reproducible-apk.sh --unsigned-a "dist/TermVR-${GITHUB_REF_NAME}-${{ matrix.abi }}.apk" --unsigned-b "${CLEAN_APK}"
+          test -n "${CLEAN_APK}"
+          cp -f "${CLEAN_APK}" "/tmp/clean-unsigned-${{ matrix.abi }}.apk"
+          ./scripts/verify-reproducible-apk.sh \
+            --unsigned-a "/tmp/unsigned-${{ matrix.abi }}.apk" \
+            --unsigned-b "/tmp/clean-unsigned-${{ matrix.abi }}.apk"
           rm -rf "${CLEAN_DIR}"
+
+      - name: Sign release APK and verify apksigcopier reproducibility
+        env:
+          TERMVR_RELEASE_KEYSTORE_B64: ${{ secrets.TERMVR_RELEASE_KEYSTORE_B64 }}
+          TERMVR_RELEASE_KEY_ALIAS: ${{ secrets.TERMVR_RELEASE_KEY_ALIAS }}
+          TERMVR_RELEASE_KEYSTORE_PASS: ${{ secrets.TERMVR_RELEASE_KEYSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          ABI="${{ matrix.abi }}"
+          TAG_NAME="${GITHUB_REF_NAME}"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+          APKSIGNER="${SDK_ROOT}/build-tools/36.1.0/apksigner"
+          UNSIGNED_APK="/tmp/unsigned-${ABI}.apk"
+          CLEAN_UNSIGNED_APK="/tmp/clean-unsigned-${ABI}.apk"
+          REPRO_SIGNED_APK="/tmp/repro-signed-${ABI}.apk"
+          KEYSTORE_PATH="/tmp/termvr-release-${ABI}.p12"
+          OUT_APK="dist/TermVR-${TAG_NAME}-${ABI}.apk"
+
+          cleanup() {
+            rm -f "${KEYSTORE_PATH}" "${UNSIGNED_APK}" "${CLEAN_UNSIGNED_APK}" "${REPRO_SIGNED_APK}"
+          }
+          trap cleanup EXIT
+
+          mkdir -p dist
+
+          if [ -n "${TERMVR_RELEASE_KEYSTORE_B64}" ]; then
+            if [ -z "${TERMVR_RELEASE_KEY_ALIAS}" ] || [ -z "${TERMVR_RELEASE_KEYSTORE_PASS}" ]; then
+              echo "TERMVR_RELEASE_KEY_ALIAS and TERMVR_RELEASE_KEYSTORE_PASS must be set when TERMVR_RELEASE_KEYSTORE_B64 is present" >&2
+              exit 1
+            fi
+            printf '%s' "${TERMVR_RELEASE_KEYSTORE_B64}" | base64 --decode > "${KEYSTORE_PATH}"
+            KEY_ALIAS="${TERMVR_RELEASE_KEY_ALIAS}"
+            export SIGNING_PASS="${TERMVR_RELEASE_KEYSTORE_PASS}"
+          else
+            echo "TERMVR_RELEASE_KEYSTORE_B64 is empty; generating ephemeral fallback keystore in /tmp"
+            KEY_ALIAS="termvr-ephemeral"
+            export SIGNING_PASS="termvr-ephemeral-$(date +%s)-$$"
+            keytool -genkeypair -noprompt -storetype PKCS12 \
+              -keystore "${KEYSTORE_PATH}" \
+              -alias "${KEY_ALIAS}" \
+              -keyalg RSA -keysize 4096 -validity 365 \
+              -dname "CN=TermVR Ephemeral Fork Build, OU=Android, O=gfire-sigs" \
+              -storepass "${SIGNING_PASS}" \
+              -keypass "${SIGNING_PASS}"
+          fi
+
+          "${APKSIGNER}" sign \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --ks "${KEYSTORE_PATH}" \
+            --ks-type PKCS12 \
+            --ks-key-alias "${KEY_ALIAS}" \
+            --ks-pass env:SIGNING_PASS \
+            --key-pass env:SIGNING_PASS \
+            --out "${OUT_APK}" \
+            "${UNSIGNED_APK}"
+
+          "${APKSIGNER}" verify --verbose --print-certs "${OUT_APK}"
+
+          apksigcopier copy "${OUT_APK}" "${CLEAN_UNSIGNED_APK}" "${REPRO_SIGNED_APK}"
+          SHA_OUT="$(sha256sum "${OUT_APK}" | awk '{print tolower($1)}')"
+          SHA_REPRO="$(sha256sum "${REPRO_SIGNED_APK}" | awk '{print tolower($1)}')"
+          echo "Signed APK SHA-256:       ${SHA_OUT}"
+          echo "apksigcopier APK SHA-256: ${SHA_REPRO}"
+          if [ "${SHA_OUT}" != "${SHA_REPRO}" ]; then
+            diffoscope "${OUT_APK}" "${REPRO_SIGNED_APK}" || true
+            echo "apksigcopier signature transfer mismatch: ${SHA_OUT} != ${SHA_REPRO}" >&2
+            exit 1
+          fi
+
+      - name: Verify 16 KB ELF alignment
+        run: |
+          ./scripts/verify-16kb-alignment.sh "dist/TermVR-${GITHUB_REF_NAME}-${{ matrix.abi }}.apk"
 
       - name: Upload release APK artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -127,6 +198,9 @@ jobs:
       attestations: write
       contents: write
     steps:
+      - name: Checkout tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
       - name: Download arm64-v8a APK
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -146,7 +220,35 @@ jobs:
           sha256sum "TermVR-${GITHUB_REF_NAME}-arm64-v8a.apk" "TermVR-${GITHUB_REF_NAME}-x86_64.apk" > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Prepare release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          NOTES_FILE="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "${NOTES_FILE}" ]; then
+            cp -f "${NOTES_FILE}" /tmp/release-notes.md
+            echo "has_curated=true" >> "${GITHUB_OUTPUT}"
+          else
+            python3 - "${GITHUB_REF_NAME}" <<'PY' > /tmp/release-notes.md
+          import re
+          import sys
+          from pathlib import Path
+
+          tag = sys.argv[1]
+          ver = tag[1:] if tag.startswith("v") else tag
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = rf"(?ms)^## \[{re.escape(ver)}\].*?(?=^## \[|\Z)"
+          match = re.search(pattern, changelog)
+          if match:
+              print(match.group(0).strip())
+          else:
+              print(f"TermVR {tag}. See CHANGELOG.md for release details.")
+          PY
+            echo "has_curated=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Attest SLSA v1.0 Build Level 2 provenance
+        if: github.event.repository.private != true
         uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
           subject-path: |
@@ -157,7 +259,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
-          generate_release_notes: true
+          name: "TermVR ${{ github.ref_name }}"
+          body_path: /tmp/release-notes.md
+          generate_release_notes: ${{ steps.notes.outputs.has_curated != 'true' }}
           files: |
             release-assets/TermVR-${{ github.ref_name }}-arm64-v8a.apk
             release-assets/TermVR-${{ github.ref_name }}-x86_64.apk
