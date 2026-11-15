@@ -334,9 +334,9 @@ build_for_abi() {
   (
     cd "${GVX_DIR}"
     if [ "${abi}" = "arm64-v8a" ]; then
-      CGO_ENABLED=0 GOOS=linux GOARCH=arm64 "${GO_EXE}" build \
-        -mod=vendor -trimpath -buildvcs=false \
-        -ldflags="-s -w -buildid= -extldflags=-Wl,-z,max-page-size=16384" \
+      CGO_ENABLED=0 GOOS=android GOARCH=arm64 "${GO_EXE}" build \
+        -mod=vendor -trimpath -buildvcs=false -buildmode=pie \
+        -ldflags="-s -w -buildid=" \
         -o "${rungv_out}" ./cmd/rungv
     else
       CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="${NDK_CLANG_X86_64}" "${GO_EXE}" build \

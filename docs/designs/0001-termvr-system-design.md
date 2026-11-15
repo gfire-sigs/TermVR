@@ -845,7 +845,7 @@ When `profile.muxMode == MuxMode.RAW_PTY` (fallback mode for minimalist scratch 
 Upstream `rungv run` checks for `--` before reading positional image arguments, whereas `rungv restore` rejects `-image`, `--entrypoint`, and command arguments altogether. `GvxCommandBuilder` therefore implements two distinct argument builders:
 
 - **`buildRunArgs(profile, dnsPort, controlSock, activePorts)`**:
-  - Passes `run`, `--rootless`, `-m "${profile.memoryMiB}m"`, and `--cpus` clamped to `min(profile.cpuCores, Runtime.getRuntime().availableProcessors().toDouble())`.
+  - Passes `run`, `-m "${profile.memoryMiB}m"`, and `--cpus` clamped to `min(profile.cpuCores, Runtime.getRuntime().availableProcessors().toDouble())`.
   - Sets guest user-space capabilities: `--privileged=true` when `profile.guestPrivileged` is `true` (`docker`/`k3s`), `--privileged=false --net-raw` when `transparentTcp` is `true`, or `--privileged=false` otherwise.
   - Passes `--host-dns "127.0.0.1:$dnsPort"`, `-control-socket controlSock.absolutePath`, and `--host-ca-certs` when `profile.trustHostCaCerts` is `true`.
   - Passes `-net=nat` (plus `-isolate-lan` if `isolateLanEgress`), `-net=wg -wg-conf <path>`, or `-net=none`.
@@ -1003,7 +1003,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 - **Phase 1 (`init: ../scripts/provision-toolchains-and-vendor.sh`)**: Runs before F-Droid disables network access (or uses pre-populated CI caches). Verifies `git rev-parse HEAD` of `$$gvx$$`, `$$ghostty$$`, `$$freetype$$`, `$$harfbuzz$$`, `$$jetbrains_mono$$`, and `$$nerd_fonts_symbols$$` against `scripts/source-lock.json`; downloads `SHA-256`-pinned official Go `1.27.4` and Zig `0.17.0` archives if absent; populates `$$gvx$$/vendor` via `go mod vendor`; and populates Zig's package cache via `zig build --fetch`.
 - **Phase 2 (`prebuild: ../scripts/build-native-deps.sh`)**: Runs completely offline:
   - Compiles `librungv.so` into `core/runtime-gvx/src/main/jniLibs/<abi>/librungv.so`:
-    - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags=-Wl,-z,max-page-size=16384" ./cmd/rungv`.
+    - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -mod=vendor -trimpath -buildvcs=false -buildmode=pie -ldflags="-s -w -buildid=" ./cmd/rungv`.
     - On `x86_64` (emulator/CI): `CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$NDK_CLANG_X86_64 go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" ./cmd/rungv`.
   - Compiles static `termvr-agent` (`CGO_ENABLED=0 GOOS=linux GOARCH=<guestArch> go build -trimpath -buildvcs=false -ldflags="-s -w -buildid="`) into `app/src/main/assets/agent/<guestArch>/termvr-agent`.
   - Compiles `libghostty-vt.a` (`zig build -Doptimize=ReleaseFast --system <zig-cache> -Dtarget=<target>`), `libfreetype.a`, and `libharfbuzz.a` (`ZERO_AR_DATE=1`, `-ffile-prefix-map=$PWD=.`), and copies `JetBrainsMono-{Regular,Bold,Italic,BoldItalic}.ttf` plus `SymbolsNerdFontMono-Regular.ttf` into `core/terminal-ui/src/main/assets/fonts/`.

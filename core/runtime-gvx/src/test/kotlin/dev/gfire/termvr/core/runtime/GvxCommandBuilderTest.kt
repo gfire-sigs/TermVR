@@ -114,7 +114,7 @@ class GvxCommandBuilderTest {
         )
 
         assertEquals("run", args[0])
-        assertTrue(args.contains("--rootless"))
+        assertFalse(args.contains("--rootless"))
         assertTrue(args.contains("2560m"))
         assertTrue(args.contains("8")) // clamped from 16.0 to 8
         assertTrue(args.contains("--privileged=true"))
@@ -243,6 +243,28 @@ class GvxCommandBuilderTest {
         assertEquals(ForwardProtocol.UDP, p2.protocol)
 
         assertNull(GvxCommandBuilder.parsePublishingLine("random stderr line"))
+    }
+
+    @Test
+    fun `buildRunArgs emits single workspace mount when profile volumes already defines workspace`() {
+        val builder = newBuilder()
+        val profile = SandboxProfile(
+            id = "quick-alpine",
+            displayName = "Quick Shell (Alpine)",
+            imageRef = "docker.io/library/alpine:3.21",
+            volumes = listOf(
+                VolumeMountSpec(
+                    sourceName = "quick-alpine",
+                    guestMountPath = "/workspace",
+                    kind = VolumeKind.WORKSPACE_HOSTFS,
+                    readOnly = false,
+                ),
+            ),
+        )
+        val args = builder.buildRunArgs(profile, 5353, builder.controlSocketFile(profile.id))
+        val workspaceFlags = args.filter { it.endsWith(":/workspace:rw") || it.endsWith(":/workspace:ro") }
+        assertEquals(1, workspaceFlags.size)
+        assertEquals("${builder.workspaceDir("quick-alpine").absolutePath}:/workspace:rw", workspaceFlags.single())
     }
 
     @Test
