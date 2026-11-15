@@ -130,6 +130,7 @@ class NativeVtSessionTest {
             override val nativeHandle: Long = 42L
             override fun resizeGrid(cols: Int, rows: Int, cellWidthPx: Int, cellHeightPx: Int) = true
             override fun writePtyBytes(data: ByteArray, offset: Int, length: Int) = Unit
+            override fun drainPtyReplies() = ByteArray(0)
             override fun setPalette(palette: ColorPalette) = Unit
             override fun setScrollbackOffset(linesFromBottom: Int) = Unit
             override fun getScrollbackOffset() = 0
@@ -222,6 +223,65 @@ class NativeVtSessionTest {
                     assertTrue(drawn)
                 }
             }
+        }
+    }
+
+    @Test
+    fun `terminal queries queue replies and drain resets queue`() {
+        NativeVtSession(initialCols = 40, initialRows = 12).use { session ->
+            assertTrue(session.resizeGrid(newCols = 50, newRows = 20, cellWidthPx = 10, cellHeightPx = 20))
+            val seq = (
+                "\u001b[4;7H" +
+                    "\u001b[6n" +
+                    "\u001b[5n" +
+                    "\u001b[c" +
+                    "\u001b[14t" +
+                    "\u001b[18t" +
+                    "\u001b]10;?\u0007" +
+                    "\u001b]11;?\u001b\\"
+                ).toByteArray(StandardCharsets.UTF_8)
+            session.writePtyBytes(seq)
+
+            val replies = String(session.drainPtyReplies(), StandardCharsets.UTF_8)
+            assertTrue(replies.contains("\u001b[4;7R"))
+            assertTrue(replies.contains("\u001b[0n"))
+            assertTrue(replies.contains("\u001b[?62;"))
+            assertTrue(replies.contains("\u001b[4;400;500t"))
+            assertTrue(replies.contains("\u001b[8;20;50t"))
+            assertTrue(replies.contains("\u001b]10;rgb:"))
+            assertTrue(replies.contains("\u001b]11;rgb:"))
+
+            assertEquals(0, session.drainPtyReplies().size)
+        }
+    }
+
+    @Test
+    fun `clear resets viewport and scrollback and DECAWM positioning renders columns`() {
+        NativeVtSession(initialCols = 32, initialRows = 8).use { session ->
+            val filler = (1..12).joinToString("\r\n") { "row-$it" } + "\r\n"
+            session.writePtyBytes(filler.toByteArray(StandardCharsets.UTF_8))
+            assertTrue(session.getScrollbackCount() > 0)
+            session.setScrollbackOffset(2)
+            assertEquals(2, session.getScrollbackOffset())
+
+            session.writePtyBytes("\u001b[H\u001b[2J\u001b[3J".toByteArray(StandardCharsets.UTF_8))
+            assertEquals(0, session.getScrollbackCount())
+            assertEquals(0, session.getScrollbackOffset())
+            assertTrue(session.formatViewportText(trimTrailingWhitespace = true).trim().isEmpty())
+
+            val fastfetchLike = (
+                "\u001b[?7l" +
+                    "ART1\r\n" +
+                    "ART2\r\n" +
+                    "ART3" +
+                    "\u001b[2A\u001b[4CHost: TermVR\r\n" +
+                    "\u001b[8CTerm: xterm-256color" +
+                    "\u001b[?7h"
+                ).toByteArray(StandardCharsets.UTF_8)
+            session.writePtyBytes(fastfetchLike)
+            val text = session.formatViewportText()
+            assertTrue(text.contains("ART1    Host: TermVR"))
+            assertTrue(text.contains("ART2    Term: xterm-256color"))
         }
     }
 }

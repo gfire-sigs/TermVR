@@ -348,6 +348,16 @@ bool TerminalIsApplicationCursorActive(TvGhosttyTerminal terminal);
 std::string TerminalGetWindowTitle(TvGhosttyTerminal terminal);
 
 TerminalCursorSnapshot TerminalGetCursorSnapshot(TvGhosttyTerminal terminal);
+TerminalCursorSnapshot TerminalGetCursorSnapshotWithState(
+    TvGhosttyTerminal terminal,
+    TvGhosttyRenderState render_state);
+
+std::vector<uint8_t> TerminalDrainPtyReplies(TvGhosttyTerminal terminal);
+void TerminalSetPaletteColors(TvGhosttyTerminal terminal, const PaletteColors& palette);
+void TerminalSetCellMetricsPx(
+    TvGhosttyTerminal terminal,
+    uint32_t cell_width_px,
+    uint32_t cell_height_px);
 
 std::vector<SearchMatchNative> TerminalSearchScrollback(
     TvGhosttyTerminal terminal,

@@ -58,6 +58,8 @@ VtSessionNative::VtSessionNative(uint16_t cols, uint16_t rows, uint32_t max_scro
         Close();
         return;
     }
+    TerminalSetPaletteColors(terminal_, palette_);
+    TerminalSetCellMetricsPx(terminal_, cell_width_px_, cell_height_px_);
     if (tv_ghostty_render_state_new(nullptr, &render_state_) != TV_GHOSTTY_SUCCESS ||
         tv_ghostty_render_state_row_iterator_new(nullptr, &row_iter_) != TV_GHOSTTY_SUCCESS ||
         tv_ghostty_render_state_cell_iterator_new(nullptr, &cell_iter_) != TV_GHOSTTY_SUCCESS ||
@@ -148,12 +150,26 @@ void VtSessionNative::WritePtyBytes(const uint8_t* data, size_t len) {
     }
 }
 
+std::vector<uint8_t> VtSessionNative::DrainPtyReplies() {
+    if (closed_.load(std::memory_order_acquire)) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(vt_mu_);
+    if (terminal_ == nullptr) {
+        return {};
+    }
+    return TerminalDrainPtyReplies(terminal_);
+}
+
 void VtSessionNative::SetPalette(const PaletteColors& palette) {
     if (closed_.load(std::memory_order_acquire)) {
         return;
     }
     std::lock_guard<std::mutex> lock(vt_mu_);
     palette_ = palette;
+    if (terminal_ != nullptr) {
+        TerminalSetPaletteColors(terminal_, palette_);
+    }
     grid_resized_.store(true, std::memory_order_release);
     dirty_flag_.store(true, std::memory_order_release);
 }
@@ -431,7 +447,7 @@ bool VtSessionNative::ExtractDirtyFrame(bool force_full, ExtractedFrameSnapshot*
     out_snapshot->full_redraw = full;
     out_snapshot->any_dirty = full || (dirty != TV_GHOSTTY_RENDER_STATE_DIRTY_FALSE);
     out_snapshot->palette = palette_;
-    out_snapshot->cursor = TerminalGetCursorSnapshot(terminal_);
+    out_snapshot->cursor = TerminalGetCursorSnapshotWithState(terminal_, render_state_);
     out_snapshot->dirty_rows.clear();
 
     uint64_t krev = TerminalGetKittyGraphicsRevision(terminal_);
@@ -596,6 +612,17 @@ Java_dev_gfire_termvr_core_vt_JniVtBindings_nativeWritePtyBytes(
     }
     sess->WritePtyBytes(reinterpret_cast<const uint8_t*>(ptr + offset), static_cast<size_t>(clamped_len));
     env->ReleaseByteArrayElements(data, ptr, JNI_ABORT);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_gfire_termvr_core_vt_JniVtBindings_nativeDrainPtyReplies(
+    JNIEnv* env, jclass, jlong handle) {
+    VtSessionNative* sess = AsSession(handle);
+    if (sess == nullptr) {
+        return env->NewByteArray(0);
+    }
+    std::vector<uint8_t> replies = sess->DrainPtyReplies();
+    return VecToJByteArray(env, replies);
 }
 
 JNIEXPORT void JNICALL

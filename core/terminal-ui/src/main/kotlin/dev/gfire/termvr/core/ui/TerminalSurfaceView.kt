@@ -189,6 +189,17 @@ class TerminalSurfaceView @JvmOverloads constructor(
     private val accessibilityManager: AccessibilityManager? =
         context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
 
+    private data class PaneGeometrySnapshot(
+        val sessionRef: NativeVtSession,
+        val cols: Int,
+        val rows: Int,
+        val widthPx: Int,
+        val heightPx: Int,
+        val cellWidthPx: Int,
+        val cellHeightPx: Int,
+    )
+
+    private val lastNotifiedPaneGeometry = HashMap<String, PaneGeometrySnapshot>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var glThread: TermVrGlThread? = null
 
@@ -420,13 +431,35 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 mainHandler.post {
                     latestLayout = layout
                     latestMetrics = metrics
+                    val activePaneIds = HashSet<String>(layout.panes.size)
+                    var anyGridResized = false
                     for (pane in layout.panes) {
+                        activePaneIds.add(pane.paneId)
                         val cols = max(1, pane.widthPx / max(1, metrics.cellWidthPx))
                         val rows = max(1, pane.heightPx / max(1, metrics.cellHeightPx))
-                        if (pane.session.cols != cols || pane.session.rows != rows) {
+                        val gridChanged = pane.session.cols != cols || pane.session.rows != rows
+                        val snapshot = PaneGeometrySnapshot(
+                            sessionRef = pane.session,
+                            cols = cols,
+                            rows = rows,
+                            widthPx = pane.widthPx,
+                            heightPx = pane.heightPx,
+                            cellWidthPx = metrics.cellWidthPx,
+                            cellHeightPx = metrics.cellHeightPx,
+                        )
+                        val prev = lastNotifiedPaneGeometry[pane.paneId]
+                        if (gridChanged || prev != snapshot) {
                             pane.session.resizeGrid(cols, rows, metrics.cellWidthPx, metrics.cellHeightPx)
+                            lastNotifiedPaneGeometry[pane.paneId] = snapshot
                             onGridResized(pane.paneId, cols, rows, pane.widthPx, pane.heightPx)
+                            if (gridChanged) {
+                                anyGridResized = true
+                            }
                         }
+                    }
+                    lastNotifiedPaneGeometry.keys.retainAll(activePaneIds)
+                    if (anyGridResized) {
+                        glThread?.requestRender(dirty = true)
                     }
                     invalidateAccessibilityTree()
                 }

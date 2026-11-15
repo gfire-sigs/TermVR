@@ -62,9 +62,15 @@ private:
         uint32_t instance_vbo = 0;
         size_t instance_capacity_bytes = 0;
         std::vector<std::vector<CellGpuInstance>> row_instances;
+        std::vector<std::vector<ExtractedCell>> cached_rows;
         std::vector<uint32_t> row_instance_offsets;
         std::vector<uint32_t> row_instance_counts;
         uint32_t total_instances = 0;
+        PaletteColors last_palette{};
+        int32_t last_cursor_row = -1;
+        int32_t last_cursor_col = -1;
+        bool last_cursor_drawn = false;
+        CursorShape last_cursor_shape = CursorShape::kNone;
         uint64_t kitty_revision = 0;
         std::vector<uint32_t> kitty_textures;
         std::vector<KittyGraphicPlacement> kitty_placements;

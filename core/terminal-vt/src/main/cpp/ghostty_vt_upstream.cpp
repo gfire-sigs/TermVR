@@ -17,6 +17,8 @@ struct TvGhosttyTerminalImpl {
     uint16_t rows = 24;
     uint32_t cell_width_px = 10;
     uint32_t cell_height_px = 20;
+    bool dark_color_scheme = true;
+    std::vector<uint8_t> pending_pty_replies;
 };
 
 struct TvGhosttyRenderStateImpl {
@@ -292,6 +294,88 @@ std::string ToLowerAscii(const std::string& s) {
 
 extern "C" {
 
+namespace {
+
+constexpr size_t kMaxPendingPtyReplies = 256u * 1024u;
+
+GhosttyColorRgb RgbaToGhosttyRgb(uint32_t rgba) noexcept {
+    return GhosttyColorRgb{
+        static_cast<uint8_t>((rgba >> 24) & 0xFFu),
+        static_cast<uint8_t>((rgba >> 16) & 0xFFu),
+        static_cast<uint8_t>((rgba >> 8) & 0xFFu),
+    };
+}
+
+void OnTerminalWritePty(
+    GhosttyTerminal,
+    void* userdata,
+    const uint8_t* data,
+    size_t len) {
+    if (userdata == nullptr || data == nullptr || len == 0) {
+        return;
+    }
+    auto* impl = static_cast<TvGhosttyTerminalImpl*>(userdata);
+    if (impl->pending_pty_replies.size() >= kMaxPendingPtyReplies) {
+        return;
+    }
+    size_t avail = kMaxPendingPtyReplies - impl->pending_pty_replies.size();
+    size_t take = std::min(len, avail);
+    impl->pending_pty_replies.insert(impl->pending_pty_replies.end(), data, data + take);
+}
+
+bool OnTerminalSize(
+    GhosttyTerminal,
+    void* userdata,
+    GhosttySizeReportSize* out_size) {
+    if (userdata == nullptr || out_size == nullptr) {
+        return false;
+    }
+    const auto* impl = static_cast<const TvGhosttyTerminalImpl*>(userdata);
+    out_size->rows = impl->rows;
+    out_size->columns = impl->cols;
+    out_size->cell_width = std::max<uint32_t>(1u, impl->cell_width_px);
+    out_size->cell_height = std::max<uint32_t>(1u, impl->cell_height_px);
+    return true;
+}
+
+bool OnTerminalColorScheme(
+    GhosttyTerminal,
+    void* userdata,
+    GhosttyColorScheme* out_scheme) {
+    if (userdata == nullptr || out_scheme == nullptr) {
+        return false;
+    }
+    const auto* impl = static_cast<const TvGhosttyTerminalImpl*>(userdata);
+    *out_scheme = impl->dark_color_scheme
+        ? GHOSTTY_COLOR_SCHEME_DARK
+        : GHOSTTY_COLOR_SCHEME_LIGHT;
+    return true;
+}
+
+bool OnTerminalDeviceAttributes(
+    GhosttyTerminal,
+    void*,
+    GhosttyDeviceAttributes* out_attrs) {
+    if (out_attrs == nullptr) {
+        return false;
+    }
+    out_attrs->primary.conformance_level = GHOSTTY_DA_CONFORMANCE_VT220;
+    out_attrs->primary.features[0] = GHOSTTY_DA_FEATURE_ANSI_COLOR;
+    out_attrs->primary.features[1] = GHOSTTY_DA_FEATURE_CLIPBOARD;
+    out_attrs->primary.num_features = 2;
+    out_attrs->secondary.device_type = GHOSTTY_DA_DEVICE_TYPE_VT220;
+    out_attrs->secondary.firmware_version = 100;
+    out_attrs->secondary.rom_cartridge = 0;
+    return true;
+}
+
+GhosttyString OnTerminalXtversion(GhosttyTerminal, void*) {
+    static const uint8_t kVersion[] = "TermVR 1.0";
+    return GhosttyString{kVersion, sizeof(kVersion) - 1u};
+}
+
+}  // namespace
+
 TvGhosttyResult tv_ghostty_terminal_new(
     const TvGhosttyAllocator*,
     TvGhosttyTerminal* out_terminal,
@@ -312,6 +396,24 @@ TvGhosttyResult tv_ghostty_terminal_new(
         size_t max_lines = static_cast<size_t>(opts.max_scrollback);
         ghostty_terminal_set(impl->term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &max_lines);
     }
+    ghostty_terminal_set(impl->term, GHOSTTY_TERMINAL_OPT_USERDATA, impl.get());
+    ghostty_terminal_set(
+        impl->term, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reinterpret_cast<const void*>(&OnTerminalWritePty));
+    ghostty_terminal_set(
+        impl->term, GHOSTTY_TERMINAL_OPT_SIZE, reinterpret_cast<const void*>(&OnTerminalSize));
+    ghostty_terminal_set(
+        impl->term,
+        GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
+        reinterpret_cast<const void*>(&OnTerminalColorScheme));
+    ghostty_terminal_set(
+        impl->term,
+        GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
+        reinterpret_cast<const void*>(&OnTerminalDeviceAttributes));
+    ghostty_terminal_set(
+        impl->term, GHOSTTY_TERMINAL_OPT_XTVERSION, reinterpret_cast<const void*>(&OnTerminalXtversion));
+    static const uint8_t kTerminfoName[] = "xterm-256color";
+    GhosttyString terminfo_str{kTerminfoName, sizeof(kTerminfoName) - 1u};
+    ghostty_terminal_set(impl->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &terminfo_str);
     *out_terminal = impl.release();
     return TV_GHOSTTY_SUCCESS;
 }
@@ -970,6 +1072,12 @@ std::string TerminalGetWindowTitle(TvGhosttyTerminal terminal) {
 }
 
 TerminalCursorSnapshot TerminalGetCursorSnapshot(TvGhosttyTerminal terminal) {
+    return TerminalGetCursorSnapshotWithState(terminal, nullptr);
+}
+
+TerminalCursorSnapshot TerminalGetCursorSnapshotWithState(
+    TvGhosttyTerminal terminal,
+    TvGhosttyRenderState render_state) {
     TerminalCursorSnapshot snap;
     if (terminal == nullptr || terminal->term == nullptr) return snap;
 
@@ -988,7 +1096,86 @@ TerminalCursorSnapshot TerminalGetCursorSnapshot(TvGhosttyTerminal terminal) {
     snap.visible = cvis && (TerminalGetScrollbackOffset(terminal) == 0);
     snap.blink = blink_cfg.value;
     snap.shape = CursorShape::kBlock;
+
+    if (render_state != nullptr && render_state->state != nullptr) {
+        GhosttyCursorStyle style = GHOSTTY_CURSOR_STYLE_BLOCK;
+        if (ghostty_render_state_get(
+                render_state->state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &style) == GHOSTTY_SUCCESS) {
+            switch (style) {
+                case GHOSTTY_CURSOR_STYLE_BAR:
+                    snap.shape = CursorShape::kBar;
+                    break;
+                case GHOSTTY_CURSOR_STYLE_UNDERLINE:
+                    snap.shape = CursorShape::kUnderline;
+                    break;
+                case GHOSTTY_CURSOR_STYLE_BLOCK:
+                case GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW:
+                default:
+                    snap.shape = CursorShape::kBlock;
+                    break;
+            }
+        }
+    }
     return snap;
+}
+
+std::vector<uint8_t> TerminalDrainPtyReplies(TvGhosttyTerminal terminal) {
+    std::vector<uint8_t> out;
+    if (terminal == nullptr) {
+        return out;
+    }
+    out.swap(terminal->pending_pty_replies);
+    return out;
+}
+
+void TerminalSetPaletteColors(TvGhosttyTerminal terminal, const PaletteColors& palette) {
+    if (terminal == nullptr || terminal->term == nullptr) {
+        return;
+    }
+    GhosttyColorRgb fg = RgbaToGhosttyRgb(palette.foreground_rgba);
+    GhosttyColorRgb bg = RgbaToGhosttyRgb(palette.background_rgba);
+    GhosttyColorRgb cursor = RgbaToGhosttyRgb(palette.cursor_rgba);
+    ghostty_terminal_set(terminal->term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg);
+    ghostty_terminal_set(terminal->term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
+    ghostty_terminal_set(terminal->term, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, &cursor);
+
+    double luma = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b;
+    terminal->dark_color_scheme = (luma < 128.0);
+
+    GhosttyColorRgb pal[256]{};
+    for (size_t i = 0; i < 16; ++i) {
+        pal[i] = RgbaToGhosttyRgb(palette.ansi16_rgba[i]);
+    }
+    for (size_t i = 16; i < 232; ++i) {
+        size_t cube = i - 16;
+        uint8_t rc = static_cast<uint8_t>(cube / 36u);
+        uint8_t gc = static_cast<uint8_t>((cube / 6u) % 6u);
+        uint8_t bc = static_cast<uint8_t>(cube % 6u);
+        auto scale = [](uint8_t v) -> uint8_t {
+            return v == 0 ? 0 : static_cast<uint8_t>(55u + v * 40u);
+        };
+        pal[i] = GhosttyColorRgb{scale(rc), scale(gc), scale(bc)};
+    }
+    for (size_t i = 232; i < 256; ++i) {
+        uint8_t gray = static_cast<uint8_t>(8u + (i - 232u) * 10u);
+        pal[i] = GhosttyColorRgb{gray, gray, gray};
+    }
+    ghostty_terminal_set(terminal->term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, pal);
+}
+
+void TerminalSetCellMetricsPx(
+    TvGhosttyTerminal terminal,
+    uint32_t cell_width_px,
+    uint32_t cell_height_px) {
+    if (terminal == nullptr) {
+        return;
+    }
+    if (cell_width_px > 0) {
+        terminal->cell_width_px = cell_width_px;
+    }
+    if (cell_height_px > 0) {
+        terminal->cell_height_px = cell_height_px;
+    }
 }
 
 std::vector<SearchMatchNative> TerminalSearchScrollback(

@@ -27,6 +27,7 @@ internal object JniVtBindings {
     @JvmStatic external fun nativeDestroySession(handle: Long)
     @JvmStatic external fun nativeResizeGrid(handle: Long, cols: Int, rows: Int, cellWidthPx: Int, cellHeightPx: Int): Boolean
     @JvmStatic external fun nativeWritePtyBytes(handle: Long, data: ByteArray, offset: Int, length: Int)
+    @JvmStatic external fun nativeDrainPtyReplies(handle: Long): ByteArray
     @JvmStatic external fun nativeSetPalette(handle: Long, fgRgba: Int, bgRgba: Int, cursorRgba: Int, selectionRgba: Int, ansi16: IntArray)
     @JvmStatic external fun nativeSetScrollbackOffset(handle: Long, linesFromBottom: Int)
     @JvmStatic external fun nativeGetScrollbackOffset(handle: Long): Int

@@ -60,6 +60,14 @@ class NativeVtSession(
         backend.writePtyBytes(data, offset, length)
     }
 
+    /**
+     * Drains terminal query replies queued during VT processing.
+     */
+    fun drainPtyReplies(): ByteArray {
+        if (closed.get()) return ByteArray(0)
+        return backend.drainPtyReplies()
+    }
+
     fun setPalette(palette: ColorPalette) {
         if (closed.get()) return
         backend.setPalette(palette)

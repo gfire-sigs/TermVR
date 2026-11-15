@@ -213,6 +213,113 @@ void TestRendererCpuPath() {
     renderer.DetachSession(pane.session_handle);
 }
 
+void TestQueryRepliesAndDrain() {
+    VtSessionNative session(80, 24);
+    assert(session.IsValid());
+    assert(session.ResizeGrid(60, 30, 12, 24));
+
+    // Position cursor at row 5, col 10 (1-based) and query CPR, DSR, DA1, DA2, XTWINOPS, DECRQM, OSC 10/11, Kitty q.
+    const std::string queries =
+        "\x1b[5;10H"
+        "\x1b[6n"
+        "\x1b[5n"
+        "\x1b[c"
+        "\x1b[>c"
+        "\x1b[14t"
+        "\x1b[16t"
+        "\x1b[18t"
+        "\x1b[?7$p"
+        "\x1b[?996n"
+        "\x1b]10;?\x07"
+        "\x1b]11;?\x1b\\"
+        "\x1b_Gi=7,a=q;\x1b\\";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(queries.data()), queries.size());
+
+    std::vector<uint8_t> raw = session.DrainPtyReplies();
+    std::string replies(raw.begin(), raw.end());
+    assert(replies.find("\x1b[5;10R") != std::string::npos);
+    assert(replies.find("\x1b[0n") != std::string::npos);
+    assert(replies.find("\x1b[?62;") != std::string::npos);
+    assert(replies.find("\x1b[>1;") != std::string::npos);
+    assert(replies.find("\x1b[4;720;720t") != std::string::npos);
+    assert(replies.find("\x1b[6;24;12t") != std::string::npos);
+    assert(replies.find("\x1b[8;30;60t") != std::string::npos);
+    assert(replies.find("\x1b[?7;1$y") != std::string::npos);
+    assert(replies.find("\x1b[?997;1n") != std::string::npos);
+    assert(replies.find("\x1b]10;rgb:") != std::string::npos);
+    assert(replies.find("\x1b]11;rgb:") != std::string::npos);
+    assert(replies.find("\x1b_Gi=7;OK\x1b\\") != std::string::npos);
+
+    // Subsequent drain must be empty.
+    assert(session.DrainPtyReplies().empty());
+}
+
+void TestClearDecawmAndCursorBlinkRedraw() {
+    VtSessionNative session(30, 8);
+    assert(session.IsValid());
+
+    // Push lines into scrollback then run clear (H + 2J + 3J).
+    for (int i = 1; i <= 12; ++i) {
+        std::string line = "line-" + std::to_string(i) + "\r\n";
+        session.WritePtyBytes(reinterpret_cast<const uint8_t*>(line.data()), line.size());
+    }
+    assert(session.GetScrollbackCount() > 0u);
+    session.SetScrollbackOffset(2u);
+    assert(session.GetScrollbackOffset() == 2u);
+
+    const std::string clear_seq = "\x1b[H\x1b[2J\x1b[3J";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(clear_seq.data()), clear_seq.size());
+    assert(session.GetScrollbackCount() == 0u);
+    assert(session.GetScrollbackOffset() == 0u);
+    std::string cleared = session.FormatText(false, false, 0, 0, -1, -1, true, false);
+    assert(cleared.find_first_not_of("\n ") == std::string::npos);
+
+    // Fastfetch-style layout: disable DECAWM, draw logo lines, move up and right, write info.
+    const std::string ff =
+        "\x1b[?7l"
+        "LOGO1\r\n"
+        "LOGO2\r\n"
+        "LOGO3"
+        "\x1b[2A"
+        "\x1b[3C"
+        "OS: Debian\r\n"
+        "\x1b[8C"
+        "Kernel: 6.1"
+        "\x1b[?7h";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(ff.data()), ff.size());
+    std::string rendered = session.FormatText(false, false, 0, 0, -1, -1, true, false);
+    assert(rendered.find("LOGO1   OS: Debian") != std::string::npos);
+    assert(rendered.find("LOGO2   Kernel: 6.1") != std::string::npos);
+
+    // Verify DECAWM=off does not wrap at right edge.
+    const std::string long_nowrap = "\x1b[H\x1b[2J\x1b[?7l" + std::string(40, 'X') + "\x1b[?7h";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(long_nowrap.data()), long_nowrap.size());
+    assert(session.GetCursorSnapshot().row == 0u);
+
+    // Verify cursor blink toggle re-uploads cursor row without VT changes.
+    Gles3Renderer renderer;
+    assert(renderer.InitializeGl());
+    FontConfigNative font_cfg;
+    renderer.ConfigureFont(font_cfg);
+    PaneViewportSpec pane{};
+    pane.session_handle = reinterpret_cast<int64_t>(&session);
+    pane.x_px = 0;
+    pane.y_px = 0;
+    pane.width_px = 600;
+    pane.height_px = 320;
+    pane.focused = true;
+    pane.cursor_blink_visible = true;
+    assert(renderer.RenderFrame(600, 320, {pane}, {}, true, 0x0D1117FFu));
+
+    // Second render with identical blink state uploads 0 bytes; toggling blink uploads cursor row.
+    assert(renderer.RenderFrame(600, 320, {pane}, {}, false, 0x0D1117FFu));
+    assert(renderer.LastUploadedBytes() == 0u);
+    pane.cursor_blink_visible = false;
+    assert(renderer.RenderFrame(600, 320, {pane}, {}, false, 0x0D1117FFu));
+    assert(renderer.LastUploadedBytes() > 0u);
+    renderer.DetachSession(pane.session_handle);
+}
+
 }  // namespace
 
 int main() {
@@ -221,6 +328,8 @@ int main() {
     TestEncodersPasteAndKittyGraphics();
     TestFontLigaturesBoxDrawingAndAtlasEviction();
     TestRendererCpuPath();
+    TestQueryRepliesAndDrain();
+    TestClearDecawmAndCursorBlinkRedraw();
     std::cout << "All native TermVR VT C++ tests passed!" << std::endl;
     return 0;
 }
