@@ -1,0 +1,222 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gates:
+    name: Docs, Lockfile, and Script Gates
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install audit tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq python3 ripgrep
+
+      - name: Verify ASD-STE100 prose and lockfile parity
+        run: |
+          set -euo pipefail
+          if rg -n $'\u2014| \u2013 |\u2192' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/; then
+            echo "Found forbidden em-dash, spaced en-dash, or prose arrow" >&2
+            exit 1
+          fi
+          if rg -ni '\b(seamless|seamlessly|robust|battle-tested|cutting-edge|next-generation|state-of-the-art|powerhouse|unleash|empower|supercharge|elevate|delve|tapestry|testament|holistic|synergy|paradigm|under the hood|heavy lifting|effortlessly|meticulously|crucial|pivotal|paramount|game-changer|utilize|utilizes|utilizing|leverage|leverages|leveraging)\b' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/; then
+            echo "Found forbidden AI-slop word" >&2
+            exit 1
+          fi
+          python3 -m json.tool scripts/source-lock.json >/dev/null
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          lock = json.loads(Path("scripts/source-lock.json").read_text(encoding="utf-8"))
+          fdroid_text = Path("fdroid/dev.gfire.termvr.yml").read_text(encoding="utf-8")
+
+          for key, meta in lock["sources"].items():
+              commit = meta["commit"]
+              expected = f"{key}@{commit}"
+              assert expected in fdroid_text, f"Missing {expected} in fdroid/dev.gfire.termvr.yml"
+
+          ndk_ver = lock["toolchains"]["android_ndk"]
+          assert re.search(rf"^\s*ndk:\s*{re.escape(ndk_ver)}\s*$", fdroid_text, re.M), (
+              f"NDK version {ndk_ver} mismatch in fdroid/dev.gfire.termvr.yml"
+          )
+          print("Lockfile and F-Droid metadata match across all 6 sources and NDK.")
+          PY
+
+      - name: Verify shell script syntax and executable mode
+        run: |
+          set -euo pipefail
+          for script in \
+            scripts/provision-toolchains-and-vendor.sh \
+            scripts/build-native-deps.sh \
+            scripts/verify-16kb-alignment.sh \
+            scripts/verify-reproducible-apk.sh
+          do
+            test -x "${script}"
+            bash -n "${script}"
+          done
+
+  guest-agent-tests:
+    name: Guest Agent Tests and Size Budget
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Provision pinned Go toolchain
+        run: |
+          ./scripts/provision-toolchains-and-vendor.sh --toolchains-only
+
+      - name: Run unit tests and enforce static binary size cap
+        run: |
+          set -euo pipefail
+          source .toolchains/env.sh
+          cd guest/termvr-agent
+          GOTOOLCHAIN=local "${GO_BIN}" test -v ./...
+          mkdir -p /tmp/termvr-agent-check
+          for arch in arm64 amd64; do
+            out="/tmp/termvr-agent-check/termvr-agent-${arch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" GOTOOLCHAIN=local "${GO_BIN}" build \
+              -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
+              -o "${out}" ./cmd/termvr-agent
+            size_bytes="$(stat -c%s "${out}")"
+            echo "termvr-agent (${arch}): ${size_bytes} bytes"
+            if [ "${size_bytes}" -gt 2306867 ]; then
+              echo "termvr-agent (${arch}) exceeds 2.2 MiB limit" >&2
+              exit 1
+            fi
+          done
+
+  android-build-and-16kb:
+    name: Offline Native Build, Gradle Tests, and 16 KB Check
+    needs:
+      - quality-gates
+      - guest-agent-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install build packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates cmake curl git jq ninja-build python3 uidmap unzip xz-utils
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          packages: >
+            platforms;android-36
+            build-tools;36.1.0
+            ndk;28.0.13004108
+            cmake;3.22.1
+
+      - name: Set up Gradle
+        uses: gradle/actions@06832c7b30a0129d7fb559bcc6e43d26f6374244 # v4.3.1
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Cache toolchains and upstream sources
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .toolchains
+          key: termvr-toolchains-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/source-lock.json') }}
+
+      - name: Provision toolchains and vendor caches
+        run: ./scripts/provision-toolchains-and-vendor.sh
+
+      - name: Compile native dependencies offline
+        run: |
+          unshare -r -n ./scripts/build-native-deps.sh --abi arm64-v8a,x86_64
+
+      - name: Run unit tests, lint, and assemble APKs
+        run: |
+          set -euo pipefail
+          GRADLE_EXE="$(command -v gradle)"
+          if [ -x ./gradlew ]; then
+            GRADLE_EXE="./gradlew"
+          fi
+          "${GRADLE_EXE}" --no-daemon testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease -PtermvrAbis=arm64-v8a,x86_64
+
+      - name: Verify 16 KB ELF segment alignment on packaged APKs
+        run: |
+          set -euo pipefail
+          DEBUG_APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
+          RELEASE_APK="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
+          test -n "${DEBUG_APK}"
+          test -n "${RELEASE_APK}"
+          ./scripts/verify-16kb-alignment.sh "${DEBUG_APK}" "${RELEASE_APK}"
+
+      - name: Upload debug APK for emulator smoke check
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: termvr-smoke-apks
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+  android-16-emulator-16kb:
+    name: Android 16 (16 KB x86_64) Smoke Verification
+    needs:
+      - android-build-and-16kb
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download smoke APKs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: termvr-smoke-apks
+          path: /tmp/termvr-apks
+
+      - name: Run Android 16 16 KB x86_64 emulator smoke test
+        uses: reactivecircus/android-emulator-runner@1dcd0090116d15e7c562f8db72807de5e036a4ed # v2.34.0
+        with:
+          api-level: 36
+          target: google_apis_ps16k
+          arch: x86_64
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            page_size="$(adb shell getconf PAGESIZE | tr -d '\r')"
+            echo "Emulator page size: ${page_size}"
+            if [ "${page_size}" != "16384" ]; then
+              echo "Expected 16384-byte page size on Android 16 16 KB emulator, got ${page_size}" >&2
+              exit 1
+            fi
+            apk_path="$(find /tmp/termvr-apks -type f -name '*debug*.apk' | head -n 1)"
+            test -n "${apk_path}"
+            adb install -r "${apk_path}"
+            adb logcat -c
+            adb shell monkey -p dev.gfire.termvr -c android.intent.category.LAUNCHER 1
+            sleep 3
+            adb shell pidof dev.gfire.termvr
+            if adb logcat -d -s AndroidRuntime:E libc:F | grep -q "FATAL EXCEPTION"; then
+              adb logcat -d -s AndroidRuntime:E libc:F
+              exit 1
+            fi

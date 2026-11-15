@@ -1,0 +1,160 @@
+name: Release SLSA
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-apks:
+    name: Build Deterministic APK (${{ matrix.abi }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: true
+      matrix:
+        abi:
+          - arm64-v8a
+          - x86_64
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install build packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apksigcopier ca-certificates cmake curl diffoscope git jq ninja-build python3 uidmap unzip xz-utils
+
+      - name: Verify lockfile and F-Droid parity
+        run: |
+          set -euo pipefail
+          python3 -m json.tool scripts/source-lock.json >/dev/null
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          lock = json.loads(Path("scripts/source-lock.json").read_text(encoding="utf-8"))
+          fdroid_text = Path("fdroid/dev.gfire.termvr.yml").read_text(encoding="utf-8")
+          for key, meta in lock["sources"].items():
+              expected = f"{key}@{meta['commit']}"
+              assert expected in fdroid_text, f"Missing {expected} in fdroid/dev.gfire.termvr.yml"
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          packages: >
+            platforms;android-36
+            build-tools;36.1.0
+            ndk;28.0.13004108
+            cmake;3.22.1
+
+      - name: Set up Gradle
+        uses: gradle/actions@06832c7b30a0129d7fb559bcc6e43d26f6374244 # v4.3.1
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Provision toolchains and vendor caches
+        run: ./scripts/provision-toolchains-and-vendor.sh
+
+      - name: Build offline native dependencies and release APK
+        run: |
+          set -euo pipefail
+          unshare -r -n ./scripts/build-native-deps.sh --abi "${{ matrix.abi }}"
+          GRADLE_EXE="$(command -v gradle)"
+          if [ -x ./gradlew ]; then
+            GRADLE_EXE="./gradlew"
+          fi
+          "${GRADLE_EXE}" --no-daemon :app:assembleRelease "-PtermvrAbis=${{ matrix.abi }}"
+
+          TAG_NAME="${GITHUB_REF_NAME}"
+          OUT_APK="dist/TermVR-${TAG_NAME}-${{ matrix.abi }}.apk"
+          mkdir -p dist
+          BUILT_APK="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
+          test -n "${BUILT_APK}"
+          cp -f "${BUILT_APK}" "${OUT_APK}"
+
+      - name: Verify 16 KB ELF alignment
+        run: |
+          ./scripts/verify-16kb-alignment.sh "dist/TermVR-${GITHUB_REF_NAME}-${{ matrix.abi }}.apk"
+
+      - name: Verify clean-room APK reproducibility
+        run: |
+          set -euo pipefail
+          CLEAN_DIR="/tmp/termvr-clean-repro-${{ matrix.abi }}"
+          rm -rf "${CLEAN_DIR}"
+          mkdir -p "${CLEAN_DIR}"
+          git archive --format=tar HEAD | tar -xf - -C "${CLEAN_DIR}"
+          ln -s "${PWD}/.toolchains" "${CLEAN_DIR}/.toolchains"
+          GRADLE_EXE="$(command -v gradle)"
+          if [ -x ./gradlew ]; then
+            GRADLE_EXE="${CLEAN_DIR}/gradlew"
+          fi
+          (
+            cd "${CLEAN_DIR}"
+            unshare -r -n ./scripts/build-native-deps.sh --abi "${{ matrix.abi }}"
+            "${GRADLE_EXE}" --no-daemon :app:assembleRelease "-PtermvrAbis=${{ matrix.abi }}"
+          )
+          CLEAN_APK="$(find "${CLEAN_DIR}/app/build/outputs/apk/release" -type f -name '*.apk' | head -n 1)"
+          ./scripts/verify-reproducible-apk.sh --unsigned-a "dist/TermVR-${GITHUB_REF_NAME}-${{ matrix.abi }}.apk" --unsigned-b "${CLEAN_APK}"
+          rm -rf "${CLEAN_DIR}"
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-apk-${{ matrix.abi }}
+          path: dist/TermVR-${{ github.ref_name }}-${{ matrix.abi }}.apk
+
+  attest-and-release:
+    name: Attest SLSA Provenance and Publish Release
+    needs:
+      - build-apks
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      attestations: write
+      contents: write
+    steps:
+      - name: Download arm64-v8a APK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-apk-arm64-v8a
+          path: release-assets
+
+      - name: Download x86_64 APK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-apk-x86_64
+          path: release-assets
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum "TermVR-${GITHUB_REF_NAME}-arm64-v8a.apk" "TermVR-${GITHUB_REF_NAME}-x86_64.apk" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest SLSA v1.0 Build Level 2 provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: |
+            release-assets/TermVR-${{ github.ref_name }}-arm64-v8a.apk
+            release-assets/TermVR-${{ github.ref_name }}-x86_64.apk
+            release-assets/SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          generate_release_notes: true
+          files: |
+            release-assets/TermVR-${{ github.ref_name }}-arm64-v8a.apk
+            release-assets/TermVR-${{ github.ref_name }}-x86_64.apk
+            release-assets/SHA256SUMS
