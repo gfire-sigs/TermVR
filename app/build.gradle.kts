@@ -36,6 +36,8 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // Omit META-INF/version-control-info.textproto so clean-room archive builds match git checkouts bit-for-bit.
+            vcsInfo.include = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
