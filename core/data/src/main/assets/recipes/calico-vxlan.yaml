@@ -1,0 +1,46 @@
+# Calico VXLAN overlay patch for k3s inside gvx user-space kernel.
+# Applies the 5 required gvx overrides:
+# 1. CALICO_IPV4POOL_VXLAN=Always
+# 2. FELIX_BPFENABLED=false
+# 3. FELIX_XDPENABLED=false
+# 4. CALICO_DISABLE_FILE_LOGGING=true
+# 5. veth_mtu: "1450"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: calico-config
+  namespace: kube-system
+data:
+  veth_mtu: "1450"
+  calico_backend: "vxlan"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: calico-node
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: calico-node
+  template:
+    metadata:
+      labels:
+        k8s-app: calico-node
+    spec:
+      containers:
+        - name: calico-node
+          env:
+            - name: CALICO_IPV4POOL_VXLAN
+              value: "Always"
+            - name: FELIX_BPFENABLED
+              value: "false"
+            - name: FELIX_XDPENABLED
+              value: "false"
+            - name: CALICO_DISABLE_FILE_LOGGING
+              value: "true"
+            - name: FELIX_VXLANMTU
+              valueFrom:
+                configMapKeyRef:
+                  name: calico-config
+                  key: veth_mtu
