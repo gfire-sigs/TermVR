@@ -23,6 +23,7 @@ import dev.gfire.termvr.core.runtime.HostPtyHandle
 import dev.gfire.termvr.core.runtime.MuxSessionClient
 import dev.gfire.termvr.core.runtime.ProxyTestResult
 import dev.gfire.termvr.core.runtime.PublishedPortMapping
+import dev.gfire.termvr.core.ui.HostShortcutAction
 import dev.gfire.termvr.core.ui.SplitDirection
 import dev.gfire.termvr.core.ui.TerminalSplitNode
 import dev.gfire.termvr.core.vt.NativeVtSession
@@ -39,6 +40,7 @@ import dev.gfire.termvr.ui.catalog.CatalogViewModel
 import dev.gfire.termvr.ui.files.FilesViewModel
 import dev.gfire.termvr.ui.home.HomeViewModel
 import dev.gfire.termvr.ui.network.NetworkViewModel
+import dev.gfire.termvr.ui.network.resolveEffectiveHostPort
 import dev.gfire.termvr.ui.terminal.TerminalSessionCoordinator
 import dev.gfire.termvr.ui.terminal.TerminalViewModel
 import java.io.File
@@ -55,8 +57,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.jupiter.api.AfterEach
@@ -301,6 +305,107 @@ class AppViewModelsTest {
         vm.closeFocusedPane()
         advanceUntilIdle()
         assertEquals(1, vm.uiState.value.activeTab!!.allPaneIds().size)
+
+        vmScope.cancel()
+    }
+
+    @Test
+    fun terminalViewModelHostShortcutsDoNotThrowOrOverrideSurfaceZoomAtBounds() = runTest(testDispatcher) {
+        val (profileRepo, _, gateway) = createFixtures(backgroundScope)
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = TerminalViewModel(profileRepo, gateway, coordinator, scope = vmScope)
+        advanceUntilIdle()
+
+        val initialFont = vm.uiState.value.fontConfig
+        vm.updateFontConfig(initialFont.copy(sizeSp = 8.0f))
+        advanceUntilIdle()
+        vm.handleHostShortcut(HostShortcutAction.ZOOM_OUT)
+        advanceUntilIdle()
+        assertEquals(8.0f, vm.uiState.value.fontConfig.sizeSp)
+
+        vm.updateFontConfig(initialFont.copy(sizeSp = 32.0f))
+        advanceUntilIdle()
+        vm.handleHostShortcut(HostShortcutAction.ZOOM_IN)
+        advanceUntilIdle()
+        assertEquals(32.0f, vm.uiState.value.fontConfig.sizeSp)
+
+        vmScope.cancel()
+    }
+
+    @Test
+    fun resolveEffectiveHostPortMapsEphemeralRulesFromPublishedPorts() {
+        val ephemeral = PortForwardRule(
+            id = "pf-ephemeral",
+            protocol = ForwardProtocol.TCP,
+            listenHost = ListenHost.LOOPBACK_V4,
+            hostPortStart = 0,
+            hostPortEnd = 0,
+            guestPortStart = 8080,
+            guestPortEnd = 8080,
+        )
+        assertNull(resolveEffectiveHostPort(ephemeral, emptyList()))
+
+        val published = listOf(
+            PublishedPortMapping(
+                protocol = ForwardProtocol.TCP,
+                listenHost = ListenHost.LOOPBACK_V4.wireLiteral,
+                hostPort = 43210,
+                guestPort = 8080,
+            ),
+        )
+        assertEquals(43210, resolveEffectiveHostPort(ephemeral, published))
+
+        val explicit = ephemeral.copy(hostPortStart = 9090, hostPortEnd = 9090)
+        assertEquals(9090, resolveEffectiveHostPort(explicit, published))
+    }
+
+    @Test
+    fun catalogViewModelOpensDaemonLogsFirstAndWaitsForReadinessBeforeOpeningShell() = runTest(testDispatcher) {
+        val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        var dindReady = false
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = CatalogViewModel(
+            catalogRepository = catalogRepo,
+            profileRepository = profileRepo,
+            runtimeGateway = gateway,
+            sessionCoordinator = coordinator,
+            scope = vmScope,
+            tcpProbe = { port -> port == 2375 && dindReady },
+            probeIntervalMs = null,
+            readinessPollStepMs = 100L,
+        )
+        advanceUntilIdle()
+
+        val dind = vm.uiState.value.recipes.first { it.id == "docker-dind" }
+        var navigated = false
+        vm.launchRecipe(dind) { navigated = true }
+        runCurrent()
+
+        assertTrue(navigated)
+        assertEquals(1, coordinator.tabs.value.size)
+        assertTrue(coordinator.tabs.value.first().isDaemonLogs)
+        assertEquals(coordinator.tabs.value.first().tabId, coordinator.activeTabId.value)
+
+        dindReady = true
+        advanceTimeBy(100L)
+        advanceUntilIdle()
+
+        assertEquals(2, coordinator.tabs.value.size)
+        val shellTab = coordinator.tabs.value.firstOrNull { !it.isDaemonLogs }
+        assertNotNull(shellTab)
+        assertEquals(shellTab!!.tabId, coordinator.activeTabId.value)
 
         vmScope.cancel()
     }

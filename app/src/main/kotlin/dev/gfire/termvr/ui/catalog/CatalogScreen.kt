@@ -2,6 +2,7 @@ package dev.gfire.termvr.ui.catalog
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +31,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +60,33 @@ fun CatalogScreen(
     val context = LocalContext.current
     var imageRefInput by remember { mutableStateOf("alpine:3.21") }
     var showRegistryDialog by remember { mutableStateOf(false) }
+    var isOnline by remember { mutableStateOf(isNetworkConnected(context)) }
+
+    DisposableEffect(context) {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                isOnline = isNetworkConnected(context)
+            }
+
+            override fun onLost(network: Network) {
+                isOnline = isNetworkConnected(context)
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                isOnline = isNetworkConnected(context)
+            }
+        }
+        val registered = runCatching {
+            cm?.registerDefaultNetworkCallback(callback)
+            cm != null
+        }.getOrDefault(false)
+        onDispose {
+            if (registered) {
+                runCatching { cm?.unregisterNetworkCallback(callback) }
+            }
+        }
+    }
 
     val loadTarLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -220,7 +249,7 @@ fun CatalogScreen(
                                     }
                                     OutlinedButton(
                                         onClick = { saveTarLauncher.launch("image-export.tar") },
-                                        enabled = state.busyAction == null,
+                                        enabled = state.busyAction == null && isOnline && imageRefInput.isNotBlank(),
                                     ) {
                                         Text("Export .tar (Online)")
                                     }

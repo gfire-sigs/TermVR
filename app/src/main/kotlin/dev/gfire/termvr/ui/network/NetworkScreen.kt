@@ -242,13 +242,16 @@ fun NetworkScreen(
                     if (selectedProfile.portForwards.isNotEmpty()) {
                         HorizontalDivider()
                     }
+                    val profilePublishedPorts = state.publishedPorts[selectedProfile.id].orEmpty()
                     for (rule in selectedProfile.portForwards) {
                         val effectiveIp = if (rule.exposesLan) {
                             state.activeWifiIpv4 ?: "127.0.0.1"
                         } else {
                             "127.0.0.1"
                         }
-                        val endpointUrl = "http://$effectiveIp:${rule.hostPortStart}"
+                        val effectiveHostPort = resolveEffectiveHostPort(rule, profilePublishedPorts)
+                        val hostPortLabel = effectiveHostPort?.toString() ?: "ephemeral (pending)"
+                        val endpointUrl = effectiveHostPort?.let { "http://$effectiveIp:$it" }
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -256,7 +259,7 @@ fun NetworkScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = "${rule.protocol.name} ${rule.listenHost.wireLiteral}:${rule.hostPortStart} to guest :${rule.guestPortStart}",
+                                    text = "${rule.protocol.name} ${rule.listenHost.wireLiteral}:$hostPortLabel to guest :${rule.guestPortStart}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontFamily = FontFamily.Monospace,
                                     modifier = Modifier.weight(1f),
@@ -266,32 +269,40 @@ fun NetworkScreen(
                                 }
                             }
                             if (rule.protocol == ForwardProtocol.TCP) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    QrCodeCanvas(
-                                        content = endpointUrl,
-                                        modifier = Modifier.size(92.dp),
-                                    )
-                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text(
-                                            text = endpointUrl,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontFamily = FontFamily.Monospace,
+                                if (endpointUrl != null) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        QrCodeCanvas(
+                                            content = endpointUrl,
+                                            modifier = Modifier.size(92.dp),
                                         )
-                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            OutlinedButton(onClick = { viewModel.openUrlInCustomTab(endpointUrl) }) {
-                                                Text("Open")
-                                            }
-                                            OutlinedButton(onClick = {
-                                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                cm.setPrimaryClip(ClipData.newPlainText("TermVR Endpoint", endpointUrl))
-                                            }) {
-                                                Text("Copy")
+                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(
+                                                text = endpointUrl,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontFamily = FontFamily.Monospace,
+                                            )
+                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                OutlinedButton(onClick = { viewModel.openUrlInCustomTab(endpointUrl) }) {
+                                                    Text("Open")
+                                                }
+                                                OutlinedButton(onClick = {
+                                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                    cm.setPrimaryClip(ClipData.newPlainText("TermVR Endpoint", endpointUrl))
+                                                }) {
+                                                    Text("Copy")
+                                                }
                                             }
                                         }
                                     }
+                                } else {
+                                    Text(
+                                        text = "Assigned ephemeral host port pending sandbox start.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                             }
                         }

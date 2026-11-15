@@ -116,29 +116,42 @@ class TerminalSessionCoordinator(
     }
 
     /**
-     * Ensures Stream-0 Daemon Logs (for daemon recipes) and an interactive shell tab are open for [profile].
+     * Ensures Stream-0 Daemon Logs (for daemon recipes) and optionally an interactive shell tab for [profile].
      */
     fun ensureTabsForProfile(
         profile: SandboxProfile,
         maxScrollbackLines: Int,
         palette: ColorPalette,
+        openInitialShell: Boolean = true,
     ) {
         val existingTabs = _tabs.value.filter { it.profileId == profile.id }
         if (existingTabs.isNotEmpty()) {
             reattachExistingProfileTabs(profile, existingTabs)
-            val preferred = existingTabs.firstOrNull { !it.isDaemonLogs } ?: existingTabs.first()
+            val preferred = if (openInitialShell) {
+                existingTabs.firstOrNull { !it.isDaemonLogs } ?: existingTabs.first()
+            } else {
+                existingTabs.firstOrNull { it.isDaemonLogs } ?: existingTabs.first()
+            }
             _activeTabId.value = preferred.tabId
             return
         }
 
+        var daemonTab: TerminalTabState? = null
         if (profile.muxMode == MuxMode.STDIO_MUX && profile.initDaemonArgv.isNotEmpty()) {
-            openDaemonLogsTab(profile, maxScrollbackLines, palette)
+            daemonTab = openDaemonLogsTab(profile, maxScrollbackLines, palette)
         }
-        val shellTab = openNewShellTab(profile, maxScrollbackLines, palette)
-        if (shellTab != null) {
-            _activeTabId.value = shellTab.tabId
+        if (openInitialShell) {
+            val shellTab = openNewShellTab(profile, maxScrollbackLines, palette)
+            if (shellTab != null) {
+                _activeTabId.value = shellTab.tabId
+            }
+        } else if (daemonTab != null) {
+            _activeTabId.value = daemonTab.tabId
         }
     }
+
+    fun hasShellTab(profileId: String): Boolean =
+        _tabs.value.any { it.profileId == profileId && !it.isDaemonLogs }
 
     /**
      * Re-attaches all open tabs of [profile] after a CRIU checkpoint restore.
@@ -355,7 +368,7 @@ class TerminalSessionCoordinator(
         profile: SandboxProfile,
         maxScrollbackLines: Int,
         palette: ColorPalette,
-    ) {
+    ): TerminalTabState {
         val tabId = "daemon-${profile.id}"
         val paneId = "daemon-pane-${profile.id}"
         val session = sessionFactory(maxScrollbackLines).apply {
@@ -383,6 +396,7 @@ class TerminalSessionCoordinator(
         )
         _tabs.update { listOf(tab) + it }
         bindStreamZero(profile.id, runtime)
+        return tab
     }
 
     private fun bindStreamZero(profileId: String, runtime: PaneRuntime) {

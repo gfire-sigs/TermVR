@@ -287,17 +287,13 @@ class TerminalViewModel(
         when (action) {
             HostShortcutAction.NEW_TAB -> openNewTabForActiveSandbox()
             HostShortcutAction.CLOSE_TAB -> closeActiveTab()
-            HostShortcutAction.COPY -> activeController()?.copySelection()
-            HostShortcutAction.PASTE -> activeController()?.pasteFromClipboard()
-            HostShortcutAction.SEARCH -> openSearch()
-            HostShortcutAction.ZOOM_IN -> {
-                val next = uiState.value.fontConfig.copy(sizeSp = uiState.value.fontConfig.sizeSp + 1f)
-                updateFontConfig(next)
-            }
-            HostShortcutAction.ZOOM_OUT -> {
-                val next = uiState.value.fontConfig.copy(sizeSp = uiState.value.fontConfig.sizeSp - 1f)
-                updateFontConfig(next)
-            }
+            // TerminalSurfaceView handles COPY, PASTE, SEARCH, ZOOM_IN, and ZOOM_OUT directly.
+            HostShortcutAction.COPY,
+            HostShortcutAction.PASTE,
+            HostShortcutAction.SEARCH,
+            HostShortcutAction.ZOOM_IN,
+            HostShortcutAction.ZOOM_OUT,
+            -> Unit
         }
     }
 

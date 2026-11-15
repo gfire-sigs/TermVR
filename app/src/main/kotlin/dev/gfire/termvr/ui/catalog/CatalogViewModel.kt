@@ -101,6 +101,7 @@ class CatalogViewModel(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
     private val tcpProbe: suspend (Int) -> Boolean = { port -> probeLoopbackPort(port) },
     private val probeIntervalMs: Long? = 2_500L,
+    private val readinessPollStepMs: Long = 250L,
 ) {
     private val distributions = runCatching { catalogRepository.getCuratedDistributions() }
         .getOrDefault(DistributionCatalogEntry.CURATED_ENTRIES)
@@ -150,7 +151,7 @@ class CatalogViewModel(
                     delay(probeIntervalMs)
                     val runningStates = runtimeGateway.runStates.value
                     val hasRunningRecipe = recipes.any {
-                        it.readinessTcpPort != null && runningStates[it.id] == SandboxRunState.RUNNING
+                        runningStates[it.id] == SandboxRunState.RUNNING
                     }
                     if (hasRunningRecipe) {
                         refreshRecipeProbes(runningStates)
@@ -164,11 +165,10 @@ class CatalogViewModel(
         val readyMap = HashMap<String, Boolean>()
         for (recipe in recipes) {
             val isRunning = runningStates[recipe.id] == SandboxRunState.RUNNING
-            val port = recipe.readinessTcpPort
-            if (isRunning && port != null) {
-                readyMap[recipe.id] = tcpProbe(port)
+            readyMap[recipe.id] = if (isRunning) {
+                tcpProbe(recipe.readinessTcpPort)
             } else {
-                readyMap[recipe.id] = false
+                false
             }
         }
         localState.value = localState.value.copy(probeReady = readyMap)
@@ -219,10 +219,11 @@ class CatalogViewModel(
                 val finalState = runtimeGateway.startOrResumeSandbox(profile)
                 if (finalState == SandboxRunState.RUNNING) {
                     val settings = profileRepository.observeAppSettings().first()
+                    val palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK
                     sessionCoordinator.ensureTabsForProfile(
                         profile = profile,
                         maxScrollbackLines = settings.defaultScrollbackLines,
-                        palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK,
+                        palette = palette,
                     )
                     onOpenTerminal()
                 }
@@ -272,12 +273,20 @@ class CatalogViewModel(
                 val finalState = runtimeGateway.startOrResumeSandbox(profile)
                 if (finalState == SandboxRunState.RUNNING) {
                     val settings = profileRepository.observeAppSettings().first()
+                    val palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK
                     sessionCoordinator.ensureTabsForProfile(
                         profile = profile,
                         maxScrollbackLines = settings.defaultScrollbackLines,
-                        palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK,
+                        palette = palette,
+                        openInitialShell = false,
                     )
                     onOpenTerminal()
+                    waitForRecipeReadinessAndOpenShell(
+                        profile = profile,
+                        readinessPort = recipe.readinessTcpPort,
+                        maxScrollbackLines = settings.defaultScrollbackLines,
+                        palette = palette,
+                    )
                 }
             }.onFailure { err ->
                 localState.value = localState.value.copy(
@@ -471,6 +480,30 @@ class CatalogViewModel(
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Registry auth failed")
             }
             localState.value = localState.value.copy(busyAction = null)
+        }
+    }
+
+    private fun waitForRecipeReadinessAndOpenShell(
+        profile: SandboxProfile,
+        readinessPort: Int,
+        maxScrollbackLines: Int,
+        palette: ColorPalette,
+    ) {
+        scope.launch {
+            var attempts = 0
+            val maxAttempts = 240
+            while (
+                attempts < maxAttempts &&
+                runtimeGateway.runStates.value[profile.id] == SandboxRunState.RUNNING &&
+                !sessionCoordinator.hasShellTab(profile.id)
+            ) {
+                if (tcpProbe(readinessPort)) {
+                    sessionCoordinator.openNewShellTab(profile, maxScrollbackLines, palette)
+                    return@launch
+                }
+                attempts++
+                delay(readinessPollStepMs)
+            }
         }
     }
 

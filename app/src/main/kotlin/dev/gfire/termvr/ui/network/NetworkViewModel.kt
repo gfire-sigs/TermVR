@@ -449,3 +449,16 @@ class NetworkViewModel(
         val reconfirm: Set<String>,
     )
 }
+
+/**
+ * Resolves the active host port for [rule], matching [PublishedPortMapping] when [rule] uses `:0`.
+ */
+fun resolveEffectiveHostPort(
+    rule: PortForwardRule,
+    publishedPorts: List<PublishedPortMapping>,
+): Int? {
+    if (rule.hostPortStart > 0) return rule.hostPortStart
+    return publishedPorts.firstOrNull {
+        it.protocol == rule.protocol && it.guestPort == rule.guestPortStart && it.hostPort > 0
+    }?.hostPort
+}
