@@ -33,3 +33,12 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Generated native prebuild artifacts (never commit prebuilt binaries; F-Droid builds from source)
+.toolchains/
+core/runtime-gvx/src/main/jniLibs/
+app/src/main/assets/agent/
+core/terminal-ui/src/main/assets/fonts/*.ttf
+core/terminal-ui/src/main/assets/fonts/*.otf
+guest/termvr-agent/termvr-agent
+

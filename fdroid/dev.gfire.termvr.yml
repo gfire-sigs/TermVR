@@ -1,0 +1,44 @@
+Categories:
+  - Development
+  - System
+License: Apache-2.0
+AuthorName: gfire-sigs
+SourceCode: https://github.com/gfire-sigs/TermVR
+IssueTracker: https://github.com/gfire-sigs/TermVR/issues
+Changelog: https://github.com/gfire-sigs/TermVR/blob/main/CHANGELOG.md
+
+AutoName: TermVR
+
+RepoType: git
+Repo: https://github.com/gfire-sigs/TermVR.git
+Binaries: https://github.com/gfire-sigs/TermVR/releases/download/v%v/TermVR-v%v-arm64-v8a.apk
+
+Builds:
+  - versionName: 0.1.0
+    versionCode: 100
+    commit: v0.1.0
+    subdir: app
+    sudo:
+      - apt-get update
+      - apt-get install -y --no-install-recommends ca-certificates cmake curl git jq ninja-build python3 xz-utils
+    srclibs:
+      - gvx@098291e096a9e4777fc2e783e62bfde6b952a003
+      - ghostty@108cacb17ed8990840cd14abfce43d8ed8503ca1
+      - freetype@42608f77f20749dd6ddc9e0536788eaad70ea4b5
+      - harfbuzz@3df40d9b98d6b32f0e4288d4ecfbb158ddb3a372
+      - jetbrains_mono@cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9
+      - nerd_fonts_symbols@b894ea7803af6aade63d60a4381e006098ec9c4d
+    ndk: 28.0.13004108
+    init:
+      - ../scripts/provision-toolchains-and-vendor.sh --gvx $$gvx$$ --ghostty $$ghostty$$
+    prebuild:
+      - ../scripts/build-native-deps.sh --gvx $$gvx$$ --ghostty $$ghostty$$ --freetype $$freetype$$ --harfbuzz $$harfbuzz$$ --jetbrains-mono $$jetbrains_mono$$ --nerd-fonts $$nerd_fonts_symbols$$ --abi arm64-v8a
+    gradleProps:
+      - termvrAbis=arm64-v8a
+    gradle:
+      - yes
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+$
+CurrentVersion: 0.1.0
+CurrentVersionCode: 100

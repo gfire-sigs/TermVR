@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "toolchains": {
+    "jdk": "17",
+    "android_compile_sdk": 36,
+    "android_min_sdk": 31,
+    "android_build_tools": "36.1.0",
+    "android_ndk": "28.0.13004108",
+    "cmake": "3.22.1",
+    "go": "1.27.4",
+    "zig": "0.17.0"
+  },
+  "sources": {
+    "gvx": {
+      "repository": "https://github.com/gfire-sigs/gvx.git",
+      "tag": "v0.15.10002026110900",
+      "commit": "098291e096a9e4777fc2e783e62bfde6b952a003",
+      "spdx_license": "Apache-2.0",
+      "artifact": "librungv.so"
+    },
+    "ghostty": {
+      "repository": "https://github.com/ghostty-org/ghostty.git",
+      "tag": "vt-1.0.1",
+      "commit": "108cacb17ed8990840cd14abfce43d8ed8503ca1",
+      "spdx_license": "MIT",
+      "artifact": "libghostty-vt.a"
+    },
+    "freetype": {
+      "repository": "https://github.com/freetype/freetype.git",
+      "tag": "VER-2-13-3",
+      "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+      "spdx_license": "FTL",
+      "artifact": "libfreetype.a"
+    },
+    "harfbuzz": {
+      "repository": "https://github.com/harfbuzz/harfbuzz.git",
+      "tag": "15.1.0",
+      "commit": "3df40d9b98d6b32f0e4288d4ecfbb158ddb3a372",
+      "spdx_license": "MIT",
+      "artifact": "libharfbuzz.a"
+    },
+    "jetbrains_mono": {
+      "repository": "https://github.com/JetBrains/JetBrainsMono.git",
+      "tag": "v2.304",
+      "commit": "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
+      "spdx_license": "OFL-1.1",
+      "artifact": "JetBrainsMono-*.ttf"
+    },
+    "nerd_fonts_symbols": {
+      "repository": "https://github.com/ryanoasis/nerd-fonts.git",
+      "tag": "v3.5.1",
+      "commit": "b894ea7803af6aade63d60a4381e006098ec9c4d",
+      "spdx_license": "MIT",
+      "artifact": "SymbolsNerdFontMono-Regular.ttf"
+    }
+  }
+}
