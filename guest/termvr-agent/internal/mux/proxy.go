@@ -759,25 +759,30 @@ func relayStreams(client net.Conn, clientReader *bufReader, upstream io.ReadWrit
 		if clientReader != nil {
 			if buffered := clientReader.BufferedBytes(); len(buffered) > 0 {
 				if _, err := upstream.Write(buffered); err != nil {
+					_ = upstream.Close()
 					return
 				}
 			}
 		}
-		_, _ = copyStream(upstream, client)
+		_, err := copyStream(upstream, client)
+		if err != nil {
+			_ = upstream.Close()
+			return
+		}
 		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
-		} else {
-			_ = upstream.Close()
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		_, _ = copyStream(client, upstream)
+		_, err := copyStream(client, upstream)
+		if err != nil {
+			_ = client.Close()
+			return
+		}
 		if cw, ok := client.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
-		} else {
-			_ = client.Close()
 		}
 	}()
 

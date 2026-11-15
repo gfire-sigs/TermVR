@@ -680,3 +680,126 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 		t.Fatalf("env merge lost entries: %v", envMap)
 	}
 }
+
+// TestCallHostRPCStreamConcurrentShutdown exercises concurrent session shutdown
+// and multi-chunk HOST_RPC_RESP delivery under -race to verify zero closed-channel panics.
+func TestCallHostRPCStreamConcurrentShutdown(t *testing.T) {
+	t.Parallel()
+
+	for iter := 0; iter < 30; iter++ {
+		hostToGuestR, hostToGuestW := io.Pipe()
+		guestToHostR, guestToHostW := io.Pipe()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		sess := mux.NewSession(mux.SessionConfig{
+			Reader: hostToGuestR,
+			Writer: guestToHostW,
+		})
+
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- sess.Run(ctx)
+		}()
+
+		reqSeen := make(chan uint32, 1)
+		var hostWriteMu sync.Mutex
+		hostWrite := func(f mux.Frame) error {
+			hostWriteMu.Lock()
+			defer hostWriteMu.Unlock()
+			return mux.WriteFrame(hostToGuestW, f)
+		}
+
+		go func() {
+			for {
+				f, err := mux.ReadFrame(guestToHostR)
+				if err != nil {
+					return
+				}
+				if f.Type == mux.FrameHostRPCReq {
+					chunk, derr := mux.DecodeRPCFrame(f.Payload)
+					if derr == nil && (chunk.Flags&mux.RPCFlagFIN) != 0 {
+						select {
+						case reqSeen <- chunk.ReqID:
+						default:
+						}
+					}
+				}
+			}
+		}()
+
+		rpcDone := make(chan error, 1)
+		go func() {
+			rpcDone <- sess.CallHostRPCStream(
+				ctx,
+				mux.RPCOpClipboardRead,
+				func(send func(chunk []byte, fin bool) error) error {
+					return send([]byte("probe"), true)
+				},
+				func(status uint8, chunk []byte, fin bool) error {
+					return nil
+				},
+			)
+		}()
+
+		var reqID uint32
+		select {
+		case reqID = <-reqSeen:
+		case <-time.After(2 * time.Second):
+			cancel()
+			_ = hostToGuestW.Close()
+			_ = guestToHostW.Close()
+			t.Fatalf("iter %d: timed out waiting for HOST_RPC_REQ", iter)
+		}
+
+		// Race non-FIN and FIN response chunks against concurrent shutdown.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for c := 0; c < 4; c++ {
+				var flags uint8
+				if c == 3 {
+					flags = mux.RPCFlagFIN
+				}
+				raw, err := mux.EncodeRPCFrame(mux.RPCChunk{
+					ReqID: reqID,
+					Code:  mux.RPCStatusOK,
+					Flags: flags,
+					Data:  []byte("chunk"),
+				})
+				if err != nil {
+					return
+				}
+				if err := hostWrite(mux.Frame{
+					Type:     mux.FrameHostRPCResp,
+					StreamID: 0,
+					Payload:  raw,
+				}); err != nil {
+					return
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			cancel()
+			hostWriteMu.Lock()
+			_ = hostToGuestW.Close()
+			hostWriteMu.Unlock()
+		}()
+
+		wg.Wait()
+		_ = guestToHostW.Close()
+		_ = guestToHostR.Close()
+
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: session Run did not exit", iter)
+		}
+		select {
+		case <-rpcDone:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: CallHostRPCStream did not return", iter)
+		}
+	}
+}

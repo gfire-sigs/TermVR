@@ -379,3 +379,98 @@ func TestIPTReplaceBlobBuilder(t *testing.T) {
 		t.Fatalf("entry walk ended at %d/%d, count=%d/%d", off, len(blob), count, numEntries)
 	}
 }
+
+// TestProxyClientHalfClosePreservesUpstreamResponse verifies that a client
+// CloseWrite (TCP SHUT_WR) closes only outbound mux writes while allowing the
+// full upstream response to arrive over the active ProxyStream.
+func TestProxyClientHalfClosePreservesUpstreamResponse(t *testing.T) {
+	t.Parallel()
+
+	upstreamReady := make(chan struct{})
+	sess, cleanupMux := startMockHostMux(t, func(streamID uint32, host string, port uint16) (uint8, string, net.Conn) {
+		clientEnd, serverEnd := net.Pipe()
+		go func() {
+			defer serverEnd.Close()
+			reqBuf := make([]byte, len("GET /halfclose\n"))
+			if _, err := io.ReadFull(serverEnd, reqBuf); err != nil {
+				return
+			}
+			close(upstreamReady)
+			// Delay response so client CloseWrite completes first in relayStreams.
+			time.Sleep(30 * time.Millisecond)
+			_, _ = io.WriteString(serverEnd, "PART1-")
+			time.Sleep(15 * time.Millisecond)
+			_, _ = io.WriteString(serverEnd, "PART2-END")
+		}()
+		return mux.ProxyStatusOK, "", clientEnd
+	})
+	defer cleanupMux()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proxySrv, err := mux.StartMixedProxyServer(ctx, mux.ProxyConfig{
+		ListenAddr: "127.0.0.1:0",
+		Session:    sess,
+	})
+	if err != nil {
+		t.Fatalf("StartMixedProxyServer: %v", err)
+	}
+	defer proxySrv.Close()
+
+	conn, err := net.Dial("tcp", proxySrv.Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("expected *net.TCPConn, got %T", conn)
+	}
+
+	// SOCKS5 no-auth greeting + CONNECT to halfclose.example:80.
+	if _, err := tcpConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	var methodResp [2]byte
+	if _, err := io.ReadFull(tcpConn, methodResp[:]); err != nil {
+		t.Fatal(err)
+	}
+	dom := "halfclose.example"
+	req := make([]byte, 0, 7+len(dom))
+	req = append(req, 0x05, 0x01, 0x00, 0x03, byte(len(dom)))
+	req = append(req, dom...)
+	req = append(req, 0x00, 80)
+	if _, err := tcpConn.Write(req); err != nil {
+		t.Fatal(err)
+	}
+	var connectResp [10]byte
+	if _, err := io.ReadFull(tcpConn, connectResp[:]); err != nil {
+		t.Fatal(err)
+	}
+	if connectResp[1] != 0x00 {
+		t.Fatalf("SOCKS5 connect status = %d, want 0", connectResp[1])
+	}
+
+	if _, err := io.WriteString(tcpConn, "GET /halfclose\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-upstreamReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not receive request bytes")
+	}
+
+	// Half-close client write side while keeping read side open for full response.
+	if err := tcpConn.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+
+	got, err := io.ReadAll(tcpConn)
+	if err != nil {
+		t.Fatalf("ReadAll after CloseWrite: %v", err)
+	}
+	if string(got) != "PART1-PART2-END" {
+		t.Fatalf("half-close response = %q, want %q", string(got), "PART1-PART2-END")
+	}
+}

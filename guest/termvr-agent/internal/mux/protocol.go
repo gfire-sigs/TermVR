@@ -1037,6 +1037,11 @@ type inboundRPCState struct {
 	pw *io.PipeWriter
 }
 
+type pendingRPC struct {
+	ch   chan RPCChunk
+	done chan struct{}
+}
+
 // Session multiplexes PTYs, Stream-0 init daemons, outbound proxy tunnels, and RPCs.
 type Session struct {
 	cfg        SessionConfig
@@ -1048,7 +1053,7 @@ type Session struct {
 	mu           sync.Mutex // guards stream maps, rpc maps, stream0Win, and closed
 	ptyStreams   map[uint32]*ptyStreamEntry
 	proxyStreams map[uint32]*ProxyStream
-	pendingRPCs  map[uint32]chan RPCChunk
+	pendingRPCs  map[uint32]pendingRPC
 	inboundRPCs  map[uint32]*inboundRPCState
 	stream0Send  *flowWindow
 	stream0Stdin io.WriteCloser
@@ -1080,7 +1085,7 @@ func NewSession(cfg SessionConfig) *Session {
 		rpcHandler:   cfg.RPCHandler,
 		ptyStreams:   make(map[uint32]*ptyStreamEntry),
 		proxyStreams: make(map[uint32]*ProxyStream),
-		pendingRPCs:  make(map[uint32]chan RPCChunk),
+		pendingRPCs:  make(map[uint32]pendingRPC),
 		inboundRPCs:  make(map[uint32]*inboundRPCState),
 		stream0Send:  newFlowWindow(InitialStreamWindow),
 		nextProxyID:  GuestStreamIDBase,
@@ -1214,9 +1219,6 @@ func (s *Session) shutdown() {
 	}
 	clear(s.proxyStreams)
 
-	for _, ch := range s.pendingRPCs {
-		close(ch)
-	}
 	clear(s.pendingRPCs)
 	for _, in := range s.inboundRPCs {
 		_ = in.pw.CloseWithError(io.ErrClosedPipe)
@@ -1734,20 +1736,18 @@ func (s *Session) sendRPCResponseChunks(reqID uint32, status uint8, data []byte,
 
 func (s *Session) handleInboundRPCResp(chunk RPCChunk) {
 	s.mu.Lock()
-	ch := s.pendingRPCs[chunk.ReqID]
-	if ch != nil && (chunk.Flags&RPCFlagFIN) != 0 {
+	entry, ok := s.pendingRPCs[chunk.ReqID]
+	if ok && (chunk.Flags&RPCFlagFIN) != 0 {
 		delete(s.pendingRPCs, chunk.ReqID)
 	}
 	s.mu.Unlock()
-	if ch == nil {
+	if !ok {
 		return
 	}
 	select {
-	case ch <- chunk:
+	case entry.ch <- chunk:
+	case <-entry.done:
 	case <-s.doneCh:
-	}
-	if (chunk.Flags & RPCFlagFIN) != 0 {
-		close(ch)
 	}
 }
 
@@ -1763,13 +1763,15 @@ func (s *Session) CallHostRPCStream(
 		reqID = s.nextRPCReqID.Add(1)
 	}
 	respCh := make(chan RPCChunk, 64)
+	callDone := make(chan struct{})
+	defer close(callDone)
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return io.ErrClosedPipe
 	}
-	s.pendingRPCs[reqID] = respCh
+	s.pendingRPCs[reqID] = pendingRPC{ch: respCh, done: callDone}
 	s.mu.Unlock()
 
 	defer func() {
@@ -1818,10 +1820,7 @@ func (s *Session) CallHostRPCStream(
 
 	for {
 		select {
-		case chunk, ok := <-respCh:
-			if !ok {
-				return io.ErrUnexpectedEOF
-			}
+		case chunk := <-respCh:
 			fin := (chunk.Flags & RPCFlagFIN) != 0
 			if err := onResp(chunk.Code, chunk.Data, fin); err != nil {
 				return err
@@ -2031,6 +2030,12 @@ func (ps *ProxyStream) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return total, nil
+}
+
+// CloseWrite closes the outbound write side while preserving inbound reads.
+func (ps *ProxyStream) CloseWrite() error {
+	ps.sendWin.close()
+	return nil
 }
 
 // Close sends a clean EOF (exitCode = 0) over PTY_EXIT if still open.
