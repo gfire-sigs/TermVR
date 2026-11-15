@@ -270,6 +270,20 @@ struct TvGhosttyTerminalImpl {
     std::string window_title;
     std::unordered_map<uint32_t, std::string> osc8_links;
     uint32_t next_link_id = 1;
+    termvr::vt::PaletteColors palette_colors;
+    std::vector<uint8_t> pending_pty_replies;
+
+    void QueuePtyReply(const std::string& reply) {
+        static constexpr size_t kMaxReplies = 256u * 1024u;
+        if (reply.empty() || pending_pty_replies.size() >= kMaxReplies) {
+            return;
+        }
+        size_t take = std::min(reply.size(), kMaxReplies - pending_pty_replies.size());
+        pending_pty_replies.insert(
+            pending_pty_replies.end(),
+            reinterpret_cast<const uint8_t*>(reply.data()),
+            reinterpret_cast<const uint8_t*>(reply.data()) + take);
+    }
 
     std::map<uint32_t, StoredKittyImage> kitty_images;
     std::vector<KittyGraphicPlacement> kitty_placements;
@@ -937,6 +951,38 @@ struct TvGhosttyTerminalImpl {
             }
         }
 
+        if (prefix == '>' && intermediate == 0 && final_byte == 'q') {
+            int ps = params.empty() ? 0 : params[0];
+            if (ps == 0) {
+                QueuePtyReply("\x1bP>|TermVR 1.0\x1b\\");
+            }
+            return;
+        }
+
+        if (prefix == '?' && intermediate == '$' && final_byte == 'p') {
+            int mode = params.empty() ? 0 : params[0];
+            int pm = 0;
+            switch (mode) {
+                case 1: pm = mode_decckm ? 1 : 2; break;
+                case 6: pm = mode_origin ? 1 : 2; break;
+                case 7: pm = mode_autowrap ? 1 : 2; break;
+                case 12: pm = cursor_blink ? 1 : 2; break;
+                case 25: pm = cursor_visible ? 1 : 2; break;
+                case 47:
+                case 1047:
+                case 1049: pm = using_alt_screen ? 1 : 2; break;
+                case 1000:
+                case 1002:
+                case 1003: pm = (mouse_tracking_mode == static_cast<uint16_t>(mode)) ? 1 : 2; break;
+                case 1005:
+                case 1006: pm = (mouse_format_mode == static_cast<uint16_t>(mode)) ? 1 : 2; break;
+                case 2004: pm = mode_bracketed_paste ? 1 : 2; break;
+                default: pm = 0; break;
+            }
+            QueuePtyReply("\x1b[?" + std::to_string(mode) + ";" + std::to_string(pm) + "$y");
+            return;
+        }
+
         if (intermediate == ' ' && final_byte == 'q') {
             int ps = params.empty() ? 0 : params[0];
             switch (ps) {
@@ -1196,21 +1242,121 @@ struct TvGhosttyTerminalImpl {
                 pending_wrap = false;
                 break;
             }
+            case 'c': {
+                int ps = params.empty() ? 0 : params[0];
+                if (prefix == '>' && ps == 0) {
+                    QueuePtyReply("\x1b[>1;100;0c");
+                } else if (prefix == 0 && ps == 0) {
+                    QueuePtyReply("\x1b[?62;22;52c");
+                }
+                break;
+            }
+            case 'n': {
+                int ps = params.empty() ? 0 : params[0];
+                if (prefix == '?') {
+                    if (ps == 6) {
+                        int r1 = mode_origin
+                            ? (static_cast<int>(cursor_row) - static_cast<int>(scroll_top) + 1)
+                            : (static_cast<int>(cursor_row) + 1);
+                        int c1 = static_cast<int>(cursor_col) + 1;
+                        QueuePtyReply("\x1b[?" + std::to_string(std::max(1, r1)) + ";" + std::to_string(c1) + "R");
+                    } else if (ps == 996) {
+                        uint32_t bg = palette_colors.background_rgba;
+                        uint8_t r = static_cast<uint8_t>((bg >> 24) & 0xFFu);
+                        uint8_t g = static_cast<uint8_t>((bg >> 16) & 0xFFu);
+                        uint8_t b = static_cast<uint8_t>((bg >> 8) & 0xFFu);
+                        double luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                        QueuePtyReply(luma < 128.0 ? "\x1b[?997;1n" : "\x1b[?997;2n");
+                    }
+                } else if (prefix == 0) {
+                    if (ps == 5) {
+                        QueuePtyReply("\x1b[0n");
+                    } else if (ps == 6) {
+                        int r1 = mode_origin
+                            ? (static_cast<int>(cursor_row) - static_cast<int>(scroll_top) + 1)
+                            : (static_cast<int>(cursor_row) + 1);
+                        int c1 = static_cast<int>(cursor_col) + 1;
+                        QueuePtyReply("\x1b[" + std::to_string(std::max(1, r1)) + ";" + std::to_string(c1) + "R");
+                    }
+                }
+                break;
+            }
+            case 't': {
+                if (prefix == 0 && !params.empty()) {
+                    int ps = params[0];
+                    uint32_t cw = std::max<uint32_t>(1u, cell_width_px);
+                    uint32_t ch = std::max<uint32_t>(1u, cell_height_px);
+                    if (ps == 14) {
+                        uint32_t w_px = static_cast<uint32_t>(cols) * cw;
+                        uint32_t h_px = static_cast<uint32_t>(rows) * ch;
+                        QueuePtyReply("\x1b[4;" + std::to_string(h_px) + ";" + std::to_string(w_px) + "t");
+                    } else if (ps == 16) {
+                        QueuePtyReply("\x1b[6;" + std::to_string(ch) + ";" + std::to_string(cw) + "t");
+                    } else if (ps == 18) {
+                        QueuePtyReply("\x1b[8;" + std::to_string(rows) + ";" + std::to_string(cols) + "t");
+                    } else if (ps == 19) {
+                        QueuePtyReply("\x1b[9;" + std::to_string(rows) + ";" + std::to_string(cols) + "t");
+                    }
+                }
+                break;
+            }
             default:
                 break;
         }
         MarkRowDirty(cursor_row);
     }
 
-    void DispatchOsc() {
+    static std::string FormatOscRgbReply(uint32_t rgba) {
+        uint32_t r8 = (rgba >> 24) & 0xFFu;
+        uint32_t g8 = (rgba >> 16) & 0xFFu;
+        uint32_t b8 = (rgba >> 8) & 0xFFu;
+        char buf[32];
+        std::snprintf(
+            buf,
+            sizeof(buf),
+            "rgb:%04x/%04x/%04x",
+            static_cast<unsigned>((r8 << 8) | r8),
+            static_cast<unsigned>((g8 << 8) | g8),
+            static_cast<unsigned>((b8 << 8) | b8));
+        return std::string(buf);
+    }
+
+    void DispatchOsc(bool terminated_by_bel) {
         size_t semi = osc_buf.find(';');
         if (semi == std::string::npos) {
             return;
         }
         int code = std::atoi(osc_buf.substr(0, semi).c_str());
         std::string rest = osc_buf.substr(semi + 1);
+        const std::string term_seq = terminated_by_bel ? "\x07" : "\x1b\\";
         if (code == 0 || code == 2) {
             window_title = std::move(rest);
+        } else if (code == 10 && rest == "?") {
+            QueuePtyReply("\x1b]10;" + FormatOscRgbReply(palette_colors.foreground_rgba) + term_seq);
+        } else if (code == 11 && rest == "?") {
+            QueuePtyReply("\x1b]11;" + FormatOscRgbReply(palette_colors.background_rgba) + term_seq);
+        } else if (code == 12 && rest == "?") {
+            QueuePtyReply("\x1b]12;" + FormatOscRgbReply(palette_colors.cursor_rgba) + term_seq);
+        } else if (code == 4) {
+            size_t semi2 = rest.find(';');
+            if (semi2 != std::string::npos && rest.substr(semi2 + 1) == "?") {
+                int idx = std::atoi(rest.substr(0, semi2).c_str());
+                if (idx >= 0 && idx < 256) {
+                    uint8_t r = 0, g = 0, b = 0;
+                    if (idx < 16) {
+                        uint32_t c = palette_colors.ansi16_rgba[static_cast<size_t>(idx)];
+                        r = static_cast<uint8_t>((c >> 24) & 0xFFu);
+                        g = static_cast<uint8_t>((c >> 16) & 0xFFu);
+                        b = static_cast<uint8_t>((c >> 8) & 0xFFu);
+                    } else {
+                        Palette256ToRgb(static_cast<uint8_t>(idx), &r, &g, &b);
+                    }
+                    uint32_t packed = (static_cast<uint32_t>(r) << 24) |
+                                      (static_cast<uint32_t>(g) << 16) |
+                                      (static_cast<uint32_t>(b) << 8) | 0xFFu;
+                    QueuePtyReply("\x1b]4;" + std::to_string(idx) + ";" + FormatOscRgbReply(packed) + term_seq);
+                }
+            }
         } else if (code == 8) {
             size_t second_semi = rest.find(';');
             if (second_semi != std::string::npos) {
@@ -1271,6 +1417,14 @@ struct TvGhosttyTerminalImpl {
         }
 
         std::string action = kv.count("a") > 0 ? kv["a"] : "T";
+        uint32_t req_id = kv.count("i") > 0 ? static_cast<uint32_t>(std::strtoul(kv["i"].c_str(), nullptr, 10)) : 0u;
+        int quiet = kv.count("q") > 0 ? std::atoi(kv["q"].c_str()) : 0;
+        if (action == "q") {
+            if (quiet < 2) {
+                QueuePtyReply("\x1b_Gi=" + std::to_string(req_id) + ";OK\x1b\\");
+            }
+            return;
+        }
         if (action == "d") {
             kitty_placements.clear();
             if (kv.count("d") > 0 && (kv["d"] == "A" || kv["d"] == "I")) {
@@ -1344,7 +1498,7 @@ struct TvGhosttyTerminalImpl {
     void FeedByte(uint8_t b) {
         if (parser_state == ParserState::kOscString) {
             if (b == 0x07u) {
-                DispatchOsc();
+                DispatchOsc(true);
                 osc_buf.clear();
                 parser_state = ParserState::kGround;
                 esc_saw_backslash_prefix = false;
@@ -1353,7 +1507,7 @@ struct TvGhosttyTerminalImpl {
             if (esc_saw_backslash_prefix) {
                 esc_saw_backslash_prefix = false;
                 if (b == '\\') {
-                    DispatchOsc();
+                    DispatchOsc(false);
                     osc_buf.clear();
                     parser_state = ParserState::kGround;
                     return;
@@ -2601,6 +2755,12 @@ std::string TerminalGetWindowTitle(TvGhosttyTerminal terminal) {
 }
 
 TerminalCursorSnapshot TerminalGetCursorSnapshot(TvGhosttyTerminal terminal) {
+    return TerminalGetCursorSnapshotWithState(terminal, nullptr);
+}
+
+TerminalCursorSnapshot TerminalGetCursorSnapshotWithState(
+    TvGhosttyTerminal terminal,
+    TvGhosttyRenderState) {
     TerminalCursorSnapshot snap;
     if (terminal == nullptr) {
         return snap;
@@ -2611,6 +2771,37 @@ TerminalCursorSnapshot TerminalGetCursorSnapshot(TvGhosttyTerminal terminal) {
     snap.blink = terminal->cursor_blink;
     snap.shape = terminal->cursor_shape;
     return snap;
+}
+
+std::vector<uint8_t> TerminalDrainPtyReplies(TvGhosttyTerminal terminal) {
+    std::vector<uint8_t> out;
+    if (terminal == nullptr) {
+        return out;
+    }
+    out.swap(terminal->pending_pty_replies);
+    return out;
+}
+
+void TerminalSetPaletteColors(TvGhosttyTerminal terminal, const PaletteColors& palette) {
+    if (terminal == nullptr) {
+        return;
+    }
+    terminal->palette_colors = palette;
+}
+
+void TerminalSetCellMetricsPx(
+    TvGhosttyTerminal terminal,
+    uint32_t cell_width_px,
+    uint32_t cell_height_px) {
+    if (terminal == nullptr) {
+        return;
+    }
+    if (cell_width_px > 0) {
+        terminal->cell_width_px = cell_width_px;
+    }
+    if (cell_height_px > 0) {
+        terminal->cell_height_px = cell_height_px;
+    }
 }
 
 namespace {

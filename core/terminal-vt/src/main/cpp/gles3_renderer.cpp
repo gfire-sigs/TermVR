@@ -791,8 +791,11 @@ bool Gles3Renderer::RenderFrame(
 
         PaneGpuState& gpu_state = pane_states_[pane_spec.session_handle];
         bool resized = session->ConsumeGridResized();
-        bool rebuild_all = force_full_redraw || resized || atlas_rebuilt ||
-                           gpu_state.instance_vbo == 0;
+        bool need_init = (gpu_state.cols == 0 || gpu_state.rows == 0);
+#if defined(__ANDROID__)
+        need_init = need_init || (gpu_state.instance_vbo == 0);
+#endif
+        bool rebuild_all = force_full_redraw || resized || atlas_rebuilt || need_init;
 
         ExtractedFrameSnapshot snap;
         std::vector<uint16_t> uploaded_rows;
@@ -801,11 +804,16 @@ bool Gles3Renderer::RenderFrame(
             row_stride_bytes = static_cast<size_t>(snap.cols) * sizeof(CellGpuInstance);
             size_t total_bytes = static_cast<size_t>(snap.rows) * row_stride_bytes;
             if (gpu_state.cols != snap.cols || gpu_state.rows != snap.rows ||
-                gpu_state.instance_capacity_bytes < total_bytes || gpu_state.instance_vbo == 0) {
+                gpu_state.instance_capacity_bytes < total_bytes || need_init) {
                 gpu_state.cols = snap.cols;
                 gpu_state.rows = snap.rows;
                 gpu_state.instance_capacity_bytes = total_bytes;
                 gpu_state.row_instances.assign(snap.rows, std::vector<CellGpuInstance>(snap.cols));
+                gpu_state.cached_rows.assign(snap.rows, {});
+                gpu_state.last_cursor_row = -1;
+                gpu_state.last_cursor_col = -1;
+                gpu_state.last_cursor_drawn = false;
+                gpu_state.last_cursor_shape = CursorShape::kNone;
 #if defined(__ANDROID__)
                 if (gpu_state.instance_vbo == 0) {
                     GLuint vbo = 0;
@@ -823,37 +831,79 @@ bool Gles3Renderer::RenderFrame(
                 SyncKittyTexturesToGl(&gpu_state, snap.kitty_placements);
             }
 
-            std::vector<CellGpuInstance> shaped_tmp;
-            uploaded_rows.reserve(snap.dirty_rows.size());
-            for (const ExtractedRow& erow : snap.dirty_rows) {
-                if (erow.row_index >= gpu_state.rows) {
-                    continue;
-                }
+            gpu_state.last_palette = snap.palette;
+            const bool draw_cursor = pane_spec.focused && snap.cursor.visible && pane_spec.cursor_blink_visible;
+            const int32_t cur_cursor_row = draw_cursor ? static_cast<int32_t>(snap.cursor.row) : -1;
+            const int32_t cur_cursor_col = draw_cursor ? static_cast<int32_t>(snap.cursor.col) : -1;
+            const CursorShape cur_cursor_shape = draw_cursor ? snap.cursor.shape : CursorShape::kNone;
+
+            auto shapeAndStageRow = [&](uint16_t row_idx, const std::vector<ExtractedCell>& cells) {
                 int32_t cursor_col = -1;
                 CursorShape cshape = CursorShape::kNone;
-                if (pane_spec.focused && snap.cursor.visible &&
-                    pane_spec.cursor_blink_visible && snap.cursor.row == erow.row_index) {
-                    cursor_col = static_cast<int32_t>(snap.cursor.col);
-                    cshape = snap.cursor.shape;
+                if (draw_cursor && cur_cursor_row == static_cast<int32_t>(row_idx)) {
+                    cursor_col = cur_cursor_col;
+                    cshape = cur_cursor_shape;
                 }
+                std::vector<CellGpuInstance> shaped_tmp;
                 font_manager_.ShapeRow(
-                    erow.row_index,
-                    erow.cells,
+                    row_idx,
+                    cells,
                     cursor_col,
                     cshape,
-                    snap.palette.cursor_rgba,
-                    snap.palette.selection_rgba,
+                    gpu_state.last_palette.cursor_rgba,
+                    gpu_state.last_palette.selection_rgba,
                     &atlas_,
                     &shaped_tmp);
 
-                auto& dst_row = gpu_state.row_instances[erow.row_index];
+                auto& dst_row = gpu_state.row_instances[row_idx];
                 std::memset(dst_row.data(), 0, dst_row.size() * sizeof(CellGpuInstance));
                 size_t copy_cnt = std::min(shaped_tmp.size(), dst_row.size());
                 if (copy_cnt > 0) {
                     std::memcpy(dst_row.data(), shaped_tmp.data(), copy_cnt * sizeof(CellGpuInstance));
                 }
-                uploaded_rows.push_back(erow.row_index);
+                uploaded_rows.push_back(row_idx);
+            };
+
+            std::vector<bool> row_updated(gpu_state.rows, false);
+            uploaded_rows.reserve(snap.dirty_rows.size() + 2u);
+            for (const ExtractedRow& erow : snap.dirty_rows) {
+                if (erow.row_index >= gpu_state.rows) {
+                    continue;
+                }
+                gpu_state.cached_rows[erow.row_index] = erow.cells;
+                shapeAndStageRow(erow.row_index, erow.cells);
+                row_updated[erow.row_index] = true;
             }
+
+            const bool cursor_changed =
+                draw_cursor != gpu_state.last_cursor_drawn ||
+                cur_cursor_row != gpu_state.last_cursor_row ||
+                cur_cursor_col != gpu_state.last_cursor_col ||
+                cur_cursor_shape != gpu_state.last_cursor_shape;
+            if (cursor_changed) {
+                if (gpu_state.last_cursor_drawn &&
+                    gpu_state.last_cursor_row >= 0 &&
+                    gpu_state.last_cursor_row < static_cast<int32_t>(gpu_state.rows)) {
+                    uint16_t prev_r = static_cast<uint16_t>(gpu_state.last_cursor_row);
+                    if (!row_updated[prev_r] && !gpu_state.cached_rows[prev_r].empty()) {
+                        shapeAndStageRow(prev_r, gpu_state.cached_rows[prev_r]);
+                        row_updated[prev_r] = true;
+                    }
+                }
+                if (draw_cursor &&
+                    cur_cursor_row >= 0 &&
+                    cur_cursor_row < static_cast<int32_t>(gpu_state.rows)) {
+                    uint16_t cur_r = static_cast<uint16_t>(cur_cursor_row);
+                    if (!row_updated[cur_r] && !gpu_state.cached_rows[cur_r].empty()) {
+                        shapeAndStageRow(cur_r, gpu_state.cached_rows[cur_r]);
+                        row_updated[cur_r] = true;
+                    }
+                }
+            }
+            gpu_state.last_cursor_row = cur_cursor_row;
+            gpu_state.last_cursor_col = cur_cursor_col;
+            gpu_state.last_cursor_drawn = draw_cursor;
+            gpu_state.last_cursor_shape = cur_cursor_shape;
 
             SyncAtlasTexturesToGl();
         }

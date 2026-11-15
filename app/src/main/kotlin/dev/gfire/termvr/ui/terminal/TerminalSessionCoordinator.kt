@@ -16,6 +16,8 @@ import dev.gfire.termvr.runtime.SandboxRuntimeGateway
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -52,11 +54,24 @@ private data class PaneRuntime(
     val session: NativeVtSession,
     val controller: TerminalSurfaceController,
     val isStreamZero: Boolean,
-    var streamId: Long = -1L,
-    var muxPtyHandle: MuxPtyHandle? = null,
-    var rawPtyHandle: HostPtyHandle? = null,
+    @Volatile var streamId: Long = -1L,
+    @Volatile var muxPtyHandle: MuxPtyHandle? = null,
+    @Volatile var rawPtyHandle: HostPtyHandle? = null,
     var rawReaderThread: Thread? = null,
+    @Volatile var desiredCols: Int = 0,
+    @Volatile var desiredRows: Int = 0,
+    @Volatile var desiredWidthPx: Int = 0,
+    @Volatile var desiredHeightPx: Int = 0,
+    val pendingPtyReplies: ConcurrentLinkedQueue<ByteArray> = ConcurrentLinkedQueue(),
+    val replySendLock: Any = Any(),
     @Volatile var closed: Boolean = false,
+)
+
+private data class GridDims(
+    val cols: Int,
+    val rows: Int,
+    val widthPx: Int,
+    val heightPx: Int,
 )
 
 /**
@@ -71,6 +86,7 @@ class TerminalSessionCoordinator(
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val paneRuntimes = ConcurrentHashMap<String, PaneRuntime>()
     private val boundMuxByProfile = ConcurrentHashMap<String, MuxSessionClient>()
+    private val lastKnownGridByProfile = ConcurrentHashMap<String, GridDims>()
 
     private val _tabs = MutableStateFlow<List<TerminalTabState>>(emptyList())
     val tabs: StateFlow<List<TerminalTabState>> = _tabs.asStateFlow()
@@ -383,7 +399,29 @@ class TerminalSessionCoordinator(
         heightPx: Int,
     ) {
         val runtime = paneRuntimes[paneId] ?: return
-        if (runtime.closed || runtime.isStreamZero) return
+        if (runtime.closed) return
+        val clampedCols = cols.coerceAtLeast(2)
+        val clampedRows = rows.coerceAtLeast(2)
+        val clampedWidthPx = widthPx.coerceAtLeast(0)
+        val clampedHeightPx = heightPx.coerceAtLeast(0)
+        runtime.desiredCols = clampedCols
+        runtime.desiredRows = clampedRows
+        runtime.desiredWidthPx = clampedWidthPx
+        runtime.desiredHeightPx = clampedHeightPx
+        lastKnownGridByProfile[runtime.profileId] = GridDims(
+            cols = clampedCols,
+            rows = clampedRows,
+            widthPx = clampedWidthPx,
+            heightPx = clampedHeightPx,
+        )
+        if (!runtime.session.isClosed &&
+            (runtime.session.cols != clampedCols || runtime.session.rows != clampedRows)
+        ) {
+            val cw = if (clampedWidthPx > 0) max(1, clampedWidthPx / clampedCols) else 10
+            val ch = if (clampedHeightPx > 0) max(1, clampedHeightPx / clampedRows) else 20
+            runtime.session.resizeGrid(clampedCols, clampedRows, cw, ch)
+        }
+        if (runtime.isStreamZero) return
         if (runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
             return
         }
@@ -391,21 +429,13 @@ class TerminalSessionCoordinator(
             if (runtime.closed || runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
                 return@launch
             }
-            runCatching {
-                val mux = runtime.muxPtyHandle
-                val currentMux = runtimeGateway.getMuxClient(runtime.profileId)
-                if (mux != null && (currentMux == null || !currentMux.isClosed)) {
-                    mux.resize(rows = rows, cols = cols, xpixel = widthPx, ypixel = heightPx)
-                } else if (runtime.rawPtyHandle != null) {
-                    runtimeGateway.resizeRawPty(
-                        profileId = runtime.profileId,
-                        rows = rows,
-                        cols = cols,
-                        xpixel = widthPx,
-                        ypixel = heightPx,
-                    )
-                }
-            }
+            sendPtyResize(
+                runtime = runtime,
+                rows = clampedRows,
+                cols = clampedCols,
+                widthPx = clampedWidthPx,
+                heightPx = clampedHeightPx,
+            )
         }
     }
 
@@ -451,9 +481,123 @@ class TerminalSessionCoordinator(
         mux.setStreamListener(0L, createStreamListener(runtime))
     }
 
+    private fun resolveInitialGridDims(runtime: PaneRuntime): GridDims {
+        val fallback = lastKnownGridByProfile[runtime.profileId]
+        val useFallback = runtime.desiredCols < 2 &&
+            fallback != null &&
+            runtime.session.cols == 80 &&
+            runtime.session.rows == 24
+        val cols = when {
+            runtime.desiredCols >= 2 -> runtime.desiredCols
+            useFallback -> fallback!!.cols.coerceAtLeast(2)
+            else -> runtime.session.cols.coerceAtLeast(2)
+        }
+        val rows = when {
+            runtime.desiredRows >= 2 -> runtime.desiredRows
+            useFallback -> fallback!!.rows.coerceAtLeast(2)
+            else -> runtime.session.rows.coerceAtLeast(2)
+        }
+        val widthPx = when {
+            runtime.desiredWidthPx > 0 -> runtime.desiredWidthPx
+            fallback != null && fallback.widthPx > 0 -> fallback.widthPx
+            else -> 0
+        }
+        val heightPx = when {
+            runtime.desiredHeightPx > 0 -> runtime.desiredHeightPx
+            fallback != null && fallback.heightPx > 0 -> fallback.heightPx
+            else -> 0
+        }
+        if (!runtime.session.isClosed && (runtime.session.cols != cols || runtime.session.rows != rows)) {
+            val cw = if (widthPx > 0) max(1, widthPx / cols) else 10
+            val ch = if (heightPx > 0) max(1, heightPx / rows) else 20
+            runtime.session.resizeGrid(cols, rows, cw, ch)
+        }
+        return GridDims(cols = cols, rows = rows, widthPx = widthPx, heightPx = heightPx)
+    }
+
+    private fun sendPtyResize(
+        runtime: PaneRuntime,
+        rows: Int,
+        cols: Int,
+        widthPx: Int,
+        heightPx: Int,
+    ) {
+        runCatching {
+            val mux = runtime.muxPtyHandle
+            val currentMux = runtimeGateway.getMuxClient(runtime.profileId)
+            if (mux != null && (currentMux == null || !currentMux.isClosed)) {
+                mux.resize(rows = rows, cols = cols, xpixel = widthPx, ypixel = heightPx)
+            } else if (runtime.rawPtyHandle != null) {
+                runtimeGateway.resizeRawPty(
+                    profileId = runtime.profileId,
+                    rows = rows,
+                    cols = cols,
+                    xpixel = widthPx,
+                    ypixel = heightPx,
+                )
+            }
+        }
+    }
+
+    private fun enqueuePtyReplies(runtime: PaneRuntime, replies: ByteArray) {
+        if (replies.isEmpty() || runtime.closed) return
+        runtime.pendingPtyReplies.add(replies)
+        ioScope.launch {
+            flushPendingPtyReplies(runtime)
+        }
+    }
+
+    private fun flushPendingPtyReplies(runtime: PaneRuntime) {
+        if (runtime.closed) {
+            runtime.pendingPtyReplies.clear()
+            return
+        }
+        synchronized(runtime.replySendLock) {
+            while (!runtime.closed) {
+                val next = runtime.pendingPtyReplies.peek() ?: break
+                val delivered = runCatching {
+                    when {
+                        runtime.isStreamZero -> {
+                            val mux = runtimeGateway.getMuxClient(runtime.profileId) ?: return@runCatching false
+                            if (mux.isClosed) return@runCatching false
+                            mux.writeStream0Stdin(next)
+                            true
+                        }
+                        runtime.muxPtyHandle != null -> {
+                            runtime.muxPtyHandle?.writeInput(next)
+                            true
+                        }
+                        runtime.rawPtyHandle != null -> {
+                            runtime.rawPtyHandle?.write(next)
+                            true
+                        }
+                        else -> false
+                    }
+                }.getOrDefault(false)
+                if (!delivered) {
+                    break
+                }
+                runtime.pendingPtyReplies.poll()
+            }
+        }
+    }
+
     private fun attachRawPtyReader(runtime: PaneRuntime, rawPty: HostPtyHandle) {
         runtime.rawReaderThread?.interrupt()
         runtime.rawPtyHandle = rawPty
+        val dims = resolveInitialGridDims(runtime)
+        ioScope.launch {
+            if (!runtime.closed) {
+                runtimeGateway.resizeRawPty(
+                    profileId = runtime.profileId,
+                    rows = dims.rows,
+                    cols = dims.cols,
+                    xpixel = dims.widthPx,
+                    ypixel = dims.heightPx,
+                )
+                flushPendingPtyReplies(runtime)
+            }
+        }
         val reader = Thread({
             val buf = ByteArray(8192)
             while (!runtime.closed) {
@@ -461,6 +605,10 @@ class TerminalSessionCoordinator(
                 if (count <= 0) break
                 if (!runtime.session.isClosed) {
                     runtime.session.writePtyBytes(buf, 0, count)
+                    val replies = runtime.session.drainPtyReplies()
+                    if (replies.isNotEmpty()) {
+                        enqueuePtyReplies(runtime, replies)
+                    }
                     runtime.controller.notifyPtyOutput()
                 }
             }
@@ -491,18 +639,39 @@ class TerminalSessionCoordinator(
         ioScope.launch {
             runCatching {
                 val listener = createStreamListener(runtime)
-                val cols = runtime.session.cols.coerceAtLeast(2)
-                val rows = runtime.session.rows.coerceAtLeast(2)
+                val openDims = resolveInitialGridDims(runtime)
                 val pty = mux.openPty(
                     argv = profile.defaultShellArgv,
                     cwd = "/workspace",
                     env = profile.envVars,
-                    rows = rows,
-                    cols = cols,
+                    rows = openDims.rows,
+                    cols = openDims.cols,
+                    xpixel = openDims.widthPx,
+                    ypixel = openDims.heightPx,
                     listener = listener,
                 )
                 runtime.streamId = pty.streamId
                 runtime.muxPtyHandle = pty
+                val latestCols = runtime.desiredCols
+                val latestRows = runtime.desiredRows
+                val latestWidthPx = runtime.desiredWidthPx
+                val latestHeightPx = runtime.desiredHeightPx
+                if (latestCols >= 2 && latestRows >= 2 &&
+                    (latestCols != openDims.cols ||
+                        latestRows != openDims.rows ||
+                        latestWidthPx != openDims.widthPx ||
+                        latestHeightPx != openDims.heightPx)
+                ) {
+                    runCatching {
+                        pty.resize(
+                            rows = latestRows,
+                            cols = latestCols,
+                            xpixel = latestWidthPx,
+                            ypixel = latestHeightPx,
+                        )
+                    }
+                }
+                flushPendingPtyReplies(runtime)
             }.onFailure { err ->
                 _lastError.value = err.message ?: "Failed to open PTY session"
                 appendTerminalNotice(runtime, "\r\n[Failed to open PTY: ${err.message}]\r\n")
@@ -541,10 +710,19 @@ class TerminalSessionCoordinator(
                         listener = createStreamListener(runtime),
                     )
                     runtime.muxPtyHandle = handle
-                    val cols = runtime.session.cols
-                    val rows = runtime.session.rows
-                    if (cols >= 2 && rows >= 2) {
-                        runCatching { handle.resize(rows = rows, cols = cols) }
+                    val dims = resolveInitialGridDims(runtime)
+                    if (dims.cols >= 2 && dims.rows >= 2) {
+                        runCatching {
+                            handle.resize(
+                                rows = dims.rows,
+                                cols = dims.cols,
+                                xpixel = dims.widthPx,
+                                ypixel = dims.heightPx,
+                            )
+                        }
+                    }
+                    ioScope.launch {
+                        flushPendingPtyReplies(runtime)
                     }
                 } else {
                     runtime.muxPtyHandle = null
@@ -559,6 +737,10 @@ class TerminalSessionCoordinator(
         override fun onData(streamId: Long, bytes: ByteArray) {
             if (runtime.closed || runtime.session.isClosed) return
             runtime.session.writePtyBytes(bytes)
+            val replies = runtime.session.drainPtyReplies()
+            if (replies.isNotEmpty()) {
+                enqueuePtyReplies(runtime, replies)
+            }
             runtime.controller.notifyPtyOutput()
         }
 

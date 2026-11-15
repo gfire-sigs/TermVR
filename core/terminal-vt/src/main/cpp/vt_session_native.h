@@ -41,6 +41,7 @@ public:
 
     bool ResizeGrid(uint16_t cols, uint16_t rows, uint32_t cell_width_px, uint32_t cell_height_px);
     void WritePtyBytes(const uint8_t* data, size_t len);
+    std::vector<uint8_t> DrainPtyReplies();
 
     void SetPalette(const PaletteColors& palette);
     PaletteColors GetPalette() const;

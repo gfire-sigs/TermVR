@@ -13,6 +13,7 @@ interface VtSessionBackend : AutoCloseable {
     val nativeHandle: Long
     fun resizeGrid(cols: Int, rows: Int, cellWidthPx: Int, cellHeightPx: Int): Boolean
     fun writePtyBytes(data: ByteArray, offset: Int, length: Int)
+    fun drainPtyReplies(): ByteArray = ByteArray(0)
     fun setPalette(palette: ColorPalette)
     fun setScrollbackOffset(linesFromBottom: Int)
     fun getScrollbackOffset(): Int
@@ -83,6 +84,11 @@ internal class JniVtSessionBackend(
     override fun writePtyBytes(data: ByteArray, offset: Int, length: Int) {
         if (handle == 0L || length <= 0) return
         JniVtBindings.nativeWritePtyBytes(handle, data, offset, length)
+    }
+
+    override fun drainPtyReplies(): ByteArray {
+        if (handle == 0L) return ByteArray(0)
+        return JniVtBindings.nativeDrainPtyReplies(handle)
     }
 
     override fun setPalette(palette: ColorPalette) {
@@ -383,6 +389,9 @@ internal class JvmFallbackVtSessionBackend(
     private var cursorBlink = true
     private var cursorShape = VtCursorShape.BLOCK
     private var decckm = false
+    private var autowrap = true
+    private var cellWidthPx = 10
+    private var cellHeightPx = 20
     private var bracketedPaste = false
     private var mouseTrackingMode = 0
     private var mouseFormatMode = 0
@@ -391,6 +400,7 @@ internal class JvmFallbackVtSessionBackend(
     private var closed = false
     private var windowTitle = ""
     private var palette = ColorPalette.DEFAULT_DARK
+    private val pendingReplies = java.io.ByteArrayOutputStream()
     private var selActive = false
     private var selStartAbsRow = 0
     private var selStartCol = 0
@@ -413,11 +423,48 @@ internal class JvmFallbackVtSessionBackend(
         }
         this.cols = cols
         this.rows = rows
+        if (cellWidthPx > 0) this.cellWidthPx = cellWidthPx
+        if (cellHeightPx > 0) this.cellHeightPx = cellHeightPx
         this.grid = newGrid
         cursorRow = cursorRow.coerceIn(0, rows - 1)
         cursorCol = cursorCol.coerceIn(0, cols - 1)
         dirty = true
         true
+    }
+
+    override fun drainPtyReplies(): ByteArray = lock.withLock {
+        if (pendingReplies.size() == 0) return@withLock ByteArray(0)
+        val bytes = pendingReplies.toByteArray()
+        pendingReplies.reset()
+        bytes
+    }
+
+    private fun queueReply(text: String) {
+        if (pendingReplies.size() >= 256 * 1024) return
+        val bytes = text.toByteArray(StandardCharsets.UTF_8)
+        pendingReplies.write(bytes, 0, bytes.size)
+    }
+
+    private fun formatOscRgb(rgba: UInt): String {
+        val v = rgba.toLong()
+        val r = (v ushr 24) and 0xFFL
+        val g = (v ushr 16) and 0xFFL
+        val b = (v ushr 8) and 0xFFL
+        return String.format("rgb:%04x/%04x/%04x", (r shl 8) or r, (g shl 8) or g, (b shl 8) or b)
+    }
+
+    private fun handleOsc(content: String, terminatedByBel: Boolean) {
+        val semi = content.indexOf(';')
+        if (semi <= 0) return
+        val code = content.substring(0, semi).toIntOrNull() ?: return
+        val rest = content.substring(semi + 1)
+        val termSeq = if (terminatedByBel) "\u0007" else "\u001b\\"
+        when {
+            code == 0 || code == 2 -> windowTitle = rest
+            code == 10 && rest == "?" -> queueReply("\u001b]10;${formatOscRgb(palette.foregroundRgba)}$termSeq")
+            code == 11 && rest == "?" -> queueReply("\u001b]11;${formatOscRgb(palette.backgroundRgba)}$termSeq")
+            code == 12 && rest == "?" -> queueReply("\u001b]12;${formatOscRgb(palette.cursorRgba)}$termSeq")
+        }
     }
 
     override fun writePtyBytes(data: ByteArray, offset: Int, length: Int) {
@@ -436,27 +483,13 @@ internal class JvmFallbackVtSessionBackend(
     private fun feedChar(ch: Char) {
         if (inOsc) {
             if (ch == '\u0007') {
-                val content = escBuf.toString()
-                val semi = content.indexOf(';')
-                if (semi > 0) {
-                    val code = content.substring(0, semi).toIntOrNull()
-                    if (code == 0 || code == 2) {
-                        windowTitle = content.substring(semi + 1)
-                    }
-                }
+                handleOsc(escBuf.toString(), terminatedByBel = true)
                 escBuf.clear()
                 inOsc = false
             } else if (ch == '\u001b') {
                 inEsc = true
             } else if (inEsc && ch == '\\') {
-                val content = escBuf.toString()
-                val semi = content.indexOf(';')
-                if (semi > 0) {
-                    val code = content.substring(0, semi).toIntOrNull()
-                    if (code == 0 || code == 2) {
-                        windowTitle = content.substring(semi + 1)
-                    }
-                }
+                handleOsc(escBuf.toString(), terminatedByBel = false)
                 escBuf.clear()
                 inOsc = false
                 inEsc = false
@@ -507,11 +540,17 @@ internal class JvmFallbackVtSessionBackend(
             '\t' -> cursorCol = min(cols - 1, ((cursorCol / 8) + 1) * 8)
             else -> if (ch.code >= 0x20) {
                 if (cursorCol >= cols) {
-                    cursorCol = 0
-                    lineFeed()
+                    if (autowrap) {
+                        cursorCol = 0
+                        lineFeed()
+                    } else {
+                        cursorCol = cols - 1
+                    }
                 }
                 grid[cursorRow][cursorCol] = ch
-                cursorCol++
+                if (cursorCol + 1 < cols || autowrap) {
+                    cursorCol++
+                }
             }
         }
     }
@@ -533,13 +572,31 @@ internal class JvmFallbackVtSessionBackend(
 
     private fun dispatchCsi(raw: String, finalChar: Char) {
         val prefix = if (raw.startsWith("?") || raw.startsWith(">")) raw[0] else '\u0000'
-        val body = if (prefix != '\u0000') raw.substring(1) else raw
+        var body = if (prefix != '\u0000') raw.substring(1) else raw
+        val hasDollarIntermediate = body.endsWith("$")
+        if (hasDollarIntermediate) {
+            body = body.dropLast(1)
+        }
         val params = if (body.isEmpty()) emptyList() else body.split(';').map { it.toIntOrNull() ?: 0 }
+        if (prefix == '?' && hasDollarIntermediate && finalChar == 'p') {
+            val mode = params.getOrElse(0) { 0 }
+            val pm = when (mode) {
+                1 -> if (decckm) 1 else 2
+                7 -> if (autowrap) 1 else 2
+                12 -> if (cursorBlink) 1 else 2
+                25 -> if (cursorVisible) 1 else 2
+                2004 -> if (bracketedPaste) 1 else 2
+                else -> 0
+            }
+            queueReply("\u001b[?$mode;$pm\$y")
+            return
+        }
         if (prefix == '?' && (finalChar == 'h' || finalChar == 'l')) {
             val enable = finalChar == 'h'
             for (m in params) {
                 when (m) {
                     1 -> decckm = enable
+                    7 -> autowrap = enable
                     12 -> cursorBlink = enable
                     25 -> cursorVisible = enable
                     1000, 1002, 1003 -> if (enable) mouseTrackingMode = m else if (mouseTrackingMode == m) mouseTrackingMode = 0
@@ -550,16 +607,67 @@ internal class JvmFallbackVtSessionBackend(
             return
         }
         when (finalChar) {
+            'A' -> {
+                val n = params.getOrElse(0) { 1 }.coerceAtLeast(1)
+                cursorRow = (cursorRow - n).coerceIn(0, rows - 1)
+            }
+            'B' -> {
+                val n = params.getOrElse(0) { 1 }.coerceAtLeast(1)
+                cursorRow = (cursorRow + n).coerceIn(0, rows - 1)
+            }
+            'C' -> {
+                val n = params.getOrElse(0) { 1 }.coerceAtLeast(1)
+                cursorCol = (cursorCol + n).coerceIn(0, cols - 1)
+            }
+            'D' -> {
+                val n = params.getOrElse(0) { 1 }.coerceAtLeast(1)
+                cursorCol = (cursorCol - n).coerceIn(0, cols - 1)
+            }
             'H', 'f' -> {
                 val r = (params.getOrElse(0) { 1 }.takeIf { it > 0 } ?: 1) - 1
                 val c = (params.getOrElse(1) { 1 }.takeIf { it > 0 } ?: 1) - 1
                 cursorRow = r.coerceIn(0, rows - 1)
                 cursorCol = c.coerceIn(0, cols - 1)
             }
-            'J' -> if (params.getOrElse(0) { 0 } == 2) {
-                grid = Array(rows) { CharArray(cols) { ' ' } }
+            'J' -> {
+                val mode = params.getOrElse(0) { 0 }
+                if (mode == 2 || mode == 3) {
+                    grid = Array(rows) { CharArray(cols) { ' ' } }
+                    if (mode == 3) {
+                        scrollback.clear()
+                        scrollbackOffset = 0
+                        selActive = false
+                    }
+                } else if (mode == 0) {
+                    for (c in cursorCol until cols) grid[cursorRow][c] = ' '
+                    for (r in (cursorRow + 1) until rows) grid[r] = CharArray(cols) { ' ' }
+                }
             }
             'K' -> for (c in cursorCol until cols) grid[cursorRow][c] = ' '
+            'c' -> {
+                val ps = params.getOrElse(0) { 0 }
+                if (prefix == '>' && ps == 0) queueReply("\u001b[>1;100;0c")
+                else if (prefix == '\u0000' && ps == 0) queueReply("\u001b[?62;22;52c")
+            }
+            'n' -> {
+                val ps = params.getOrElse(0) { 0 }
+                if (prefix == '\u0000') {
+                    if (ps == 5) queueReply("\u001b[0n")
+                    else if (ps == 6) queueReply("\u001b[${cursorRow + 1};${cursorCol + 1}R")
+                } else if (prefix == '?' && ps == 6) {
+                    queueReply("\u001b[?${cursorRow + 1};${cursorCol + 1}R")
+                } else if (prefix == '?' && ps == 996) {
+                    queueReply("\u001b[?997;1n")
+                }
+            }
+            't' -> if (prefix == '\u0000' && params.isNotEmpty()) {
+                when (params[0]) {
+                    14 -> queueReply("\u001b[4;${rows * cellHeightPx};${cols * cellWidthPx}t")
+                    16 -> queueReply("\u001b[6;${cellHeightPx};${cellWidthPx}t")
+                    18 -> queueReply("\u001b[8;${rows};${cols}t")
+                    19 -> queueReply("\u001b[9;${rows};${cols}t")
+                }
+            }
         }
     }
 
