@@ -202,6 +202,86 @@ class MuxSessionClientTest {
     }
 
     @Test
+    fun `resync advances nextPtyStreamId past restored streams and attachPtyHandle reattaches stream`() {
+        val hostToGuestOut = PipedOutputStream()
+        val guestReads = PipedInputStream(hostToGuestOut, 1024 * 1024)
+        val guestToHostOut = PipedOutputStream()
+        val hostReads = PipedInputStream(guestToHostOut, 1024 * 1024)
+
+        val openedIds = CopyOnWriteArrayList<Long>()
+        val attachedData = CopyOnWriteArrayList<String>()
+        val pool = Executors.newSingleThreadExecutor()
+        val guestDone = CountDownLatch(1)
+
+        pool.execute {
+            try {
+                while (true) {
+                    val frame = MuxCodec.readFrame(guestReads) ?: break
+                    when (frame.type) {
+                        MuxFrameType.MUX_RESYNC -> {
+                            val ackJson = """{"openStreams":[{"id":1,"rows":24,"cols":80},{"id":4,"rows":30,"cols":100}]}"""
+                            MuxCodec.writeFrame(
+                                guestToHostOut,
+                                MuxFrame(MuxFrameType.MUX_RESYNC_ACK, 0L, ackJson.toByteArray(StandardCharsets.UTF_8)),
+                            )
+                        }
+
+                        MuxFrameType.OPEN_PTY -> {
+                            openedIds.add(frame.streamId)
+                            MuxCodec.writeFrame(
+                                guestToHostOut,
+                                MuxFrame(MuxFrameType.OPEN_PTY_ACK, frame.streamId, byteArrayOf(0)),
+                            )
+                            break
+                        }
+
+                        else -> Unit
+                    }
+                }
+            } finally {
+                guestDone.countDown()
+            }
+        }
+
+        val client = MuxSessionClient(
+            inputStream = hostReads,
+            outputStream = hostToGuestOut,
+            sharesDir = File(tempDir, "shares"),
+        )
+        try {
+            client.start(sendHostHello = false)
+            val ack = client.resync()
+            assertEquals(listOf(1L, 4L), ack.openStreams.map { it.id })
+
+            val reattached = client.attachPtyHandle(
+                streamId = 4L,
+                listener = object : MuxStreamListener {
+                    override fun onData(streamId: Long, bytes: ByteArray) {
+                        attachedData.add("$streamId:${String(bytes, StandardCharsets.UTF_8)}")
+                    }
+                    override fun onExit(streamId: Long, exitCode: Int) {}
+                },
+            )
+            assertEquals(4L, reattached.streamId)
+
+            val freshPty = client.openPty()
+            assertEquals(5L, freshPty.streamId)
+            assertTrue(guestDone.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(5L), openedIds)
+
+            MuxCodec.writeFrame(
+                guestToHostOut,
+                MuxFrame(MuxFrameType.PTY_DATA, 4L, "resumed".toByteArray(StandardCharsets.UTF_8)),
+            )
+            Thread.sleep(50L)
+            assertEquals(listOf("4:resumed"), attachedData)
+        } finally {
+            client.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
     fun `HOST_RPC ops 1 to 5 enforce scheme, size, policy, share confinement, and chunked volume ops`() {
         val hostToGuestOut = PipedOutputStream()
         val guestReads = PipedInputStream(hostToGuestOut, 1024 * 1024)
@@ -407,7 +487,13 @@ class MuxSessionClientTest {
 
         val bridge = LoopbackProxyBridge(
             secretStore = InMemorySecretStore(),
-            dnsLookup = { arrayOf(InetAddress.getByName("93.184.216.34")) },
+            dnsLookup = { host ->
+                if (host == "127.0.0.1" || host == "192.168.1.1") {
+                    arrayOf(InetAddress.getByName(host))
+                } else {
+                    arrayOf(InetAddress.getByName("93.184.216.34"))
+                }
+            },
         )
         bridge.updatePolicy(OutboundProxyConfig(mode = OutboundProxyMode.DIRECT), isolateLanEgress = true)
 
@@ -438,7 +524,7 @@ class MuxSessionClientTest {
             assertEquals(streamId, ackFrame.streamId)
             assertEquals(LoopbackProxyBridge.STATUS_NOT_ALLOWED, ackFrame.payload[0].toInt() and 0xFF)
 
-            // Disable LAN isolation and connect to local test echo server.
+            // Disable LAN isolation and connect to local test echo server expecting 0x00 and relayed TCP bytes.
             bridge.updatePolicy(OutboundProxyConfig(mode = OutboundProxyMode.DIRECT), isolateLanEgress = false)
             val loopBytes = "127.0.0.1".toByteArray()
             val pConnectOk = ByteBuffer.allocate(2 + loopBytes.size).order(ByteOrder.BIG_ENDIAN)
@@ -449,7 +535,21 @@ class MuxSessionClientTest {
             MuxCodec.writeFrame(guestToHostOut, MuxFrame(MuxFrameType.PROXY_CONNECT, streamId2, pConnectOk))
             val ack2 = MuxCodec.readFrame(guestReads)!!
             assertEquals(MuxFrameType.PROXY_CONNECT_ACK, ack2.type)
-            assertEquals(MuxSessionClient.PROXY_STATUS_DIRECT_BYPASS, ack2.payload[0].toInt() and 0xFF)
+            assertEquals(MuxSessionClient.PROXY_STATUS_OK, ack2.payload[0].toInt() and 0xFF)
+
+            MuxCodec.writeFrame(
+                guestToHostOut,
+                MuxFrame(MuxFrameType.PTY_DATA, streamId2, "hello".toByteArray(StandardCharsets.UTF_8)),
+            )
+            var relayed = ""
+            while (true) {
+                val dataFrame = MuxCodec.readFrame(guestReads)!!
+                if (dataFrame.type == MuxFrameType.PTY_DATA && dataFrame.streamId == streamId2) {
+                    relayed += String(dataFrame.payload, StandardCharsets.UTF_8)
+                    if (relayed == "OK:hello") break
+                }
+            }
+            assertEquals("OK:hello", relayed)
         } finally {
             client.close()
             bridge.close()

@@ -514,6 +514,16 @@ class MuxSessionClient(
         }
     }
 
+    fun attachPtyHandle(streamId: Long, listener: MuxStreamListener? = null): MuxPtyHandle {
+        require(streamId >= 1L) { "attachPtyHandle requires streamId >= 1" }
+        streamSendWindows.putIfAbsent(streamId, SlidingSendWindow(MuxCodec.INITIAL_STREAM_WINDOW))
+        streamRecvAvailable.putIfAbsent(streamId, AtomicInteger(MuxCodec.INITIAL_STREAM_WINDOW))
+        if (listener != null) {
+            setStreamListener(streamId, listener)
+        }
+        return MuxPtyHandle(streamId, this)
+    }
+
     fun detachPtyListener(streamId: Long) {
         streamListeners.remove(streamId)
     }
@@ -634,9 +644,17 @@ class MuxSessionClient(
             for (recv in streamRecvAvailable.values) {
                 recv.set(MuxCodec.INITIAL_STREAM_WINDOW)
             }
+            var maxRestoredStreamId = 0L
             for (s in ack.openStreams) {
                 streamSendWindows.putIfAbsent(s.id, SlidingSendWindow(MuxCodec.INITIAL_STREAM_WINDOW))
                 streamRecvAvailable.putIfAbsent(s.id, AtomicInteger(MuxCodec.INITIAL_STREAM_WINDOW))
+                if (s.id > maxRestoredStreamId) {
+                    maxRestoredStreamId = s.id
+                }
+            }
+            if (maxRestoredStreamId > 0L) {
+                val floorNext = maxRestoredStreamId + 1L
+                nextPtyStreamId.updateAndGet { current -> maxOf(current, floorNext) }
             }
             return ack
         } finally {
@@ -993,9 +1011,9 @@ class MuxSessionClient(
         }
 
         workerPool.execute {
-            when (val outcome = bridge.dialForMuxStream(dstHost, dstPort, allowDirectBypassCode = true)) {
+            when (val outcome = bridge.dialForMuxStream(dstHost, dstPort, allowDirectBypassCode = false)) {
                 is ProxyDialOutcome.DirectBypass -> {
-                    sendProxyConnectAck(streamId, PROXY_STATUS_DIRECT_BYPASS, outcome.reason)
+                    sendProxyConnectAck(streamId, LoopbackProxyBridge.STATUS_GENERAL_FAILURE, outcome.reason)
                 }
 
                 is ProxyDialOutcome.Rejected -> {
@@ -1434,6 +1452,5 @@ class MuxSessionClient(
 
     companion object {
         const val PROXY_STATUS_OK: Int = 0x00
-        const val PROXY_STATUS_DIRECT_BYPASS: Int = 0xFE
     }
 }

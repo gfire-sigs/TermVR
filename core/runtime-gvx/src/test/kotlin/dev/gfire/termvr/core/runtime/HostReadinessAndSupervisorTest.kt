@@ -225,7 +225,7 @@ class HostReadinessAndSupervisorTest {
             dnsProxy = dnsProxy,
             checkpointController = checkpointController,
             readinessInspector = readinessInspector,
-            processLauncher = { args, _ ->
+            processLauncher = { args, _, _ ->
                 launchedCommands.add(args)
                 val handle = FakeMuxProcessHandle(
                     executor = pool,
@@ -396,7 +396,7 @@ class HostReadinessAndSupervisorTest {
                 freeDiskMiBProvider = { 4096 },
                 selfPidProvider = { 100 },
             ),
-            processLauncher = { args, _ ->
+            processLauncher = { args, _, _ ->
                 launchedCommands.add(args)
                 FakeMuxProcessHandle(pool)
             },
@@ -414,6 +414,87 @@ class HostReadinessAndSupervisorTest {
             assertEquals("run", launchedCommands.last().first())
             assertTrue(supervisor.activeServiceNotice.value.orEmpty().contains("superseded"))
             assertTrue(newCp.readMetadata("oldprof")?.superseded == true)
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `RAW_PTY mode attaches slave PTY file to process launcher and ProcessBuilder stdin and stdout`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val slaveFile = File(tempDir, "pts-9").apply { writeText("") }
+        val fakeExec = File(tempDir, "librungv.so").apply {
+            writeText("#!/bin/sh\n")
+            setExecutable(true)
+        }
+
+        // Verify AndroidRungvProcessLauncher redirects stdin/stdout to slave PTY device.
+        val launcher = AndroidRungvProcessLauncher(fakeExec)
+        val pb = launcher.buildProcessBuilder(listOf("run"), emptyMap(), ptySlaveDevice = slaveFile)
+        assertEquals(slaveFile, pb.redirectInput().file())
+        assertEquals(slaveFile, pb.redirectOutput().file())
+
+        // Verify SandboxSupervisor passes rawPtyHandle.slavePath to processLauncher and forwards resize childPid.
+        val capturedSlaves = CopyOnWriteArrayList<File?>()
+        val resizedCalls = CopyOnWriteArrayList<Triple<Int, Int, Long>>()
+        val fakePtyBackend = object : PtyBackend {
+            override fun openPty(rows: Int, cols: Int, xpixel: Int, ypixel: Int): HostPtyHandle {
+                return object : HostPtyHandle {
+                    override val slavePath: String = slaveFile.absolutePath
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = -1
+                    override fun write(data: ByteArray, offset: Int, length: Int) {}
+                    override fun resize(rows: Int, cols: Int, xpixel: Int, ypixel: Int, childPid: Long) {
+                        resizedCalls.add(Triple(rows, cols, childPid))
+                    }
+                    override fun close() {}
+                }
+            }
+        }
+        val pool = Executors.newCachedThreadPool()
+        val commandBuilder = GvxCommandBuilder(filesDir, cacheDir, caExporter = { pem, dir ->
+            pem.parentFile?.mkdirs()
+            pem.writeText("PEM")
+            dir.mkdirs()
+        })
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = commandBuilder,
+            proxyBridge = LoopbackProxyBridge(secretStore = InMemorySecretStore()),
+            dnsProxy = LoopbackDnsProxy(networkDnsBackend = { _, _ -> ByteArray(0) }),
+            checkpointController = CheckpointController(filesDir = filesDir),
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                totalHostRamMiBProvider = { 8192 },
+                freeDiskMiBProvider = { 4096 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = { _, _, ptySlave ->
+                capturedSlaves.add(ptySlave)
+                FakeMuxProcessHandle(pool)
+            },
+            agentExtractor = { arch -> File(filesDir, "agent/${arch.ociArch}/termvr-agent") },
+            ptyBackend = fakePtyBackend,
+        )
+        try {
+            val rawProfile = SandboxProfile(
+                id = "rawbox",
+                displayName = "RawBox",
+                imageRef = "busybox:latest",
+                muxMode = MuxMode.RAW_PTY,
+            )
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(rawProfile))
+            assertEquals(listOf(slaveFile), capturedSlaves)
+            supervisor.resizeRawPty("rawbox", rows = 45, cols = 132)
+            assertEquals(listOf(Triple(45, 132, 4242L)), resizedCalls)
         } finally {
             supervisor.close()
             pool.shutdownNow()

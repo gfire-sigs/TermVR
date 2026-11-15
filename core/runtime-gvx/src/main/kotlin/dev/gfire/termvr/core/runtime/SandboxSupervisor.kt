@@ -58,10 +58,10 @@ interface GvxProcessHandle : Closeable {
 }
 
 /**
- * Spawns `librungv.so` processes with the specified CLI arguments and host environment.
+ * Spawns `librungv.so` processes with the specified CLI arguments, host environment, and optional PTY slave device.
  */
 fun interface GvxProcessLauncher {
-    fun launch(args: List<String>, env: Map<String, String>): GvxProcessHandle
+    fun launch(args: List<String>, env: Map<String, String>, ptySlaveDevice: File?): GvxProcessHandle
 }
 
 /**
@@ -70,7 +70,11 @@ fun interface GvxProcessLauncher {
 class AndroidRungvProcessLauncher(
     private val executableFile: File,
 ) : GvxProcessLauncher {
-    override fun launch(args: List<String>, env: Map<String, String>): GvxProcessHandle {
+    internal fun buildProcessBuilder(
+        args: List<String>,
+        env: Map<String, String>,
+        ptySlaveDevice: File? = null,
+    ): ProcessBuilder {
         require(executableFile.exists() && executableFile.canExecute()) {
             "librungv.so is missing or not executable at ${executableFile.absolutePath}"
         }
@@ -80,7 +84,19 @@ class AndroidRungvProcessLauncher(
         }
         val pb = ProcessBuilder(cmd)
         pb.environment().putAll(env)
-        val process = pb.start()
+        if (ptySlaveDevice != null) {
+            pb.redirectInput(ptySlaveDevice)
+            pb.redirectOutput(ptySlaveDevice)
+        }
+        return pb
+    }
+
+    override fun launch(
+        args: List<String>,
+        env: Map<String, String>,
+        ptySlaveDevice: File?,
+    ): GvxProcessHandle {
+        val process = buildProcessBuilder(args, env, ptySlaveDevice).start()
         return object : GvxProcessHandle {
             override val stdoutStream: InputStream get() = process.inputStream
             override val stdinStream: OutputStream get() = process.outputStream
@@ -261,6 +277,23 @@ class SandboxSupervisor(
 
     fun getRawPtyHandle(profileId: String): HostPtyHandle? = sessions[profileId]?.rawPtyHandle
 
+    fun resizeRawPty(
+        profileId: String,
+        rows: Int,
+        cols: Int,
+        xpixel: Int = 0,
+        ypixel: Int = 0,
+    ) {
+        val managed = sessions[profileId] ?: return
+        managed.rawPtyHandle?.resize(
+            rows = rows,
+            cols = cols,
+            xpixel = xpixel,
+            ypixel = ypixel,
+            childPid = managed.process.pid,
+        )
+    }
+
     fun markProfileActivity(profileId: String) {
         sessions[profileId]?.lastActivityMillis?.set(clockMillis())
     }
@@ -343,12 +376,14 @@ class SandboxSupervisor(
             }
 
             var rawPtyHandle: HostPtyHandle? = null
+            var ptySlaveDevice: File? = null
             if (profile.muxMode == MuxMode.RAW_PTY) {
                 rawPtyHandle = ptyBackend.openPty(rows = 24, cols = 80)
+                ptySlaveDevice = File(rawPtyHandle.slavePath)
             }
 
             val process = try {
-                processLauncher.launch(args, hostEnv)
+                processLauncher.launch(args, hostEnv, ptySlaveDevice)
             } catch (e: Exception) {
                 rawPtyHandle?.close()
                 setRunState(profile.id, SandboxRunState.FAILED)
@@ -708,7 +743,7 @@ class SandboxSupervisor(
             readOnly = readOnly,
         )
         val env = commandBuilder.buildHostEnvironment(trustHostCaCerts = false)
-        val proc = processLauncher.launch(args, env)
+        val proc = processLauncher.launch(args, env, null)
         val mux = MuxSessionClient(
             inputStream = proc.stdoutStream,
             outputStream = proc.stdinStream,
