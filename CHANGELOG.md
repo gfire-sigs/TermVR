@@ -6,7 +6,39 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.15.10002026110900`.
+This section tracks changes staged on `main` after `0.15.10002026110900.1`.
+
+---
+
+## [0.15.10002026110900.1]
+
+This maintenance release (`versionCode` `261109001`) tracks upstream `gvx` `v0.15.10002026110900` and adds persistent `ext4lite` root filesystems, terminal compatibility fixes, and checkpoint reliability improvements.
+
+### Persistent storage and container lifecycle
+
+Container creation and runtime supervision now support optional root persistence alongside reliable `Freeze` and `Resume` checkpoints.
+
+- Added an optional persistent root checkbox during container creation and launch that mounts `rootfs-<id>.ext4` at `/` via `pivot_root`.
+- Preserved installed `apt`, `apk`, and `dnf` packages, `/etc` settings, and `/root` files across full container stops and restarts.
+- Exposed persistent `rootfs-<id>.ext4` volumes in `Files > Volumes` and removed them automatically when deleting a container.
+- Fixed `LocalSocket` listener accept ordering, JSON control framing for `rungv`, pre-opened `-checkpoint-dir` lockdown handling, and post-restore mux tab rebinding.
+
+### Terminal emulation and rendering
+
+Terminal I/O and OpenGL ES 3.0 rendering now support standard terminfo profiles and bidirectional VT capability queries.
+
+- Changed default guest `TERM` to `xterm-256color` with `COLORTERM=truecolor` and `TERM_PROGRAM=TermVR`.
+- Wired `libghostty-vt` query replies (`CPR`, `DSR`, `DA1`, `DA2`, `XTWINOPS`, `DECRQM`, `XTVERSION`, `OSC 10/11`, and Kitty graphics) back to the PTY.
+- Fixed OpenGL ES 3.0 viewport clearing, scrollback clearing, and cursor redraws on `clear` (`ED 2` and `ED 3`).
+- Forwarded pre-launch cell and pixel dimensions on `openPty` and preserved `O_NONBLOCK` during `TIOCSWINSZ` via `SyscallConn()`.
+
+### Recipes, fonts, and documentation
+
+Catalog recipes now boot without artificial resource caps, and repository docs include updated emulator screenshots.
+
+- Removed default CPU and memory caps across catalog container recipes.
+- Added `arm64` `/proc/cpuinfo` synthesis and legacy `iptables` selection for `docker:dind` and single-node `k3s`, plus writable `overlayfs` at `/var/lib/rancher` for `k3s`.
+- Shipped bundled `TermVR Mono NF` `v1.1.0` alongside updated GitHub Actions dependencies and replaced placeholder SVGs in `README.md` with Android 16 emulator screenshots.
 
 ---
 

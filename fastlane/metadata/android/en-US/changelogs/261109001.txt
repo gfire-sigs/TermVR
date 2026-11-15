@@ -1,0 +1,6 @@
+TermVR 0.15.10002026110900.1 (gvx v0.15.10002026110900):
+- Added optional persistent rootfs-<id>.ext4 root volumes via pivot_root.
+- Set default TERM=xterm-256color with libghostty-vt query writeback and clear/resize fixes.
+- Fixed Freeze and Resume checkpoint socket framing, pre-opened dirs, and mux rebinding.
+- Removed default recipe CPU/RAM caps and fixed arm64 docker:dind and k3s startup.
+- Updated README screenshots and bundled TermVR Mono NF v1.1.0.

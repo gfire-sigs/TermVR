@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "termvr": {
-    "app_revision": 0,
-    "version_name": "0.15.10002026110900",
-    "version_code": 261109000
+    "app_revision": 1,
+    "version_name": "0.15.10002026110900.1",
+    "version_code": 261109001
   },
   "toolchains": {
     "jdk": "17",
