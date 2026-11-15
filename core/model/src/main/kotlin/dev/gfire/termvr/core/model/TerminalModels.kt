@@ -447,6 +447,7 @@ data class RecipeManifest(
         displayName: String = title,
         enableOptionalVariant: Boolean = false,
         requestedMemoryMiB: Int? = null,
+        persistentRootfs: Boolean = false,
     ): SandboxProfile {
         val ramFloor = if (enableOptionalVariant && optionalVariantMinProfileRamMiB != null) {
             max(defaultProfileRamMiB, optionalVariantMinProfileRamMiB)
@@ -481,6 +482,7 @@ data class RecipeManifest(
             portForwards = defaultPortForwards,
             autoCheckpointOnLowMemory = defaultAutoCheckpoint,
             makeRootRshared = makeRootRshared,
+            persistentRootfs = persistentRootfs,
         )
     }
 

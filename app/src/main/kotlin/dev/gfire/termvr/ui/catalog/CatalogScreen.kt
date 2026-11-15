@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -190,14 +191,29 @@ fun CatalogScreen(
             when (state.selectedTab) {
                 CatalogSubTab.DISTRIBUTIONS -> {
                     items(state.distributions, key = { it.id }) { dist ->
+                        val persistentRootfs = state.persistentDistroIds.contains(dist.id)
                         DistributionCard(
                             entry = dist,
+                            persistentRootfs = persistentRootfs,
                             busy = state.busyAction != null,
+                            onTogglePersistentRootfs = {
+                                viewModel.toggleDistributionPersistentRootfs(dist.id)
+                            },
                             onPullAndLaunch = {
-                                viewModel.createAndLaunchDistribution(dist, pullFirst = true, onOpenTerminal)
+                                viewModel.createAndLaunchDistribution(
+                                    entry = dist,
+                                    pullFirst = true,
+                                    onOpenTerminal = onOpenTerminal,
+                                    persistentRootfs = persistentRootfs,
+                                )
                             },
                             onLaunch = {
-                                viewModel.createAndLaunchDistribution(dist, pullFirst = false, onOpenTerminal)
+                                viewModel.createAndLaunchDistribution(
+                                    entry = dist,
+                                    pullFirst = false,
+                                    onOpenTerminal = onOpenTerminal,
+                                    persistentRootfs = persistentRootfs,
+                                )
                             },
                         )
                     }
@@ -216,7 +232,7 @@ fun CatalogScreen(
                             calicoEnabled = state.calicoVxlanEnabled,
                             busy = state.busyAction != null,
                             onToggleCalico = viewModel::toggleCalicoVxlan,
-                            onLaunch = { viewModel.launchRecipe(recipe, onOpenTerminal) },
+                            onLaunch = { viewModel.launchRecipe(recipe, onOpenTerminal = onOpenTerminal) },
                             onExportKubeconfig = { viewModel.exportKubeconfig(recipe.id) },
                         )
                     }
@@ -265,7 +281,9 @@ fun CatalogScreen(
 @Composable
 private fun DistributionCard(
     entry: DistributionCatalogEntry,
+    persistentRootfs: Boolean,
     busy: Boolean,
+    onTogglePersistentRootfs: () -> Unit,
     onPullAndLaunch: () -> Unit,
     onLaunch: () -> Unit,
 ) {
@@ -314,6 +332,30 @@ private fun DistributionCard(
                     )
                 }
                 TermVrBadge(text = "~${entry.approximateDownloadMiB} MB")
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !busy) { onTogglePersistentRootfs() },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = persistentRootfs,
+                    onCheckedChange = { onTogglePersistentRootfs() },
+                    enabled = !busy,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Persistent root (ext4lite)",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = "Keep installed packages and system files across restarts",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             Row(

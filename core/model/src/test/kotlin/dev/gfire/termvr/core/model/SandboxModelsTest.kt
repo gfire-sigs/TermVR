@@ -321,4 +321,40 @@ class SandboxModelsTest {
             GlobalAppSettings(schemaVersion = 99)
         }
     }
+
+    @Test
+    fun `SandboxProfile persistentRootfs defaults false decodes legacy json and derives rootfs volume name`() {
+        val profile = SandboxProfile(
+            id = "deb-persist",
+            displayName = "Debian Persist",
+            imageRef = "docker.io/library/debian:trixie-slim",
+        )
+        assertFalse(profile.persistentRootfs)
+        assertEquals("rootfs-deb-persist", profile.rootfsVolumeName)
+
+        val enabled = profile.copy(persistentRootfs = true)
+        assertTrue(enabled.persistentRootfs)
+        assertEquals("rootfs-deb-persist", enabled.rootfsVolumeName)
+        val roundTripped = json.decodeFromString<SandboxProfile>(json.encodeToString(enabled))
+        assertEquals(enabled, roundTripped)
+
+        // Legacy profile JSON omitting persistentRootfs must decode cleanly as false
+        val legacyJson = """{"id":"legacy-deb","displayName":"Legacy","imageRef":"docker.io/library/debian:trixie-slim"}"""
+        val decodedLegacy = Json { ignoreUnknownKeys = true }.decodeFromString<SandboxProfile>(legacyJson)
+        assertFalse(decodedLegacy.persistentRootfs)
+        assertEquals("rootfs-legacy-deb", decodedLegacy.rootfsVolumeName)
+
+        val distro = DistributionCatalogEntry(
+            id = "debian",
+            distroSlug = "debian",
+            displayName = "Debian 13",
+            version = "13",
+            summary = "Minimal Debian rootfs",
+            architecture = GuestLinuxArch.ARM64,
+            imageRef = "docker.io/library/debian:trixie-slim",
+            approximateDownloadMiB = 30,
+        )
+        assertFalse(distro.toSandboxProfile().persistentRootfs)
+        assertTrue(distro.toSandboxProfile(persistentRootfs = true).persistentRootfs)
+    }
 }

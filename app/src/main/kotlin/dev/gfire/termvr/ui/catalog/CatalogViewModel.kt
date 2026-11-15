@@ -53,6 +53,7 @@ data class CatalogUiState(
     val hostReadiness: HostReadinessReport = HostReadinessReport(hostSdkInt = 31, hostAbi = "arm64-v8a"),
     val runStates: Map<String, SandboxRunState> = emptyMap(),
     val calicoVxlanEnabled: Boolean = false,
+    val persistentDistroIds: Set<String> = emptySet(),
     val recipeProbeReady: Map<String, Boolean> = emptyMap(),
     val dfEntries: List<RungvSystemDfEntry> = emptyList(),
     val volumeEntries: List<RungvVolumeLsEntry> = emptyList(),
@@ -81,6 +82,7 @@ data class CatalogUiState(
 private data class CatalogLocalState(
     val selectedTab: CatalogSubTab = CatalogSubTab.DISTRIBUTIONS,
     val calicoVxlanEnabled: Boolean = false,
+    val persistentDistroOverrides: Map<String, Boolean> = emptyMap(),
     val probeReady: Map<String, Boolean> = emptyMap(),
     val dfEntries: List<RungvSystemDfEntry> = emptyList(),
     val volumes: List<RungvVolumeLsEntry> = emptyList(),
@@ -113,7 +115,14 @@ class CatalogViewModel(
         localState,
         runtimeGateway.hostReadiness,
         runtimeGateway.runStates,
-    ) { local, readiness, states ->
+        profileRepository.observeProfiles(),
+    ) { local, readiness, states, profiles ->
+        val profilePersistById = profiles.associate { it.id to it.persistentRootfs }
+        val persistentIds = distributions
+            .filter { dist ->
+                local.persistentDistroOverrides[dist.id] ?: (profilePersistById[dist.id] == true)
+            }
+            .mapTo(LinkedHashSet()) { it.id }
         CatalogUiState(
             selectedTab = local.selectedTab,
             distributions = distributions,
@@ -121,6 +130,7 @@ class CatalogViewModel(
             hostReadiness = readiness,
             runStates = states,
             calicoVxlanEnabled = local.calicoVxlanEnabled,
+            persistentDistroIds = persistentIds,
             recipeProbeReady = local.probeReady,
             dfEntries = local.dfEntries,
             volumeEntries = local.volumes,
@@ -185,6 +195,13 @@ class CatalogViewModel(
         localState.value = localState.value.copy(calicoVxlanEnabled = !localState.value.calicoVxlanEnabled)
     }
 
+    fun toggleDistributionPersistentRootfs(distroId: String) {
+        val current = uiState.value.persistentDistroIds.contains(distroId)
+        localState.value = localState.value.copy(
+            persistentDistroOverrides = localState.value.persistentDistroOverrides + (distroId to !current),
+        )
+    }
+
     fun clearBanner() {
         localState.value = localState.value.copy(statusMessage = null, errorMessage = null)
     }
@@ -193,6 +210,7 @@ class CatalogViewModel(
         entry: DistributionCatalogEntry,
         pullFirst: Boolean,
         onOpenTerminal: () -> Unit,
+        persistentRootfs: Boolean? = null,
     ) {
         scope.launch {
             localState.value = localState.value.copy(
@@ -212,10 +230,29 @@ class CatalogViewModel(
                         error(res.stderr.ifBlank { "Image pull failed (${res.exitCode})" })
                     }
                 }
-                val profile = profileRepository.getProfile(entry.id)
-                    ?: entry.toSandboxProfile(profileId = entry.id, profileDisplayName = entry.displayName).also {
+                val existing = profileRepository.getProfile(entry.id)
+                val usePersistentRootfs = persistentRootfs ?: (
+                    localState.value.persistentDistroOverrides[entry.id]
+                        ?: (existing?.persistentRootfs == true)
+                    )
+                val profile = if (existing == null) {
+                    entry.toSandboxProfile(
+                        profileId = entry.id,
+                        profileDisplayName = entry.displayName,
+                        persistentRootfs = usePersistentRootfs,
+                    ).also {
                         profileRepository.upsertProfile(it)
                     }
+                } else if (
+                    existing.persistentRootfs != usePersistentRootfs &&
+                    (runtimeGateway.runStates.value[entry.id] ?: SandboxRunState.STOPPED) == SandboxRunState.STOPPED
+                ) {
+                    existing.copy(persistentRootfs = usePersistentRootfs).also {
+                        profileRepository.upsertProfile(it)
+                    }
+                } else {
+                    existing
+                }
                 val finalState = runtimeGateway.startOrResumeSandbox(profile)
                 if (finalState == SandboxRunState.RUNNING) {
                     val settings = profileRepository.observeAppSettings().first()
@@ -238,6 +275,7 @@ class CatalogViewModel(
 
     fun launchRecipe(
         recipe: RecipeManifest,
+        persistentRootfs: Boolean = false,
         onOpenTerminal: () -> Unit,
     ) {
         scope.launch {
@@ -258,6 +296,7 @@ class CatalogViewModel(
                     displayName = recipe.title,
                     enableOptionalVariant = enableCalico,
                     requestedMemoryMiB = requestedRam,
+                    persistentRootfs = persistentRootfs,
                 )
                 profileRepository.upsertProfile(profile)
 

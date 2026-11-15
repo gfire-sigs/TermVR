@@ -584,7 +584,7 @@ private fun VolumesPane(
         } else {
             items(state.volumes, key = { it.name }) { vol ->
                 val mountedOnSelected = selectedProfileId != null &&
-                    vol.mounts.any { it.profileId == selectedProfileId }
+                    vol.mounts.any { it.profileId == selectedProfileId && it.guestMountPath != "/" }
 
                 TermVrCard(modifier = Modifier.fillMaxWidth()) {
                     Column(

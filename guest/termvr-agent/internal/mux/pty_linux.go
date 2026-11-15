@@ -272,8 +272,23 @@ func (h *linuxPTYHandle) Close() error {
 	return err
 }
 
+func (h *linuxPTYHandle) withMasterFd(fn func(fd uintptr) error) error {
+	if raw, err := h.master.SyscallConn(); err == nil {
+		var innerErr error
+		if cerr := raw.Control(func(fd uintptr) {
+			innerErr = fn(fd)
+		}); cerr != nil {
+			return cerr
+		}
+		return innerErr
+	}
+	return fn(h.master.Fd())
+}
+
 func (h *linuxPTYHandle) Resize(ws WinSize) error {
-	if err := setWinSizeFd(h.master.Fd(), ws); err != nil {
+	if err := h.withMasterFd(func(fd uintptr) error {
+		return setWinSizeFd(fd, ws)
+	}); err != nil {
 		return err
 	}
 	return h.signalForeground(syscall.SIGWINCH)
@@ -288,13 +303,25 @@ func (h *linuxPTYHandle) Signal(sig uint8) error {
 
 func (h *linuxPTYHandle) signalForeground(sig syscall.Signal) error {
 	var pgid int32
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, h.master.Fd(), uintptr(syscall.TIOCGPGRP), uintptr(unsafe.Pointer(&pgid))); errno == 0 && pgid > 0 {
+	_ = h.withMasterFd(func(fd uintptr) error {
+		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(syscall.TIOCGPGRP), uintptr(unsafe.Pointer(&pgid)))
+		if errno != 0 {
+			pgid = 0
+		}
+		return nil
+	})
+	if pgid > 0 {
 		return syscall.Kill(-int(pgid), sig)
 	}
 	if h.pid > 0 {
 		return syscall.Kill(-h.pid, sig)
 	}
 	return nil
+}
+
+// ResolveExecutable locates bin in PATH when it does not contain a slash.
+func ResolveExecutable(bin string, env []string) (string, error) {
+	return lookExecutable(bin, env)
 }
 
 func (h *linuxPTYHandle) Wait() (uint8, error) {
