@@ -20,17 +20,17 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.gfire.termvr.ui.theme.TermVrButton
+import dev.gfire.termvr.ui.theme.TermVrOutlinedButton
+import dev.gfire.termvr.ui.theme.TermVrTextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
@@ -313,26 +313,33 @@ private fun NotificationsDeniedBanner(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Button(onClick = onFreezeAll) {
+                TermVrButton(onClick = onFreezeAll) {
                     Text(stringResource(R.string.action_freeze_all))
                 }
-                OutlinedButton(onClick = onStopAll) {
+                TermVrOutlinedButton(
+                    onClick = onStopAll,
+                    borderColor = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.5f),
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ) {
                     Text(stringResource(R.string.action_stop_all))
                 }
-                TextButton(onClick = {
-                    onEnableNotifications()
-                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    runCatching { context.startActivity(intent) }.onFailure {
-                        val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.fromParts("package", context.packageName, null)
+                TermVrTextButton(
+                    onClick = {
+                        onEnableNotifications()
+                        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
-                        runCatching { context.startActivity(fallback) }
-                    }
-                }) {
+                        runCatching { context.startActivity(intent) }.onFailure {
+                            val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", context.packageName, null)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            runCatching { context.startActivity(fallback) }
+                        }
+                    },
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ) {
                     Text("Notification Settings")
                 }
             }
