@@ -128,10 +128,13 @@ func BuildGuestEnv(baseEnv []string, overrides map[string]string, binDir string)
 		}
 	}
 	if getEnvVal(out, "TERM") == "" {
-		out = setEnvKV(out, "TERM", "xterm-ghostty")
+		out = setEnvKV(out, "TERM", "xterm-256color")
 	}
 	if getEnvVal(out, "COLORTERM") == "" {
 		out = setEnvKV(out, "COLORTERM", "truecolor")
+	}
+	if getEnvVal(out, "TERM_PROGRAM") == "" {
+		out = setEnvKV(out, "TERM_PROGRAM", "TermVR")
 	}
 	for k, v := range overrides {
 		if k != "" && strings.IndexByte(k, 0) < 0 && strings.IndexByte(v, 0) < 0 {

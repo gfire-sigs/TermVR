@@ -86,6 +86,52 @@ func TestDiscoverVolumeRootsFromProcMounts(t *testing.T) {
 			t.Fatalf("forbidden root %q leaked into %v", forbidden, roots)
 		}
 	}
+
+	persistMountsFile := filepath.Join(t.TempDir(), "persist-mounts")
+	persistContent := "" +
+		"none / ext4 rw 0 0\n" +
+		"proc /proc proc rw 0 0\n" +
+		"none /workspace hostfs rw 0 0\n"
+	if err := os.WriteFile(persistMountsFile, []byte(persistContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	persistRoots := discoverVolumeRootsWithOptions(persistMountsFile, true)
+	if !slices.Contains(persistRoots, "/") {
+		t.Fatalf("expected / in persistent roots when includeRoot=true: %v", persistRoots)
+	}
+}
+
+// TestParsePersistentRootAndExecFlags verifies --persist-root-dir and --exec flag parsing.
+func TestParsePersistentRootAndExecFlags(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := parseFlags([]string{
+		"--persist-root-dir", "/.termvr-rootfs",
+		"--make-root-rshared",
+		"--exec",
+		"--",
+		"/bin/bash", "-l",
+	})
+	if err != nil {
+		t.Fatalf("parseFlags --exec failed: %v", err)
+	}
+	if !cfg.execMode || cfg.muxStdio {
+		t.Fatalf("unexpected mode flags: exec=%v muxStdio=%v", cfg.execMode, cfg.muxStdio)
+	}
+	if cfg.persistRootDir != "/.termvr-rootfs" {
+		t.Fatalf("persistRootDir = %q, want /.termvr-rootfs", cfg.persistRootDir)
+	}
+	if !cfg.makeRootRShared {
+		t.Fatal("expected makeRootRShared=true")
+	}
+	wantArgv := []string{"/bin/bash", "-l"}
+	if !slices.Equal(cfg.initDaemonArgv, wantArgv) {
+		t.Fatalf("initDaemonArgv = %v, want %v", cfg.initDaemonArgv, wantArgv)
+	}
+
+	if _, err := parseFlags([]string{"--persist-root-dir"}); err == nil {
+		t.Fatal("expected parseFlags to reject missing --persist-root-dir value")
+	}
 }
 
 // TestSplitNoProxyList verifies comma-separated NO_PROXY parsing.

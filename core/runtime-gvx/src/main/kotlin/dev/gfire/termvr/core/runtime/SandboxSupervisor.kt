@@ -318,7 +318,7 @@ class SandboxSupervisor(
             ensureBridgesRunning()
             proxyBridge.updatePolicy(profile.network.outboundProxy, profile.network.isolateLanEgress)
             commandBuilder.ensureHostDirectories(profile, clearScratchTmp = sessions.isEmpty())
-            if (profile.muxMode == MuxMode.STDIO_MUX) {
+            if (profile.muxMode == MuxMode.STDIO_MUX || profile.persistentRootfs) {
                 agentExtractor.ensureExtracted(guestArch)
             }
 

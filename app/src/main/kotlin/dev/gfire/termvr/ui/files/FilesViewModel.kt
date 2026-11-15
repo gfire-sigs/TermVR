@@ -117,6 +117,16 @@ class FilesViewModel(
         }
         for (profile in profiles) {
             val isRunning = (runStates[profile.id] ?: SandboxRunState.STOPPED) != SandboxRunState.STOPPED
+            if (profile.persistentRootfs) {
+                attachmentsByVol.getOrPut(profile.rootfsVolumeName) { mutableListOf() }.add(
+                    VolumeMountAttachment(
+                        profileId = profile.id,
+                        profileDisplayName = profile.displayName,
+                        guestMountPath = "/",
+                        isRunning = isRunning,
+                    ),
+                )
+            }
             for (mount in profile.volumes) {
                 if (mount.kind == VolumeKind.NAMED_EXT4LITE) {
                     attachmentsByVol.getOrPut(mount.sourceName) { mutableListOf() }.add(
@@ -368,7 +378,8 @@ class FilesViewModel(
     fun browseVolume(volumeName: String) {
         val matchingProfileId = uiState.value.profiles
             .firstOrNull { profile ->
-                profile.volumes.any { it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == volumeName }
+                (profile.persistentRootfs && profile.rootfsVolumeName == volumeName) ||
+                    profile.volumes.any { it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == volumeName }
             }?.id
             ?: localState.value.selectedProfileId
         localState.value = localState.value.copy(
@@ -670,10 +681,14 @@ class FilesViewModel(
     ): T {
         val liveMux = runtimeGateway.getMuxClient(profile.id)
         if (liveMux != null) {
-            val mountPoint = profile.volumes
-                .firstOrNull { it.sourceName == volumeName && it.kind == VolumeKind.NAMED_EXT4LITE }
-                ?.guestMountPath
-                ?: "/data"
+            val mountPoint = if (profile.persistentRootfs && profile.rootfsVolumeName == volumeName) {
+                "/"
+            } else {
+                profile.volumes
+                    .firstOrNull { it.sourceName == volumeName && it.kind == VolumeKind.NAMED_EXT4LITE }
+                    ?.guestMountPath
+                    ?: "/data"
+            }
             return block(liveMux, mountPoint)
         }
         return runtimeGateway.withVolumeClient(profile, volumeName, readOnly, block)

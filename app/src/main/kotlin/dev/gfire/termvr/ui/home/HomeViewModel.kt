@@ -278,6 +278,7 @@ class HomeViewModel(
         memoryMiB: Int = SandboxProfile.UNLIMITED_MEMORY_MIB,
         cpuCores: Double = SandboxProfile.UNLIMITED_CPU_CORES,
         muxMode: MuxMode = MuxMode.STDIO_MUX,
+        persistentRootfs: Boolean = false,
     ) {
         scope.launch {
             errorMessage.value = null
@@ -313,6 +314,7 @@ class HomeViewModel(
                             readOnly = false,
                         ),
                     ),
+                    persistentRootfs = persistentRootfs,
                 )
                 profileRepository.upsertProfile(profile)
             }.onFailure { err ->
@@ -389,9 +391,15 @@ class HomeViewModel(
         scope.launch {
             markBusy(profileId)
             runCatching {
+                val existingProfile = profileRepository.getProfile(profileId)
                 runtimeGateway.stopSandbox(profileId)
                 sessionCoordinator.closeProfileTabs(profileId)
                 profileRepository.deleteProfile(profileId)
+                if (existingProfile?.persistentRootfs == true) {
+                    val rootVol = existingProfile.rootfsVolumeName
+                    runCatching { runtimeGateway.removeVolume(rootVol, force = false) }
+                    availableVolumes.value = availableVolumes.value.filterNot { it == rootVol }
+                }
             }.onFailure { err ->
                 errorMessage.value = err.message ?: "Failed to delete container"
             }

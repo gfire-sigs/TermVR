@@ -27,6 +27,7 @@ data class SandboxProfile(
     val guestClipboardReadPolicy: ClipboardReadPolicy = ClipboardReadPolicy.DISABLED,
     val autoCheckpointOnLowMemory: Boolean = true,
     val makeRootRshared: Boolean = false,
+    val persistentRootfs: Boolean = false,
 ) {
     init {
         require(schemaVersion == CURRENT_SCHEMA_VERSION) {
@@ -73,8 +74,12 @@ data class SandboxProfile(
     val hasCpuLimit: Boolean
         get() = cpuCores > 0.0
 
+    val rootfsVolumeName: String
+        get() = "$ROOTFS_VOLUME_PREFIX$id"
+
     companion object {
         const val CURRENT_SCHEMA_VERSION: Int = 1
+        const val ROOTFS_VOLUME_PREFIX: String = "rootfs-"
         const val UNLIMITED_MEMORY_MIB: Int = 0
         const val UNLIMITED_CPU_CORES: Double = 0.0
         const val MIN_MEMORY_MIB: Int = 256
@@ -477,6 +482,7 @@ data class DistributionCatalogEntry(
     fun toSandboxProfile(
         profileId: String = distroSlug,
         profileDisplayName: String = displayName,
+        persistentRootfs: Boolean = false,
     ): SandboxProfile = SandboxProfile(
         id = profileId,
         displayName = profileDisplayName,
@@ -492,6 +498,7 @@ data class DistributionCatalogEntry(
                 readOnly = false,
             ),
         ),
+        persistentRootfs = persistentRootfs,
     )
 
     companion object {

@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -193,8 +194,8 @@ fun HomeScreen(
     if (showCreateDialog) {
         CreateContainerDialog(
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, image, memMiB, cpu, muxMode ->
-                viewModel.createProfile(name, image, memMiB, cpu, muxMode)
+            onCreate = { name, image, memMiB, cpu, muxMode, persistentRootfs ->
+                viewModel.createProfile(name, image, memMiB, cpu, muxMode, persistentRootfs)
                 showCreateDialog = false
             },
         )
@@ -387,11 +388,19 @@ private fun ContainerCard(
                 )
             }
 
-            if (namedVolumes.isNotEmpty() || (runState == SandboxRunState.RUNNING && telemetry != null)) {
+            if (profile.persistentRootfs || namedVolumes.isNotEmpty() || (runState == SandboxRunState.RUNNING && telemetry != null)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    if (profile.persistentRootfs) {
+                        TermVrBadge(
+                            text = "Persistent",
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                        )
+                    }
                     if (runState == SandboxRunState.RUNNING && telemetry != null) {
                         val metricsText = buildString {
                             append("CPU ${telemetry.cpuPercent.roundToInt()}% · ${telemetry.pssMiB} MB")
@@ -490,7 +499,7 @@ private fun ContainerCard(
 @Composable
 private fun CreateContainerDialog(
     onDismiss: () -> Unit,
-    onCreate: (String, String, Int, Double, MuxMode) -> Unit,
+    onCreate: (String, String, Int, Double, MuxMode, Boolean) -> Unit,
 ) {
     var name by remember { mutableStateOf("Dev Shell") }
     var imageRef by remember { mutableStateOf(HomeViewModel.DEFAULT_DEBIAN_IMAGE_REF) }
@@ -498,6 +507,7 @@ private fun CreateContainerDialog(
     var memoryText by remember { mutableStateOf("") }
     var cpuText by remember { mutableStateOf("") }
     var muxMode by remember { mutableStateOf(MuxMode.STDIO_MUX) }
+    var persistentRootfs by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -536,6 +546,28 @@ private fun CreateContainerDialog(
                         selected = muxMode == MuxMode.RAW_PTY,
                         onClick = { muxMode = MuxMode.RAW_PTY },
                     )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { persistentRootfs = !persistentRootfs },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = persistentRootfs,
+                        onCheckedChange = { persistentRootfs = it },
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Persistent root (ext4lite)",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = "Keep installed packages and system files across restarts",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Row(
                     modifier = Modifier
@@ -592,7 +624,7 @@ private fun CreateContainerDialog(
                 } else {
                     SandboxProfile.UNLIMITED_CPU_CORES
                 }
-                onCreate(name, imageRef, mem, cpu, muxMode)
+                onCreate(name, imageRef, mem, cpu, muxMode, persistentRootfs)
             }) {
                 Text("Create")
             }

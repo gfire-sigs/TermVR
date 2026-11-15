@@ -620,6 +620,66 @@ class AppViewModelsTest {
         vmScope.cancel()
     }
 
+    @Test
+    fun persistentRootfsToggleCreatesPersistedProfileCleansUpRootfsVolumeAndListsInFiles() = runTest(testDispatcher) {
+        val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val homeVm = HomeViewModel(profileRepo, catalogRepo, gateway, coordinator, scope = vmScope)
+        val catalogVm = CatalogViewModel(
+            catalogRepository = catalogRepo,
+            profileRepository = profileRepo,
+            runtimeGateway = gateway,
+            sessionCoordinator = coordinator,
+            scope = vmScope,
+            probeIntervalMs = null,
+        )
+        val filesVm = FilesViewModel(profileRepo, gateway, scope = vmScope, ioDispatcher = testDispatcher)
+        advanceUntilIdle()
+
+        // HomeViewModel: create with persistentRootfs = true
+        homeVm.createProfile(
+            displayName = "Persist Home",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            persistentRootfs = true,
+        )
+        advanceUntilIdle()
+        val homeProfile = profileRepo.observeProfiles().first().first { it.displayName == "Persist Home" }
+        assertTrue(homeProfile.persistentRootfs)
+
+        // Simulate ext4lite volume created on boot
+        gateway.createVolume(homeProfile.rootfsVolumeName)
+        filesVm.selectRootTab(FileRootTab.VOLUME)
+        filesVm.refreshVolumeList()
+        advanceUntilIdle()
+        val listedRootVol = filesVm.uiState.value.volumes.first { it.name == homeProfile.rootfsVolumeName }
+        assertTrue(listedRootVol.mounts.any { it.profileId == homeProfile.id && it.guestMountPath == "/" })
+
+        // Deleting profile cleans up its rootfs-<id> volume
+        homeVm.deleteProfile(homeProfile.id)
+        advanceUntilIdle()
+        assertFalse(gateway.namedVolumes.any { it.name == homeProfile.rootfsVolumeName })
+
+        // CatalogViewModel: toggle persistence on a distro entry before launch
+        val alpine = catalogVm.uiState.value.distributions.first { it.distroSlug == "alpine" }
+        catalogVm.toggleDistributionPersistentRootfs(alpine.id)
+        advanceUntilIdle()
+        assertTrue(alpine.id in catalogVm.uiState.value.persistentDistroIds)
+        catalogVm.createAndLaunchDistribution(alpine, pullFirst = false, onOpenTerminal = {})
+        advanceUntilIdle()
+
+        val catalogProfile = profileRepo.observeProfiles().first().first { it.id == alpine.id }
+        assertTrue(catalogProfile.persistentRootfs)
+        assertEquals(SandboxRunState.RUNNING, gateway.runStates.value[catalogProfile.id])
+
+        vmScope.cancel()
+    }
+
     private fun createFixtures(scope: CoroutineScope): Triple<ProfileRepository, CatalogRepository, FakeGateway> {
         val secretStore = InMemorySecretStore()
         val dataStore = InMemoryDataStore()

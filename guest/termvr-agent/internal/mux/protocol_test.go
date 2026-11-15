@@ -192,7 +192,7 @@ func TestAll16PayloadCodecs(t *testing.T) {
 		Spec: mux.OpenPTYSpec{
 			Argv: []string{"/bin/sh", "-c", "echo hi"},
 			Cwd:  "/workspace",
-			Env:  map[string]string{"TERM": "xterm-ghostty", "COLORTERM": "truecolor"},
+			Env:  map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
 		},
 	})
 	if err != nil {
@@ -684,8 +684,18 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 			envMap[k] = v
 		}
 	}
-	if envMap["TERM"] != "xterm-ghostty" || envMap["COLORTERM"] != "truecolor" {
-		t.Fatalf("missing default TERM/COLORTERM: %v", envMap)
+	if envMap["TERM"] != "xterm-256color" || envMap["COLORTERM"] != "truecolor" || envMap["TERM_PROGRAM"] != "TermVR" {
+		t.Fatalf("missing default TERM/COLORTERM/TERM_PROGRAM: %v", envMap)
+	}
+	overrideEnv := mux.BuildGuestEnv([]string{"TERM=xterm"}, map[string]string{"TERM": "vt100", "TERM_PROGRAM": "Custom"}, "/run/termvr-agent/bin")
+	overrideMap := make(map[string]string, len(overrideEnv))
+	for _, kv := range overrideEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			overrideMap[k] = v
+		}
+	}
+	if overrideMap["TERM"] != "vt100" || overrideMap["TERM_PROGRAM"] != "Custom" {
+		t.Fatalf("expected overrides to replace defaults, got: %v", overrideMap)
 	}
 	if !strings.HasPrefix(envMap["PATH"], "/run/termvr-agent/bin:") {
 		t.Fatalf("expected /run/termvr-agent/bin prepended to PATH, got %q", envMap["PATH"])

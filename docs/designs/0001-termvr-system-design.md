@@ -487,6 +487,8 @@ data class SandboxProfile(
     val trustHostCaCerts: Boolean = false,
     val guestClipboardReadPolicy: ClipboardReadPolicy = ClipboardReadPolicy.DISABLED,
     val autoCheckpointOnLowMemory: Boolean = true,   // Defaults to false on docker/k3s recipes
+    val makeRootRshared: Boolean = false,
+    val persistentRootfs: Boolean = false,           // Pivots / onto named volume rootfs-<id>
 )
 
 @Serializable
@@ -850,8 +852,9 @@ Upstream `rungv run` checks for `--` before reading positional image arguments, 
   - Passes `--host-dns "127.0.0.1:$dnsPort"`, `-control-socket controlSock.absolutePath`, and `--host-ca-certs` when `profile.trustHostCaCerts` is `true`.
   - Passes `-net=nat` (plus `-isolate-lan` if `isolateLanEgress`), `-net=wg -wg-conf <path>`, or `-net=none`.
   - Formats each enabled `PortForwardRule` as `-p`: single port `<listenHost>:<hostPort>:<guestPort>/<proto>` (`hostPort = 0` for ephemeral), ephemeral range `<listenHost>::<guestStart>-<guestEnd>/<proto>`, fixed range `<listenHost>:<hStart>-<hEnd>:<gStart>-<gEnd>/<proto>`, or `unix:<hostSock>:<guestSock>`. Parses `rungv: publishing` lines on stderr to record assigned ephemeral host ports.
-  - Emits `-v <filesDir>/workspaces/<id>:/workspace:rw`, `-v <filesDir>/agent/<guestArch>:/run/termvr-agent:ro` (in `STDIO_MUX` mode), user `VolumeMountSpec` entries, `--tmpfs` paths, and sorted `-e <key>=<value>` flags. In `STDIO_MUX` mode, it injects credential-free `HTTP_PROXY=http://127.0.0.1:1080`, `HTTPS_PROXY=http://127.0.0.1:1080`, `ALL_PROXY=socks5h://127.0.0.1:1080`, `NO_PROXY`, and lowercase aliases.
-  - In `STDIO_MUX` mode, appends `--entrypoint /run/termvr-agent/termvr-agent`, `-image profile.imageRef`, `--`, `--mux-stdio`, `--proxy-listen 127.0.0.1:1080`, optional `--transparent-proxy-port 1081`, optional `--make-root-rshared`, and optional `-- <initDaemonArgv...>`.
+  - Emits `-v <filesDir>/workspaces/<id>:/workspace:rw`, `-v <filesDir>/agent/<guestArch>:/run/termvr-agent:ro` (in `STDIO_MUX` mode or when `persistentRootfs` is `true`), optional `-v rootfs-<id>:/.termvr-rootfs:rw` when `persistentRootfs` is `true`, user `VolumeMountSpec` entries, `--tmpfs` paths, and sorted `-e <key>=<value>` flags. Defaults `TERM=xterm-256color`, `COLORTERM=truecolor`, and `TERM_PROGRAM=TermVR` when absent from `profile.envVars`. In `STDIO_MUX` mode, it injects credential-free `HTTP_PROXY=http://127.0.0.1:1080`, `HTTPS_PROXY=http://127.0.0.1:1080`, `ALL_PROXY=socks5h://127.0.0.1:1080`, `NO_PROXY`, and lowercase aliases.
+  - In `STDIO_MUX` mode, appends `--entrypoint /run/termvr-agent/termvr-agent`, `-image profile.imageRef`, `--`, `--mux-stdio`, `--proxy-listen 127.0.0.1:1080`, optional `--transparent-proxy-port 1081`, optional `--persist-root-dir /.termvr-rootfs`, optional `--make-root-rshared`, and optional `-- <initDaemonArgv...>`.
+  - In `RAW_PTY` mode with `persistentRootfs = true`, appends `--entrypoint /run/termvr-agent/termvr-agent`, `-image profile.imageRef`, `--`, `--persist-root-dir /.termvr-rootfs`, `--exec`, and optional `-- <rawCommand...>`.
 - **`buildRestoreArgs(profile, slotDir, dnsPort, controlSock, resolvedPorts)`**:
   - Passes `restore`, `-checkpoint-dir slotDir.absolutePath`, `-control-socket controlSock.absolutePath`, `--host-dns "127.0.0.1:$dnsPort"`, and identical ordered `-v` and `--tmpfs` flags.
   - Appends matching `-net` / `-isolate-lan` / `-wg-conf`, optional `-m` and clamped `--cpus` when positive, matching `--privileged` / `--net-raw` flags, optional `--host-ca-certs`, optional `-t`, and resolved `-p` rules.
@@ -871,7 +874,7 @@ Static boot-time DNS IPs and static proxy environment variables break across Wi-
 
 ### 15.4 `termvr-agent` Binary Wire Protocol, Local Proxy, and Gated Host RPCs
 
-`guest/termvr-agent` compiles to a zero-dependency static Go binary (`<= 2.2 MiB`) mounted read-only at `/run/termvr-agent/termvr-agent`. At startup, `termvr-agent` reaps `SIGCHLD` zombies and remounts `/` shared (`MS_REC | MS_SHARED`) when `--make-root-rshared` is set. It also prepends `/run/termvr-agent/bin` (`0755` wrappers `termvr-open`, `termvr-copy`, `termvr-paste`, `termvr-share`) to `PATH`.
+`guest/termvr-agent` compiles to a zero-dependency static Go binary (`<= 2.2 MiB`) mounted read-only at `/run/termvr-agent/termvr-agent`. When `--persist-root-dir /.termvr-rootfs` is set, `termvr-agent` copies the container rootfs into `/.termvr-rootfs/root` on the first boot and writes `/.termvr-rootfs/.termvr-rootfs-ready`. On every boot, `termvr-agent` refreshes `/etc/resolv.conf`, `/etc/hosts`, and `/etc/hostname`, bind-mounts runtime mounts recursively (`MS_BIND | MS_REC`), calls `pivot_root(2)`, and detaches `/.oldroot`. Afterward, `termvr-agent` reaps `SIGCHLD` zombies and remounts `/` shared (`MS_REC | MS_SHARED`) when `--make-root-rshared` is set. It also prepends `/run/termvr-agent/bin` (`0755` wrappers `termvr-open`, `termvr-copy`, `termvr-paste`, `termvr-share`) to `PATH`.
 
 For outbound proxying, `termvr-agent` binds `127.0.0.1:1080` and peeks each stream's first byte (`0x05` `SOCKS5/5h`, `0x04` `SOCKS4/4a`, ASCII `HTTP`/`CONNECT`). Under `DIRECT` mode with `-net != none`, `termvr-agent` dials targets inside the guest so live proxy switches never alter guest `env` variables. When `--transparent-proxy-port 1081` is set, pure-Go `IPT_SO_SET_REPLACE` rules redirect outbound TCP (excluding `127.0.0.0/8`, `10.0.2.0/24`, and `noProxyEntries` CIDRs) to `127.0.0.1:1081`. `termvr-agent` reads original targets via `getsockopt(SOL_IP, SO_ORIGINAL_DST)` and tunnels streams over `FD 0`/`FD 1` without routing loops:
 
@@ -890,7 +893,7 @@ For outbound proxying, `termvr-agent` binds `127.0.0.1:1080` and peeks each stre
 | Type | Name | Direction | Stream ID | Payload Contract |
 | :--- | :--- | :--- | :---: | :--- |
 | `0x01` | `MUX_HELLO` | Both | `0` | JSON `{ "protocol": 1, "agentVersion": "0.1.0", "initDaemon": true }` |
-| `0x02` | `OPEN_PTY` | Host to Guest | `>= 1` | `uint16 rows, cols, xpixel, ypixel` + JSON `{ "argv": [], "cwd": "/workspace", "env": {"TERM":"xterm-ghostty","COLORTERM":"truecolor"} }` |
+| `0x02` | `OPEN_PTY` | Host to Guest | `>= 1` | `uint16 rows, cols, xpixel, ypixel` + JSON `{ "argv": [], "cwd": "/workspace", "env": {"TERM":"xterm-256color","COLORTERM":"truecolor","TERM_PROGRAM":"TermVR"} }` |
 | `0x03` | `OPEN_PTY_ACK` | Guest to Host | `>= 1` | `uint8 status` (`0` = ok) + UTF-8 error text if non-zero |
 | `0x04` | `PTY_DATA` | Both | `0..N` | Raw stream bytes (`PTY` terminal I/O or tunnelled `PROXY_CONNECT` TCP payload) |
 | `0x05` | `PTY_RESIZE` | Host to Guest | `>= 1` | `uint16 rows, cols, xpixel, ypixel` (applies `TIOCSWINSZ` + `SIGWINCH`) |
@@ -932,7 +935,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 ### 16.1 `HomeScreen` and Android Host Readiness Diagnostics
 
-`HomeScreen` surfaces active/frozen sandbox cards (`Open`, `Freeze`/`Resume`, `Stop`), one-tap Quick-Launch tiles, and a collapsible **Host Readiness Card**:
+`HomeScreen` surfaces active/frozen sandbox cards (`Open`, `Freeze`/`Resume`, `Stop`, `Persistent` badge when `persistentRootfs` is enabled), a container creation dialog with a `Persistent root (ext4lite)` toggle, one-tap Quick-Launch tiles, and a collapsible **Host Readiness Card**:
 
 - **Phantom-process and exit-reason detector**: Queries `ActivityManager.getHistoricalProcessExitReasons(packageName, 0, 16)` on launch. If prior child processes exited with `REASON_EXCESSIVE_RESOURCE_USAGE` or `SIGKILL (9)` while `TermVR` was backgrounded, `HomeScreen` displays a targeted remediation guide:
   - **Android 14+ (`API 34+`)**: Deep-links `Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS` instructing the user to enable `"Disable child process restrictions"`.
@@ -943,7 +946,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 `CatalogScreen` organizes three tabs (`Distributions`, `Recipes`, `Local Images`) filtered strictly to the device's native Linux architecture (`arm64` on `arm64-v8a`; `amd64` on `x86_64`):
 
-- **Curated distributions**: `Debian 13 (Trixie)` (`debian:trixie-slim`, default), `Alpine 3.21`, `Ubuntu 24.04 LTS`, and `Fedora 42`, each pre-configured with `/workspace` mount and `STDIO_MUX`.
+- **Curated distributions**: `Debian 13 (Trixie)` (`debian:trixie-slim`, default), `Alpine 3.21`, `Ubuntu 24.04 LTS`, and `Fedora 42`, each pre-configured with `/workspace` mount, `STDIO_MUX`, and an optional `Persistent root (ext4lite)` toggle.
 - **Registry auth & `rungv` CLI contracts**:
   - `CatalogRepository` authenticates against OCI registries using Kotlin `HttpsURLConnection` (`TLS 1.3`, routed through `LoopbackProxyBridge` when active) and writes `$HOME/.docker/config.json` (`0600`) directly because `rungv login` lacks `--host-dns`.
   - `rungv pull` and `rungv image save` always receive `--host-dns 127.0.0.1:<dnsPort>`. `Export Image (.tar)` is enabled only while online for registry-pulled images (upstream `rungv image save` re-fetches manifests and rejects local `image load` tar imports).
@@ -980,7 +983,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 `FilesScreen` provides a two-pane file manager (single-pane with root switcher on compact phones; side-by-side split on foldables and tablets):
 
 - **`/workspace` (`hostfs` root)**: Reads, renames, uploads, downloads, and archives files directly inside `<filesDir>/workspaces/<profileId>/` while hiding internal `.gvx_meta` extended-attribute sidecars.
-- **Named `ext4lite` volumes**: Lists all `<filesDir>/gvx-store/gvx/volumes/*.ext4` images with size and owning profile. When the owning sandbox is `RUNNING`, `FilesScreen` browses, uploads, and downloads files live through stream-0 `VOLUME_FS_OP` chunks; when `STOPPED`, `FilesScreen` runs a short-lived read/write helper container against that volume.
+- **Named `ext4lite` volumes**: Lists all `<filesDir>/gvx-store/gvx/volumes/*.ext4` images with size and owning profile (including `rootfs-<id>` mounted at `/` when `persistentRootfs` is enabled). Deleting a persistent profile also removes its `rootfs-<id>` volume. When the owning sandbox is `RUNNING`, `FilesScreen` browses, uploads, and downloads files live through stream-0 `VOLUME_FS_OP` chunks; when `STOPPED`, `FilesScreen` runs a short-lived read/write helper container against that volume.
 
 ### 17.2 External Android Editor Bridge (`TermVrDocumentsProvider`)
 

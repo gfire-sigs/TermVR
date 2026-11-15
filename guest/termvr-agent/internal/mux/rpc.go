@@ -254,6 +254,9 @@ func isWithinRoot(root, candidate string) bool {
 	if candidate == root {
 		return true
 	}
+	if root == string(filepath.Separator) {
+		return strings.HasPrefix(candidate, root)
+	}
 	return strings.HasPrefix(candidate, root+string(filepath.Separator))
 }
 

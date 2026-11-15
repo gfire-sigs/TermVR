@@ -377,4 +377,107 @@ class GvxCommandBuilderTest {
         )
         assertFalse(amd64Args.any { it.startsWith("DOCKER_DEFAULT_PLATFORM=") })
     }
+
+    @Test
+    fun `appendRunEnvFlags injects TERM xterm-256color COLORTERM and TERM_PROGRAM unless overridden`() {
+        val builder = newBuilder()
+        val stdioProfile = SandboxProfile(
+            id = "term-stdio",
+            displayName = "Term Stdio",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            muxMode = MuxMode.STDIO_MUX,
+        )
+        val stdioArgs = builder.buildRunArgs(stdioProfile, 5353, builder.controlSocketFile(stdioProfile.id))
+        assertTrue(stdioArgs.contains("TERM=xterm-256color"))
+        assertTrue(stdioArgs.contains("COLORTERM=truecolor"))
+        assertTrue(stdioArgs.contains("TERM_PROGRAM=TermVR"))
+
+        val rawProfile = stdioProfile.copy(
+            id = "term-raw",
+            muxMode = MuxMode.RAW_PTY,
+        )
+        val rawArgs = builder.buildRunArgs(rawProfile, 5353, builder.controlSocketFile(rawProfile.id))
+        assertTrue(rawArgs.contains("TERM=xterm-256color"))
+        assertTrue(rawArgs.contains("COLORTERM=truecolor"))
+        assertTrue(rawArgs.contains("TERM_PROGRAM=TermVR"))
+
+        val overridden = stdioProfile.copy(
+            envVars = mapOf(
+                "TERM" to "vt100",
+                "COLORTERM" to "24bit",
+                "TERM_PROGRAM" to "CustomTerm",
+            ),
+        )
+        val overrideArgs = builder.buildRunArgs(overridden, 5353, builder.controlSocketFile(overridden.id))
+        assertTrue(overrideArgs.contains("TERM=vt100"))
+        assertFalse(overrideArgs.contains("TERM=xterm-256color"))
+        assertTrue(overrideArgs.contains("COLORTERM=24bit"))
+        assertTrue(overrideArgs.contains("TERM_PROGRAM=CustomTerm"))
+    }
+
+    @Test
+    fun `persistentRootfs mounts rootfs ext4lite volume in run and restore for STDIO_MUX and RAW_PTY`() {
+        val builder = newBuilder()
+        val agentDir = File(File(tempDir, "files"), "agent/arm64").apply { mkdirs() }
+        File(agentDir, "termvr-agent").apply { writeText("agent") }
+
+        val stdioProfile = SandboxProfile(
+            id = "deb-persist",
+            displayName = "Debian Persist",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            muxMode = MuxMode.STDIO_MUX,
+            persistentRootfs = true,
+        )
+        val stdioRun = builder.buildRunArgs(stdioProfile, 5353, builder.controlSocketFile(stdioProfile.id))
+        val expectedRootMount = "rootfs-deb-persist:${GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR}:rw"
+        val expectedAgentMount = "${agentDir.absolutePath}:/run/termvr-agent:ro"
+        assertTrue(stdioRun.contains(expectedRootMount))
+        assertTrue(stdioRun.contains(expectedAgentMount))
+        val persistFlagIdx = stdioRun.indexOf("--persist-root-dir")
+        assertTrue(persistFlagIdx >= 0)
+        assertEquals(GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR, stdioRun[persistFlagIdx + 1])
+
+        val stdioRestore = builder.buildRestoreArgs(
+            profile = stdioProfile,
+            slotDir = File(tempDir, "cp/deb-persist"),
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(stdioProfile.id),
+        )
+        assertTrue(stdioRestore.contains(expectedRootMount))
+        assertTrue(stdioRestore.contains(expectedAgentMount))
+
+        val rawProfile = SandboxProfile(
+            id = "raw-persist",
+            displayName = "Raw Persist",
+            imageRef = "docker.io/library/alpine:3.21",
+            muxMode = MuxMode.RAW_PTY,
+            defaultShellArgv = listOf("/bin/sh", "-l"),
+            persistentRootfs = true,
+        )
+        val rawRun = builder.buildRunArgs(rawProfile, 5353, builder.controlSocketFile(rawProfile.id))
+        val expectedRawRootMount = "rootfs-raw-persist:${GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR}:rw"
+        assertTrue(rawRun.contains(expectedRawRootMount))
+        assertTrue(rawRun.contains(expectedAgentMount))
+        val entryIdx = rawRun.indexOf("--entrypoint")
+        assertTrue(entryIdx >= 0)
+        assertEquals(GvxCommandBuilder.AGENT_ENTRYPOINT_PATH, rawRun[entryIdx + 1])
+        val ddIdx = rawRun.indexOf("--")
+        assertTrue(ddIdx >= 0)
+        val containerCmd = rawRun.subList(ddIdx + 1, rawRun.size)
+        assertTrue(containerCmd.contains("--persist-root-dir"))
+        assertTrue(containerCmd.contains(GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR))
+        assertTrue(containerCmd.contains("--exec"))
+        val execDd = containerCmd.lastIndexOf("--")
+        assertTrue(execDd > containerCmd.indexOf("--exec"))
+        assertEquals(listOf("/bin/sh", "-l"), containerCmd.subList(execDd + 1, containerCmd.size))
+
+        val rawRestore = builder.buildRestoreArgs(
+            profile = rawProfile,
+            slotDir = File(tempDir, "cp/raw-persist"),
+            dnsPort = 5353,
+            controlSock = builder.controlSocketFile(rawProfile.id),
+        )
+        assertTrue(rawRestore.contains(expectedRawRootMount))
+        assertTrue(rawRestore.contains(expectedAgentMount))
+    }
 }
