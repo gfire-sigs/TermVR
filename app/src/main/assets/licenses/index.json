@@ -1,0 +1,66 @@
+[
+  {
+    "id": "termvr-mono-nf",
+    "name": "TermVR Mono NF",
+    "version": "v1.0.1",
+    "spdxId": "OFL-1.1",
+    "repositoryUrl": "https://github.com/gfire-sigs/TermVR-Fonts",
+    "assetFile": "termvr-mono-nf.txt"
+  },
+  {
+    "id": "gvx",
+    "name": "gvx User-Space Linux Sandbox",
+    "version": "v0.15.10002026110900",
+    "spdxId": "Apache-2.0",
+    "repositoryUrl": "https://github.com/gfire-sigs/gvx",
+    "assetFile": "gvx.txt"
+  },
+  {
+    "id": "ghostty-vt",
+    "name": "Ghostty libghostty-vt",
+    "version": "vt-1.0.1",
+    "spdxId": "MIT",
+    "repositoryUrl": "https://github.com/ghostty-org/ghostty",
+    "assetFile": "ghostty-vt.txt"
+  },
+  {
+    "id": "freetype",
+    "name": "FreeType",
+    "version": "2.13.3",
+    "spdxId": "FTL",
+    "repositoryUrl": "https://github.com/freetype/freetype",
+    "assetFile": "freetype.txt"
+  },
+  {
+    "id": "harfbuzz",
+    "name": "HarfBuzz",
+    "version": "15.1.0",
+    "spdxId": "MIT",
+    "repositoryUrl": "https://github.com/harfbuzz/harfbuzz",
+    "assetFile": "harfbuzz.txt"
+  },
+  {
+    "id": "go-stdlib",
+    "name": "Go Standard Library & Runtime",
+    "version": "1.27.4",
+    "spdxId": "BSD-3-Clause",
+    "repositoryUrl": "https://go.googlesource.com/go",
+    "assetFile": "go-stdlib.txt"
+  },
+  {
+    "id": "androidx-compose",
+    "name": "AndroidX & Jetpack Compose",
+    "version": "2025.03.00",
+    "spdxId": "Apache-2.0",
+    "repositoryUrl": "https://android.googlesource.com/platform/frameworks/support",
+    "assetFile": "androidx-compose.txt"
+  },
+  {
+    "id": "kotlin-kotlinx",
+    "name": "Kotlin Standard Library, Coroutines & Serialization",
+    "version": "2.1.20",
+    "spdxId": "Apache-2.0",
+    "repositoryUrl": "https://github.com/JetBrains/kotlin",
+    "assetFile": "kotlin-kotlinx.txt"
+  }
+]
