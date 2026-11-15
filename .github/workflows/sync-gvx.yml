@@ -1,0 +1,101 @@
+name: Sync gvx Version
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      app_revision:
+        description: 'Optional TermVR app revision (0..9)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-gvx
+  cancel-in-progress: false
+
+jobs:
+  sync-gvx:
+    name: Check and Sync Upstream gvx Tag
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install audit tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git jq python3 ripgrep
+
+      - name: Fetch latest upstream gvx tag and sync manifests
+        env:
+          INPUT_APP_REV: ${{ inputs.app_revision }}
+        run: |
+          set -euo pipefail
+          SYNC_ARGS=(--fetch-latest --repo https://github.com/gfire-sigs/gvx.git)
+          if [ -n "${INPUT_APP_REV}" ]; then
+            SYNC_ARGS+=(--app-rev "${INPUT_APP_REV}")
+          fi
+          ./scripts/sync-gvx-version.sh "${SYNC_ARGS[@]}"
+          ./scripts/sync-gvx-version.sh --check
+
+      - name: Run AGENTS.md Section 5 verification gates
+        run: |
+          set -euo pipefail
+          if rg -n $'\u2014| \u2013 |\u2192' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/; then
+            echo "Found forbidden em-dash, spaced en-dash, or prose arrow" >&2
+            exit 1
+          fi
+          if rg -ni '\b(seamless|seamlessly|robust|battle-tested|cutting-edge|next-generation|state-of-the-art|powerhouse|unleash|empower|supercharge|elevate|delve|tapestry|testament|holistic|synergy|paradigm|under the hood|heavy lifting|effortlessly|meticulously|crucial|pivotal|paramount|game-changer|utilize|utilizes|utilizing|leverage|leverages|leveraging)\b' README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/; then
+            echo "Found forbidden AI-slop word" >&2
+            exit 1
+          fi
+          python3 -m json.tool scripts/source-lock.json >/dev/null
+          bash -n scripts/sync-gvx-version.sh
+
+      - name: Open or update pull request when gvx version changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Upstream gvx tag and manifests are already up to date."
+            exit 0
+          fi
+
+          GVX_TAG="$(jq -er '.sources.gvx.tag' scripts/source-lock.json)"
+          GVX_COMMIT="$(jq -er '.sources.gvx.commit' scripts/source-lock.json)"
+          VERSION_NAME="$(jq -er '.termvr.version_name' scripts/source-lock.json)"
+          VERSION_CODE="$(jq -er '.termvr.version_code' scripts/source-lock.json)"
+          BRANCH_NAME="chore/sync-gvx"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${BRANCH_NAME}"
+          git add scripts/source-lock.json gradle/libs.versions.toml fdroid/dev.gfire.termvr.yml fastlane/metadata/android/en-US/changelogs/
+          git commit -m "build(deps): sync gvx to ${GVX_TAG}"
+          git push --force-with-lease origin "${BRANCH_NAME}"
+
+          PR_TITLE="build(deps): sync gvx to ${GVX_TAG}"
+          PR_BODY="$(cat <<EOF
+          Synchronizes TermVR release metadata with upstream \`gvx\` tag \`${GVX_TAG}\` (\`${GVX_COMMIT}\`).
+
+          - \`versionName\`: \`${VERSION_NAME}\`
+          - \`versionCode\`: \`${VERSION_CODE}\`
+          - Verified with \`./scripts/sync-gvx-version.sh --check\` and \`AGENTS.md\` Section 5 gates.
+          EOF
+          )"
+
+          EXISTING_PR="$(gh pr list --head "${BRANCH_NAME}" --base main --state open --json number --jq '.[0].number // empty')"
+          if [ -n "${EXISTING_PR}" ]; then
+            gh pr edit "${EXISTING_PR}" --title "${PR_TITLE}" --body "${PR_BODY}"
+          else
+            gh pr create --base main --head "${BRANCH_NAME}" --title "${PR_TITLE}" --body "${PR_BODY}"
+          fi

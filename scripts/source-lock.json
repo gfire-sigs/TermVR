@@ -1,5 +1,10 @@
 {
   "schema_version": 1,
+  "termvr": {
+    "app_revision": 0,
+    "version_name": "0.15.10002026110900",
+    "version_code": 261109000
+  },
   "toolchains": {
     "jdk": "17",
     "android_compile_sdk": 36,

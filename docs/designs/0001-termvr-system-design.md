@@ -347,6 +347,7 @@ Explicit schema versions protect user profiles and persistent volumes across app
 
 - **Versioned persistence and wire framing**: Profile storage, multiplexer handshakes, and checkpoint manifests validate explicit version numbers before execution.
 - **Safe checkpoint fallback on upgrade**: When an updated `gvx` engine rejects an older checkpoint, `TermVR` marks that snapshot superseded and offers a clean cold boot. All `ext4lite` volumes and `/workspace` files remain intact.
+- **Upstream runtime version alignment**: Application release versions track the pinned `gvx` release tag with an optional app revision suffix and a monotonic Android version code.
 
 ---
 
@@ -1031,16 +1032,27 @@ Four packaging controls guarantee identical unsigned APK bytes across independen
 - **Signature-transfer verification (`apksigcopier`)**: `scripts/verify-reproducible-apk.sh` rebuilds the tag in a clean Debian container and transfers the v2/v3 signing block via `apksigcopier`. It asserts an exact `SHA-256` match and runs `diffoscope` on any mismatch.
 - **GitHub Actions `SLSA` attestation**: `.github/workflows/release-slsa.yml` generates `SLSA` v1.0 Build Level 2 provenance bundles via `actions/attest-build-provenance` alongside `SHA256SUMS` for both `TermVR-v<ver>-arm64-v8a.apk` and `TermVR-v<ver>-x86_64.apk`.
 
-### 18.4 Clean-Room Verification Procedure (Procedural Module)
+### 18.4 `gvx`-Aligned Versioning and Automated Sync (`scripts/sync-gvx-version.sh`)
+
+`TermVR` derives every Android release version directly from the pinned upstream `gvx` tag (`v<major>.<minor>.<patchStamp>`) and an integer `app_revision` (`0` through `9`).
+
+- **`versionName` mapping**: `versionName` equals `<major>.<minor>.<patchStamp>` when `app_revision` is `0`, or `<major>.<minor>.<patchStamp>.<app_revision>` for app-only fixes on the same `gvx` commit.
+- **`versionCode` (`YYMMDDGGR`) formula**: `sync-gvx-version.sh` parses the trailing `YYYYMMDDGG` timestamp from `patchStamp` to emit a 9-digit integer (`261109000` for `v0.15.10002026110900`, `app_revision = 0`).
+- **Standard SemVer fallback**: When a `gvx` tag lacks a `YYYYMMDDGG` suffix, `sync-gvx-version.sh` derives `YYMMDD` from the commit UTC date and `GG` from `patch % 100`.
+- **Single-command sync and verification**: `./scripts/sync-gvx-version.sh --check [--expect-tag v...]` validates parity across `scripts/source-lock.json`, `gradle/libs.versions.toml`, `app/build.gradle.kts`, `fdroid/dev.gfire.termvr.yml`, and Fastlane changelogs.
+- **Automated upstream tracking**: `--gvx-tag <tag> --gvx-commit <sha> [--app-rev 0..9]` and `--fetch-latest [--repo <url>]` update all version manifests atomically and seed missing Fastlane changelog stubs. `.github/workflows/sync-gvx.yml` runs `--fetch-latest` on schedule and opens a pull request when upstream `gvx` advances.
+
+### 18.5 Clean-Room Verification Procedure (Procedural Module)
 
 > [!IMPORTANT]
 > Run every verification step below from the repository root before tagging a release or updating `fdroid/dev.gfire.termvr.yml`.
 
-1. Verify `scripts/source-lock.json` syntax and confirm all six commit SHAs match `fdroid/dev.gfire.termvr.yml`.
-2. Run `scripts/provision-toolchains-and-vendor.sh` to populate verified Go, Zig, and upstream source caches.
-3. Run `scripts/build-native-deps.sh` with network disabled (`unshare -r -n`) for `arm64-v8a` and `x86_64`.
-4. Assemble the unsigned release APKs with `./gradlew :app:assembleRelease -PtermvrAbis=arm64-v8a`.
-5. Execute `scripts/verify-16kb-alignment.sh` against every `.so` inside the packaged APK.
-6. Execute `scripts/verify-reproducible-apk.sh` across two distinct build paths and confirm zero byte differences.
+1. Run `./scripts/sync-gvx-version.sh --check` to confirm `gvx` commit, tag, `versionName`, and `versionCode` parity across all manifests.
+2. Verify `scripts/source-lock.json` syntax and confirm all six commit SHAs match `fdroid/dev.gfire.termvr.yml`.
+3. Run `scripts/provision-toolchains-and-vendor.sh` to populate verified Go, Zig, and upstream source caches.
+4. Run `scripts/build-native-deps.sh` with network disabled (`unshare -r -n`) for `arm64-v8a` and `x86_64`.
+5. Assemble the unsigned release APKs with `./gradlew :app:assembleRelease -PtermvrAbis=arm64-v8a`.
+6. Execute `scripts/verify-16kb-alignment.sh` against every `.so` inside the packaged APK.
+7. Execute `scripts/verify-reproducible-apk.sh` across two distinct build paths and confirm zero byte differences.
 
 <!-- END DetailedRange -->

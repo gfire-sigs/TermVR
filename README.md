@@ -3,7 +3,7 @@
 `TermVR` (`Terminal Virtual Runtime`, mobile terminal app) is an open-source Linux container terminal for Android 12 and newer (`arm64-v8a` and `x86_64`). It runs unmodified OCI images without root access using the `gvx` user-space kernel, `libghostty-vt`, and an OpenGL ES 3.0 glyph renderer.
 
 > [!NOTE]
-> This repository currently holds the **Milestone 0 (`M0`)** multi-module skeleton, source lockfile, F-Droid build recipe, and `EGM` specification. Application and native runtime implementation begins in `Milestone 1`.
+> Current baseline **`0.15.10002026110900`** (`versionCode` `261109000`) aligns with upstream `gvx` `v0.15.10002026110900` and implements Milestones `M1` through `M5`.
 
 ---
 
@@ -51,6 +51,7 @@ Every directory maps to a single architectural boundary defined in [`AGENTS.md`]
 | [`core/runtime-gvx/`](core/runtime-gvx/) | `SandboxForegroundService`, `librungv.so` command builder, loopback DNS and `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` proxy bridges, and mux client. |
 | [`guest/termvr-agent/`](guest/termvr-agent/) | Pure-Go static Linux multiplexer (`CGO_ENABLED=0`) for multi-tab PTY streams, local/transparent proxy forwarding, and gated host RPCs. |
 | [`scripts/source-lock.json`](scripts/source-lock.json) | Pinned Git commit SHAs and SPDX licenses for `gvx`, `ghostty`, `freetype`, `harfbuzz`, and bundled fonts. |
+| [`scripts/sync-gvx-version.sh`](scripts/sync-gvx-version.sh) | Checks and syncs `gvx`-aligned `versionName`, `YYMMDDGGR` `versionCode`, lockfile, F-Droid metadata, and Fastlane changelogs. |
 | [`fdroid/`](fdroid/) & [`fastlane/`](fastlane/) | F-Droid reproducible build recipe (`dev.gfire.termvr.yml`) and store metadata. |
 | [`docs/designs/`](docs/designs/) | Elephant-Goldfish Model (`EGM`) system architecture and zero-decision implementation specifications. |
 
