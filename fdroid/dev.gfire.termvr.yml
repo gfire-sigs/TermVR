@@ -26,7 +26,7 @@ Builds:
       - ghostty@108cacb17ed8990840cd14abfce43d8ed8503ca1
       - freetype@42608f77f20749dd6ddc9e0536788eaad70ea4b5
       - harfbuzz@3df40d9b98d6b32f0e4288d4ecfbb158ddb3a372
-      - termvr_fonts@ac643073a080adc7b8bc2df9d859a19f8cbfc0cd
+      - termvr_fonts@e44630df622f2fcb50a066bf43ac00ae9c3b8ebd
     ndk: 28.0.13004108
     init:
       - ../scripts/provision-toolchains-and-vendor.sh --gvx $$gvx$$ --ghostty $$ghostty$$
