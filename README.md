@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="TermVR banner showing Debian 13 container terminal and 120 Hz OpenGL ES 3.0 preview" width="100%">
+  <img src="docs/assets/banner.svg" alt="TermVR banner showing Debian 13 container terminal and OpenGL ES 3.0 preview" width="100%">
 </p>
 
 <p align="center">
@@ -23,95 +23,86 @@
   <strong><a href="https://github.com/gfire-sigs/TermVR-Fonts">TermVR Mono NF</a></strong>
 </p>
 
-`TermVR` runs real Linux containers and development tools on unrooted Android phones, foldables, and tablets. It pairs a user-space Linux runtime with a 120 Hz GPU terminal and touch controls.
+`TermVR` runs standard `arm64` and `x86_64` OCI Linux containers on unrooted Android 12+ devices. The runtime executes Linux system calls inside the `gvx` user-space kernel (`systrap`). Terminal views render through `libghostty-vt` over OpenGL ES 3.0 with the bundled `TermVR Mono NF` font.
 
----
-
-## Gallery
-
-Each screen keeps container status, files, and network rules visible without nested menus. Tap any card below to inspect the interface layouts across phones and tablets.
+## Screenshots
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-terminal.svg" alt="GPU Terminal split panes with TermVR Mono NF Hangul, CJK, ligatures, and touch key bar" width="100%">
+      <img src="docs/assets/gallery-terminal.png" alt="TermVR terminal running fastfetch inside Debian 13 with touch key bar" width="100%">
       <br>
-      <strong>120 Hz GPU Terminal and TermVR Mono NF</strong><br>
-      <sub>Split panes, Hangul and CJK glyphs, ligatures, box-drawing tables, and a 2-row key bar.</sub>
+      <sub>Debian 13 shell running <code>fastfetch</code> with touch modifier keys.</sub>
     </td>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-containers.svg" alt="Containers dashboard running Debian 13 and alpine-svc concurrently with Unlimited defaults" width="100%">
+      <img src="docs/assets/gallery-containers.png" alt="Containers tab showing Debian quick launch and running Dev Shell container with Persistent badge" width="100%">
       <br>
-      <strong>Concurrent Multi-Container Control</strong><br>
-      <sub>Run Debian 13 and Alpine side by side with unlimited defaults and one-tap Freeze.</sub>
+      <sub>Container dashboard showing live CPU, memory, freeze, and stop controls.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-volumes-catalog.svg" alt="Files Volumes browser mounted at Debian /data and Catalog with Debian 13 first" width="100%">
+      <img src="docs/assets/gallery-volumes.png" alt="Files Volumes tab browsing the rootfs-dev-shell ext4lite volume" width="100%">
       <br>
-      <strong>Named Volumes and Distribution Catalog</strong><br>
-      <sub>Browse ext4 volumes, edit workspace files in Android apps, and launch Debian, Ubuntu, Fedora, or Alpine.</sub>
+      <sub>Named <code>ext4lite</code> volume browser inspecting a persistent container root.</sub>
     </td>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-network-settings.svg" alt="Network port forwarding with LAN QR code and Settings Licenses viewer" width="100%">
+      <img src="docs/assets/gallery-network.png" alt="Network tab showing port forwarding rule and LAN QR code" width="100%">
       <br>
-      <strong>Explicit Network Rules and Licenses</strong><br>
-      <sub>Forward loopback or LAN ports with instant QR links, configure proxies, and inspect offline licenses.</sub>
+      <sub>Port forwarding rules with <code>127.0.0.1</code> defaults, <code>0.0.0.0</code> confirmation, and QR link.</sub>
     </td>
   </tr>
 </table>
 
----
+## How it works
 
-## Highlights
+`TermVR` pulls OCI images matching your device CPU and boots them inside `gvx`. Debian 13 (`debian:trixie-slim`) is the default quick-launch image, alongside Ubuntu, Fedora, Alpine, `docker:dind`, and single-node `k3s` in `Catalog`. Containers start with uncapped CPU and memory unless you enter explicit limits.
 
-`TermVR` launches unmodified OCI container images matching your device architecture without root access. Default profiles allocate uncapped host CPU and memory while keeping background containers controllable.
+One static guest multiplexer (`termvr-agent`) shares a single sandbox across all open tabs and split panes. That multiplexer keeps host child processes to at most 4 per running container. The terminal host uses one `SurfaceView`, a two-row touch key bar, and a composition buffer for Hangul and CJK soft keyboards.
 
-- **Debian 13 Default with Unlimited Resources**: Launch `debian:trixie-slim` with uncapped CPU and memory by default. Set custom limits per container when needed.
-- **Concurrent Multi-Container Execution**: Run multiple Linux environments together with multi-tab shells. Freeze or stop idle workloads in one tap.
-- **Persistent Volumes and Android File Access**: Mount named ext4 volumes at custom paths, transfer archives, and edit workspace files in external Android apps.
-- **120 Hz GPU Terminal (`TermVR Mono NF`)**: Render English, Hangul, CJK, ligatures, and Nerd Font icons via OpenGL ES 3.0. Use the touch key bar for chords.
-- **Explicit Network, Proxy, and WireGuard Controls**: Forward `127.0.0.1` or `0.0.0.0` ports with QR links. Route traffic via `HTTP`, `HTTPS`, `SOCKS5`, `SOCKS4`, or WireGuard.
-- **Prebuilt Docker and K3s Recipes**: Start an unprivileged Docker Engine (`docker:dind`) or Kubernetes cluster (`k3s`) on persistent volumes. Inspect licenses offline in `Settings > Licenses`.
+Inbound port rules bind `127.0.0.1` by default. Exposing a port on `0.0.0.0` requires confirmation and applies through checkpoint and restore. You can also route outbound container traffic directly or through `HTTP`, `HTTPS`, `SOCKS5`, `SOCKS4`, or an imported WireGuard tunnel.
 
----
+## Storage and snapshots
 
-## Install and Quick Start
+By default, a container runs on an in-memory root over read-only image layers, similar to `docker run --rm`. Stopping an ephemeral container discards changes outside `/workspace` and mounted volumes.
 
-Download the APK matching your device architecture from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest) and verify its checksum. Each `arm64-v8a` APK supports both 4 KB and 16 KB page-size Android kernels on Android 12 and newer.
+Check **Persistent root (`ext4lite`)** when creating a container if you want `apt` packages and `/etc` files to survive full stops. `TermVR` then allocates a `rootfs-<id>.ext4` image for `/`, lists it under `Files > Volumes`, and deletes it if you remove the container.
 
-| Release File | Target Devices | Notes |
+- `/workspace` connects to Android's Storage Access Framework (`SAF`) so external Android editors can open and save project files.
+- Named `ext4lite` volumes attach at custom mount paths for databases, Docker data, or `k3s` cluster state.
+- `Freeze` checkpoints live processes to disk and exits the sandbox process, and `Resume` restores open shells and background jobs.
+
+## Install
+
+Download the APK for your device architecture from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest) and verify its digest against `SHA256SUMS`. Each `arm64-v8a` APK works on both 4 KB and 16 KB page-size kernels on Android 12 and newer.
+
+| Release file | Target devices | Notes |
 | :--- | :--- | :--- |
-| `TermVR-<tag>-arm64-v8a.apk` | 64-bit ARM phones, foldables, and tablets | Recommended for Android 12+ devices on 4 KB or 16 KB kernels. |
-| `TermVR-<tag>-x86_64.apk` | Android emulators and x86_64 hardware | Targets 64-bit x86 tablets, Chromebooks, and CI emulators. |
-| `SHA256SUMS` | All downloads | Contains SHA-256 digests for verifying release APK integrity. |
+| `TermVR-<tag>-arm64-v8a.apk` | 64-bit ARM phones, foldables, and tablets | Supports 4 KB and 16 KB Android kernels. |
+| `TermVR-<tag>-x86_64.apk` | 64-bit x86 tablets, Chromebooks, and emulators | Matches `linux/amd64` container images. |
+| `SHA256SUMS` | All downloads | Contains SHA-256 digests for the release APKs. |
 
-1. Install the APK for your device architecture.
-2. Open `TermVR` and tap `Launch` on the default `Debian` card.
-3. Wait for the first image pull to finish.
-4. Run `apt update` or switch to `Catalog` to launch `Ubuntu`, `Fedora`, `Alpine`, `Docker`, or `K3s`.
-5. Tap `Freeze` on idle containers to save battery while keeping open shells intact.
+1. Install the APK matching your device architecture.
+2. Open `TermVR` and tap `New Container`.
+3. Enable **Persistent root (`ext4lite`)** if you want installed packages to survive container stops.
+4. Tap `Create` and `Start` to pull the image and open a shell.
+5. Tap `Freeze` on idle containers to save their state to disk.
 
 > [!NOTE]
-> Android limits background child processes across apps by default. Enable `Disable child process restrictions` in Android Developer Options when running multiple heavy containers at once.
+> Android kills background apps when system-wide child processes exceed 32. Enable `Disable child process restrictions` in Android Developer Options before running multiple containers at once.
 
----
+## Build from source
 
-## Build from Source
-
-`TermVR` compiles from pinned open-source commits in [`scripts/source-lock.json`](scripts/source-lock.json) with zero proprietary SDKs or tracking libraries. Run these three commands on Linux with JDK 17 and Android NDK `28.0.13004108` installed to build a release APK.
+`TermVR` builds from pinned upstream commits in [`scripts/source-lock.json`](scripts/source-lock.json) with zero proprietary SDKs or analytics libraries. Run these commands on Linux or macOS with JDK 17, Gradle `8.11.1`, and Android NDK `28.0.13004108` installed.
 
 ```bash
 ./scripts/provision-toolchains-and-vendor.sh
 ./scripts/build-native-deps.sh --abi arm64-v8a,x86_64
-./gradlew :app:assembleRelease -PtermvrAbis=arm64-v8a,x86_64
+gradle :app:assembleRelease -PtermvrAbis=arm64-v8a,x86_64
 ```
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for offline F-Droid build rules and [`docs/designs/SITEMAP.md`](docs/designs/SITEMAP.md) for system architecture specifications.
-
----
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for offline F-Droid build rules and [`docs/designs/SITEMAP.md`](docs/designs/SITEMAP.md) for architecture documents.
 
 ## License
 
-`TermVR` is licensed under the [Apache License, Version 2.0](LICENSE). The bundled `TermVR Mono NF` typeface uses the SIL Open Font License 1.1 (`OFL-1.1`), and you can inspect every dependency license inside `Settings > Licenses`.
+`TermVR` uses the [Apache License, Version 2.0](LICENSE). The bundled `TermVR Mono NF` font uses the SIL Open Font License 1.1 (`OFL-1.1`). You can read full third-party license notices offline under `Settings > Licenses`.

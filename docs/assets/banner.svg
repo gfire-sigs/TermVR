@@ -51,7 +51,7 @@
   <text x="282" y="297.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >Docker &amp; K3s</text>
 <rect x="434" y="276" width="166" height="34" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
   <circle cx="446" cy="293.0" r="3.5" fill="#1DC99A"/>
-  <text x="456" y="297.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >SAF Volumes</text>
+  <text x="456" y="297.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >ext4lite &amp; SAF</text>
 <rect x="40" y="328" width="560" height="56" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
 <rect x="40" y="328" width="4" height="56" fill="url(#accentLine)" rx="2"/>
 <text x="58" y="350" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="700" fill="#1DC99A" text-anchor="start" >ARCHITECTURE &amp; SUPPLY CHAIN</text>
