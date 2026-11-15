@@ -16,12 +16,29 @@ apk_path="$(find /tmp/termvr-apks -type f -name '*debug*.apk' | head -n 1)"
 test -n "${apk_path}"
 adb install -r "${apk_path}"
 adb logcat -c
-adb shell monkey -p dev.gfire.termvr -c android.intent.category.LAUNCHER 1
-sleep 5
+adb shell am start -W -n dev.gfire.termvr/.MainActivity
 
-if ! adb shell pidof dev.gfire.termvr; then
+app_pid=""
+for _ in $(seq 1 20); do
+  app_pid="$(adb shell pidof dev.gfire.termvr 2>/dev/null | tr -d '\r' || true)"
+  if [ -n "${app_pid}" ]; then
+    break
+  fi
+  sleep 1
+done
+
+if [ -z "${app_pid}" ]; then
   echo "dev.gfire.termvr process is not running after launch" >&2
-  adb logcat -d -s AndroidRuntime:E libc:F DEBUG:F || true
+  adb logcat -d -s AndroidRuntime:E libc:F DEBUG:* ActivityManager:I ActivityTaskManager:I || true
+  exit 1
+fi
+
+echo "dev.gfire.termvr running with pid ${app_pid}"
+sleep 3
+
+if ! adb shell pidof dev.gfire.termvr >/dev/null 2>&1; then
+  echo "dev.gfire.termvr exited shortly after launch" >&2
+  adb logcat -d -s AndroidRuntime:E libc:F DEBUG:* || true
   exit 1
 fi
 
