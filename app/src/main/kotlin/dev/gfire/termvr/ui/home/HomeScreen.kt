@@ -396,7 +396,8 @@ private fun ContainerCard(
                         val metricsText = buildString {
                             append("CPU ${telemetry.cpuPercent.roundToInt()}% · ${telemetry.pssMiB} MB")
                             if (telemetry.guestListenPorts.isNotEmpty()) {
-                                append(" · ${telemetry.guestListenPorts.size} ports")
+                                val count = telemetry.guestListenPorts.size
+                                append(" · $count port${if (count == 1) "" else "s"}")
                             }
                         }
                         TermVrBadge(

@@ -575,9 +575,10 @@ class FilesViewModel(
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null)
             runCatching {
+                val relPath = toVolumeRelativePath(localState.value.volumePath)
                 val entries = withVolumeOps(profile, volumeName, readOnly = true) { mux, root ->
                     withContext(ioDispatcher) {
-                        mux.volumeReadDir(root, localState.value.volumePath)
+                        mux.volumeReadDir(root, relPath)
                     }
                 }
                 localState.value = localState.value.copy(
@@ -599,12 +600,12 @@ class FilesViewModel(
             return
         }
         val clean = sanitizeSingleName(name) ?: return
-        val fullPath = joinGuestPath(state.volumePath, clean)
+        val relPath = toVolumeRelativePath(joinGuestPath(state.volumePath, clean))
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null)
             runCatching {
                 withVolumeOps(profile, volumeName, readOnly = false) { mux, root ->
-                    withContext(ioDispatcher) { mux.volumeMkdir(root, fullPath) }
+                    withContext(ioDispatcher) { mux.volumeMkdir(root, relPath) }
                 }
                 refreshVolume()
             }.onFailure { err ->
@@ -622,12 +623,12 @@ class FilesViewModel(
             localState.value = localState.value.copy(errorMessage = "Volume is locked while frozen.")
             return
         }
-        val fullPath = joinGuestPath(state.volumePath, entry.name)
+        val relPath = toVolumeRelativePath(joinGuestPath(state.volumePath, entry.name))
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null)
             runCatching {
                 withVolumeOps(profile, volumeName, readOnly = false) { mux, root ->
-                    withContext(ioDispatcher) { mux.volumeUnlink(root, fullPath, recursive = entry.isDir) }
+                    withContext(ioDispatcher) { mux.volumeUnlink(root, relPath, recursive = entry.isDir) }
                 }
                 refreshVolume()
             }.onFailure { err ->
@@ -642,14 +643,14 @@ class FilesViewModel(
         val state = uiState.value
         val volumeName = state.selectedVolumeName ?: return
         val profile = state.selectedProfile ?: return
-        val fullPath = joinGuestPath(state.volumePath, entry.name)
+        val relPath = toVolumeRelativePath(joinGuestPath(state.volumePath, entry.name))
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null)
             runCatching {
                 val bytes = withVolumeOps(profile, volumeName, readOnly = true) { mux, root ->
                     withContext(ioDispatcher) {
                         val out = ByteArrayOutputStream()
-                        mux.volumeReadFile(root = root, path = fullPath, output = out)
+                        mux.volumeReadFile(root = root, path = relPath, output = out)
                         out.toByteArray()
                     }
                 }
@@ -681,6 +682,10 @@ class FilesViewModel(
     private fun joinGuestPath(base: String, name: String): String {
         val cleanBase = base.trimEnd('/')
         return if (cleanBase.isEmpty()) "/$name" else "$cleanBase/$name"
+    }
+
+    internal fun toVolumeRelativePath(guestPath: String): String {
+        return guestPath.trim('/').ifEmpty { "." }
     }
 
     private fun sanitizeSingleName(raw: String): String? {

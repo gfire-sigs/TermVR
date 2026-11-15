@@ -284,6 +284,10 @@ bool MatchLigatureOperator(const std::vector<ExtractedCell>& cells, size_t start
         *out_len = 3;
         return true;
     }
+    if (c0 == '!' && c1 == '=' && eq_cp(start + 2, '=')) {
+        *out_len = 3;
+        return true;
+    }
     if (c0 == '<' && c1 == '=' && eq_cp(start + 2, '>')) {
         *out_len = 3;
         return true;
@@ -1062,24 +1066,140 @@ bool FontManager::EnsureGraphemeGlyph(
     bool face_has_bold = false;
     bool face_has_italic = false;
 
-    auto select_primary_face = [&]() -> FT_Face {
+    auto select_primary_face_and_hb = [&](hb_font_t** out_hb) -> FT_Face {
         if (impl_->tier1_custom != nullptr) {
+            if (out_hb != nullptr) *out_hb = impl_->hb_custom;
             return impl_->tier1_custom;
         }
         if (want_bold && want_italic && impl_->tier2_bold_italic != nullptr) {
             face_has_bold = true;
             face_has_italic = true;
+            if (out_hb != nullptr) *out_hb = impl_->hb_bold_italic;
             return impl_->tier2_bold_italic;
         }
         if (want_bold && impl_->tier2_bold != nullptr) {
             face_has_bold = true;
+            if (out_hb != nullptr) *out_hb = impl_->hb_bold;
             return impl_->tier2_bold;
         }
         if (want_italic && impl_->tier2_italic != nullptr) {
             face_has_italic = true;
+            if (out_hb != nullptr) *out_hb = impl_->hb_italic;
             return impl_->tier2_italic;
         }
+        if (out_hb != nullptr) *out_hb = impl_->hb_regular;
         return impl_->tier2_regular;
+    };
+
+    auto count_utf8_codepoints = [](const std::string& s) -> size_t {
+        size_t n = 0;
+        for (unsigned char ch : s) {
+            if ((ch & 0xC0u) != 0x80u) {
+                ++n;
+            }
+        }
+        return n;
+    };
+
+    if (!is_color && count_utf8_codepoints(utf8) >= 2u) {
+        hb_font_t* hb_face = nullptr;
+        FT_Face shape_face = select_primary_face_and_hb(&hb_face);
+        if (shape_face != nullptr && hb_face != nullptr) {
+            hb_buffer_t* buf = hb_buffer_create();
+            if (buf != nullptr) {
+                hb_buffer_add_utf8(buf, utf8.data(), static_cast<int>(utf8.size()), 0, static_cast<int>(utf8.size()));
+                hb_buffer_guess_segment_properties(buf);
+                const uint32_t lig_val = config_.ligatures_enabled ? 1u : 0u;
+                const hb_feature_t feats[2] = {
+                    {HB_TAG('c', 'a', 'l', 't'), lig_val, 0u, ~0u},
+                    {HB_TAG('l', 'i', 'g', 'a'), lig_val, 0u, ~0u},
+                };
+                hb_shape(hb_face, buf, feats, 2u);
+
+                unsigned int glyph_count = 0;
+                const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &glyph_count);
+                const hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, &glyph_count);
+                bool all_mapped = (glyph_count > 0u);
+                for (unsigned int i = 0; i < glyph_count; ++i) {
+                    if (infos[i].codepoint == 0u) {
+                        all_mapped = false;
+                        break;
+                    }
+                }
+                if (all_mapped) {
+                    const uint32_t box_w = metrics_.cell_width_px * std::max<uint8_t>(1u, span_cols);
+                    const uint32_t box_h = metrics_.cell_height_px;
+                    std::vector<uint8_t> r8(static_cast<size_t>(box_w) * box_h, 0u);
+                    const bool synth_bold = want_bold && !face_has_bold;
+                    const bool synth_italic = want_italic && !face_has_italic;
+                    float pen_x = 0.0f;
+                    bool rendered_any = false;
+
+                    for (unsigned int i = 0; i < glyph_count; ++i) {
+                        FT_Error load_err = 0;
+                        if (synth_bold || synth_italic) {
+                            load_err = FT_Load_Glyph(shape_face, infos[i].codepoint, FT_LOAD_DEFAULT);
+                            if (load_err == 0) {
+                                if (synth_bold) {
+                                    FT_GlyphSlot_Embolden(shape_face->glyph);
+                                }
+                                if (synth_italic) {
+                                    FT_GlyphSlot_Oblique(shape_face->glyph);
+                                }
+                                load_err = FT_Render_Glyph(shape_face->glyph, FT_RENDER_MODE_NORMAL);
+                            }
+                        } else {
+                            load_err = FT_Load_Glyph(shape_face, infos[i].codepoint, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL);
+                        }
+                        if (load_err == 0 && shape_face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_GRAY) {
+                            const FT_Bitmap& bmp = shape_face->glyph->bitmap;
+                            const int gx = static_cast<int>(std::lround(pen_x + static_cast<float>(pos[i].x_offset) / 64.0f)) +
+                                           static_cast<int>(shape_face->glyph->bitmap_left);
+                            const int gy = metrics_.baseline_px -
+                                           static_cast<int>(std::lround(static_cast<float>(pos[i].y_offset) / 64.0f)) -
+                                           static_cast<int>(shape_face->glyph->bitmap_top);
+                            for (unsigned int row = 0; row < bmp.rows; ++row) {
+                                const int dy = gy + static_cast<int>(row);
+                                if (dy < 0 || dy >= static_cast<int>(box_h)) {
+                                    continue;
+                                }
+                                const uint8_t* src = bmp.buffer + static_cast<size_t>(row) * std::abs(bmp.pitch);
+                                for (unsigned int col = 0; col < bmp.width; ++col) {
+                                    const int dx = gx + static_cast<int>(col);
+                                    if (dx < 0 || dx >= static_cast<int>(box_w)) {
+                                        continue;
+                                    }
+                                    uint8_t& dst = r8[static_cast<size_t>(dy) * box_w + static_cast<size_t>(dx)];
+                                    dst = std::max(dst, src[col]);
+                                }
+                            }
+                            rendered_any = true;
+                        }
+                        pen_x += static_cast<float>(pos[i].x_advance) / 64.0f;
+                    }
+                    hb_buffer_destroy(buf);
+                    if (rendered_any) {
+                        return atlas->InsertMonoR8(
+                            key,
+                            static_cast<uint16_t>(box_w),
+                            static_cast<uint16_t>(box_h),
+                            0,
+                            static_cast<int16_t>(metrics_.baseline_px),
+                            span_cols,
+                            r8.data(),
+                            out_entry);
+                    }
+                } else {
+                    hb_buffer_destroy(buf);
+                }
+            }
+        }
+        face_has_bold = false;
+        face_has_italic = false;
+    }
+
+    auto select_primary_face = [&]() -> FT_Face {
+        return select_primary_face_and_hb(nullptr);
     };
 
     FT_Face chosen_face = nullptr;

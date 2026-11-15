@@ -36,11 +36,18 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -340,10 +347,30 @@ private fun TerminalTopBar(
                 }
 
                 // Middle: Scrollable Session Tabs + compact '+' button
+                val tabScrollState = rememberScrollState()
+                var tabRowViewportWidthPx by remember { mutableIntStateOf(0) }
+                val tabBoundsPx = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
+                val activeTabId = activeTab?.tabId
+                LaunchedEffect(activeTabId, state.tabs.size, hasMultiplePanes, tabRowViewportWidthPx) {
+                    val bounds = activeTabId?.let { tabBoundsPx[it] } ?: return@LaunchedEffect
+                    if (tabRowViewportWidthPx <= 0) return@LaunchedEffect
+                    val (leftPx, widthPx) = bounds
+                    val rightPx = leftPx + widthPx
+                    val currentScroll = tabScrollState.value
+                    val targetScroll = when {
+                        leftPx < currentScroll -> leftPx
+                        rightPx > currentScroll + tabRowViewportWidthPx -> rightPx - tabRowViewportWidthPx
+                        else -> currentScroll
+                    }.coerceIn(0, tabScrollState.maxValue)
+                    if (targetScroll != currentScroll) {
+                        tabScrollState.animateScrollTo(targetScroll)
+                    }
+                }
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .horizontalScroll(rememberScrollState()),
+                        .onGloballyPositioned { tabRowViewportWidthPx = it.size.width }
+                        .horizontalScroll(tabScrollState),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
@@ -352,6 +379,9 @@ private fun TerminalTopBar(
                         val tabLabel = formatTabLabel(tab, state.profiles, openContainerCount)
                         Surface(
                             modifier = Modifier
+                                .onGloballyPositioned { coords ->
+                                    tabBoundsPx[tab.tabId] = coords.positionInParent().x.toInt() to coords.size.width
+                                }
                                 .clip(TermVrControlShape)
                                 .clickable { onSelectTab(tab.tabId) },
                             shape = TermVrControlShape,

@@ -311,6 +311,9 @@ class AppViewModelsTest {
         vm.createWorkspaceDirectory("allowed")
         advanceUntilIdle()
         assertTrue(File(gateway.workspaceDir("files-box"), "allowed").isDirectory)
+        assertEquals(".", vm.toVolumeRelativePath("/"))
+        assertEquals("hello.txt", vm.toVolumeRelativePath("/hello.txt"))
+        assertEquals("sub/dir", vm.toVolumeRelativePath("/sub/dir/"))
 
         vmScope.cancel()
     }

@@ -987,7 +987,7 @@ private class TermVrGlThread(
                         splitRoot = payload.root
                         focusedPaneId = payload.focusedPaneId
                         recomputeLayout()
-                        needsFullRedrawFrames = max(needsFullRedrawFrames, 1)
+                        needsFullRedrawFrames = TRIPLE_BUFFER_FRAMES
                         scheduleVsync()
                     }
                     MSG_UPDATE_FONT -> {
@@ -1004,7 +1004,7 @@ private class TermVrGlThread(
                         for (pane in latestLayout.panes) {
                             pane.session.setPalette(currentPalette)
                         }
-                        needsFullRedrawFrames = max(needsFullRedrawFrames, 1)
+                        needsFullRedrawFrames = TRIPLE_BUFFER_FRAMES
                         scheduleVsync()
                     }
                     MSG_UPDATE_PREEDIT -> {

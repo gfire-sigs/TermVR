@@ -164,7 +164,8 @@ fun TermVrNavHost(
                                         maxLines = 1,
                                         softWrap = false,
                                         overflow = TextOverflow.Ellipsis,
-                                        fontSize = 11.sp,
+                                        fontSize = 10.sp,
+                                        letterSpacing = (-0.2).sp,
                                     )
                                 },
                             )

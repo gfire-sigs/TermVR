@@ -779,6 +779,7 @@ bool Gles3Renderer::RenderFrame(
     (void)surface_clear_rgba;
 #endif
 
+    const bool atlas_rebuilt = atlas_.ConsumeNeedsRebuild();
     for (const PaneViewportSpec& pane_spec : panes) {
         if (pane_spec.session_handle == 0 || pane_spec.width_px <= 0 || pane_spec.height_px <= 0) {
             continue;
@@ -790,76 +791,82 @@ bool Gles3Renderer::RenderFrame(
 
         PaneGpuState& gpu_state = pane_states_[pane_spec.session_handle];
         bool resized = session->ConsumeGridResized();
-        bool rebuild_all = force_full_redraw || resized || atlas_.ConsumeNeedsRebuild() ||
+        bool rebuild_all = force_full_redraw || resized || atlas_rebuilt ||
                            gpu_state.instance_vbo == 0;
 
         ExtractedFrameSnapshot snap;
-        if (!session->ExtractDirtyFrame(rebuild_all, &snap)) {
+        std::vector<uint16_t> uploaded_rows;
+        size_t row_stride_bytes = 0;
+        if (session->ExtractDirtyFrame(rebuild_all, &snap)) {
+            row_stride_bytes = static_cast<size_t>(snap.cols) * sizeof(CellGpuInstance);
+            size_t total_bytes = static_cast<size_t>(snap.rows) * row_stride_bytes;
+            if (gpu_state.cols != snap.cols || gpu_state.rows != snap.rows ||
+                gpu_state.instance_capacity_bytes < total_bytes || gpu_state.instance_vbo == 0) {
+                gpu_state.cols = snap.cols;
+                gpu_state.rows = snap.rows;
+                gpu_state.instance_capacity_bytes = total_bytes;
+                gpu_state.row_instances.assign(snap.rows, std::vector<CellGpuInstance>(snap.cols));
+#if defined(__ANDROID__)
+                if (gpu_state.instance_vbo == 0) {
+                    GLuint vbo = 0;
+                    glGenBuffers(1, &vbo);
+                    gpu_state.instance_vbo = vbo;
+                }
+                glBindBuffer(GL_ARRAY_BUFFER, gpu_state.instance_vbo);
+                glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(total_bytes), nullptr, GL_DYNAMIC_DRAW);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+#endif
+            }
+
+            if (snap.kitty_revision != gpu_state.kitty_revision) {
+                gpu_state.kitty_revision = snap.kitty_revision;
+                SyncKittyTexturesToGl(&gpu_state, snap.kitty_placements);
+            }
+
+            std::vector<CellGpuInstance> shaped_tmp;
+            uploaded_rows.reserve(snap.dirty_rows.size());
+            for (const ExtractedRow& erow : snap.dirty_rows) {
+                if (erow.row_index >= gpu_state.rows) {
+                    continue;
+                }
+                int32_t cursor_col = -1;
+                CursorShape cshape = CursorShape::kNone;
+                if (pane_spec.focused && snap.cursor.visible &&
+                    pane_spec.cursor_blink_visible && snap.cursor.row == erow.row_index) {
+                    cursor_col = static_cast<int32_t>(snap.cursor.col);
+                    cshape = snap.cursor.shape;
+                }
+                font_manager_.ShapeRow(
+                    erow.row_index,
+                    erow.cells,
+                    cursor_col,
+                    cshape,
+                    snap.palette.cursor_rgba,
+                    snap.palette.selection_rgba,
+                    &atlas_,
+                    &shaped_tmp);
+
+                auto& dst_row = gpu_state.row_instances[erow.row_index];
+                std::memset(dst_row.data(), 0, dst_row.size() * sizeof(CellGpuInstance));
+                size_t copy_cnt = std::min(shaped_tmp.size(), dst_row.size());
+                if (copy_cnt > 0) {
+                    std::memcpy(dst_row.data(), shaped_tmp.data(), copy_cnt * sizeof(CellGpuInstance));
+                }
+                uploaded_rows.push_back(erow.row_index);
+            }
+
+            SyncAtlasTexturesToGl();
+        }
+
+        if (gpu_state.cols == 0 || gpu_state.rows == 0) {
             continue;
         }
 
-        size_t row_stride_bytes = static_cast<size_t>(snap.cols) * sizeof(CellGpuInstance);
-        size_t total_bytes = static_cast<size_t>(snap.rows) * row_stride_bytes;
-        if (gpu_state.cols != snap.cols || gpu_state.rows != snap.rows ||
-            gpu_state.instance_capacity_bytes < total_bytes || gpu_state.instance_vbo == 0) {
-            gpu_state.cols = snap.cols;
-            gpu_state.rows = snap.rows;
-            gpu_state.instance_capacity_bytes = total_bytes;
-            gpu_state.row_instances.assign(snap.rows, std::vector<CellGpuInstance>(snap.cols));
 #if defined(__ANDROID__)
-            if (gpu_state.instance_vbo == 0) {
-                GLuint vbo = 0;
-                glGenBuffers(1, &vbo);
-                gpu_state.instance_vbo = vbo;
-            }
-            glBindBuffer(GL_ARRAY_BUFFER, gpu_state.instance_vbo);
-            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(total_bytes), nullptr, GL_DYNAMIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-#endif
+        if (gpu_state.instance_vbo == 0) {
+            continue;
         }
-
-        if (snap.kitty_revision != gpu_state.kitty_revision) {
-            gpu_state.kitty_revision = snap.kitty_revision;
-            SyncKittyTexturesToGl(&gpu_state, snap.kitty_placements);
-        }
-
-        std::vector<CellGpuInstance> shaped_tmp;
-        std::vector<uint16_t> uploaded_rows;
-        uploaded_rows.reserve(snap.dirty_rows.size());
-        for (const ExtractedRow& erow : snap.dirty_rows) {
-            if (erow.row_index >= gpu_state.rows) {
-                continue;
-            }
-            int32_t cursor_col = -1;
-            CursorShape cshape = CursorShape::kNone;
-            if (pane_spec.focused && snap.cursor.visible &&
-                pane_spec.cursor_blink_visible && snap.cursor.row == erow.row_index) {
-                cursor_col = static_cast<int32_t>(snap.cursor.col);
-                cshape = snap.cursor.shape;
-            }
-            font_manager_.ShapeRow(
-                erow.row_index,
-                erow.cells,
-                cursor_col,
-                cshape,
-                snap.palette.cursor_rgba,
-                snap.palette.selection_rgba,
-                &atlas_,
-                &shaped_tmp);
-
-            auto& dst_row = gpu_state.row_instances[erow.row_index];
-            std::memset(dst_row.data(), 0, dst_row.size() * sizeof(CellGpuInstance));
-            size_t copy_cnt = std::min(shaped_tmp.size(), dst_row.size());
-            if (copy_cnt > 0) {
-                std::memcpy(dst_row.data(), shaped_tmp.data(), copy_cnt * sizeof(CellGpuInstance));
-            }
-            uploaded_rows.push_back(erow.row_index);
-        }
-
-        SyncAtlasTexturesToGl();
-
-#if defined(__ANDROID__)
-        if (!uploaded_rows.empty() && gpu_state.instance_vbo != 0) {
+        if (!uploaded_rows.empty()) {
             glBindBuffer(GL_ARRAY_BUFFER, gpu_state.instance_vbo);
             for (uint16_t r : uploaded_rows) {
                 GLintptr off = static_cast<GLintptr>(static_cast<size_t>(r) * row_stride_bytes);
