@@ -2,5 +2,5 @@ TermVR 0.15.10002026110900 aligns with gvx v0.15.10002026110900.
 - Sets Debian 13 (debian:trixie-slim) with uncapped CPU and memory as default.
 - Runs concurrent multi-container sessions with background Freeze and Resume.
 - Adds persistent ext4lite volumes, Android Files SAF sharing, and Docker/K3s recipes.
-- Adds 120 Hz OpenGL ES 3.0 terminal with TermVR Mono NF v1.0.1, CJK/Hangul IME, and offline licenses.
+- Adds 120 Hz OpenGL ES 3.0 terminal with TermVR Mono NF v1.1.0, CJK/Hangul IME, and offline licenses.
 - Adds port QR codes, live proxies, and WireGuard.

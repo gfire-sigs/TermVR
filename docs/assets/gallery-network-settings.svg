@@ -263,7 +263,7 @@
 <text x="416" y="118" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >TermVR Mono NF</text>
 <rect x="530" y="104" width="61" height="18" fill="#1B2225" rx="4" stroke="#273136" stroke-width="1"/>
   <text x="560.5" y="116.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >OFL-1.1</text>
-<text x="416" y="138" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >v1.0.1  |  gfire-sigs/TermVR-Fonts</text>
+<text x="416" y="138" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >v1.1.0  |  gfire-sigs/TermVR-Fonts</text>
 <path d="M714,118 L719,123 L714,128" fill="none" stroke="#8FA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 <rect x="402" y="159" width="330" height="54" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
 <text x="416" y="181" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >gvx User-Space Kernel</text>
