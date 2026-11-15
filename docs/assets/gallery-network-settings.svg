@@ -1,0 +1,298 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 500" width="760" height="500">
+<rect x="0" y="0" width="760" height="500" fill="#090B0C" rx="12"/>
+<rect x="12" y="12" width="362" height="476" fill="#0D1011" rx="10" stroke="#273136" stroke-width="1.3"/>
+<text x="28" y="42" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="20" font-weight="700" fill="#E8EEF0" text-anchor="start" >Network</text>
+<rect x="28" y="56" width="106" height="26" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <circle cx="40" cy="69.0" r="3.5" fill="#1DC99A"/>
+  <text x="50" y="72.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#8FA0A6" text-anchor="start" >alpine-svc</text>
+<rect x="142" y="56" width="86" height="26" fill="#2C190E" rx="6" stroke="#F06E1E" stroke-width="1"/>
+  <circle cx="154" cy="69.0" r="3.5" fill="#1DC99A"/>
+  <text x="164" y="72.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFB385" text-anchor="start" >Debian</text>
+<rect x="28" y="92" width="66" height="26" fill="#2C190E" rx="6" stroke="#F06E1E" stroke-width="1"/>
+  <text x="61.0" y="108.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFB385" text-anchor="middle" >Ports</text>
+<rect x="102" y="92" width="68" height="26" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <text x="136.0" y="108.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#8FA0A6" text-anchor="middle" >Proxy</text>
+<rect x="178" y="92" width="96" height="26" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <text x="226.0" y="108.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#8FA0A6" text-anchor="middle" >WireGuard</text>
+<rect x="28" y="128" width="330" height="344" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<text x="44" y="156" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="15" font-weight="700" fill="#E8EEF0" text-anchor="start" >Port Forwarding</text>
+<rect x="44" y="172" width="142" height="46" fill="#0D1011" rx="6" stroke="#273136" stroke-width="1"/>
+<text x="54" y="186" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#8FA0A6" text-anchor="start" >Host Port</text>
+<text x="54" y="206" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="15" font-weight="600" fill="#E8EEF0" text-anchor="start" >8080</text>
+<rect x="198" y="172" width="142" height="46" fill="#0D1011" rx="6" stroke="#273136" stroke-width="1"/>
+<text x="208" y="186" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="10" font-weight="500" fill="#8FA0A6" text-anchor="start" >Guest Port</text>
+<text x="208" y="206" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="15" font-weight="600" fill="#E8EEF0" text-anchor="start" >8080</text>
+<rect x="44" y="228" width="78" height="24" fill="#1B2225" rx="5" stroke="#273136" stroke-width="1"/>
+  <text x="83.0" y="243.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#8FA0A6" text-anchor="middle" >127.0.0.1</text>
+<rect x="128" y="228" width="46" height="24" fill="#1B2225" rx="5" stroke="#273136" stroke-width="1"/>
+  <text x="151.0" y="243.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#8FA0A6" text-anchor="middle" >[::1]</text>
+<rect x="180" y="228" width="68" height="24" fill="#2C190E" rx="5" stroke="#F06E1E" stroke-width="1"/>
+  <text x="214.0" y="243.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#FFB385" text-anchor="middle" >0.0.0.0</text>
+<rect x="254" y="228" width="42" height="24" fill="#1B2225" rx="5" stroke="#273136" stroke-width="1"/>
+  <text x="275.0" y="243.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#8FA0A6" text-anchor="middle" >[::]</text>
+<rect x="44" y="260" width="52" height="24" fill="#2C190E" rx="5" stroke="#F06E1E" stroke-width="1"/>
+  <text x="70.0" y="275.5" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFB385" text-anchor="middle" >TCP</text>
+<rect x="102" y="260" width="52" height="24" fill="#1B2225" rx="5" stroke="#273136" stroke-width="1"/>
+  <text x="128.0" y="275.5" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#8FA0A6" text-anchor="middle" >UDP</text>
+<rect x="160" y="260" width="100" height="24" fill="#1B2225" rx="5" stroke="#273136" stroke-width="1"/>
+  <text x="210.0" y="275.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#8FA0A6" text-anchor="middle" >UNIX_STREAM</text>
+<rect x="44" y="294" width="122" height="32" fill="#F06E1E" rx="6"/>
+<text x="105" y="315" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="700" fill="#0D1011" text-anchor="middle" >+  Add Rule</text>
+<line x1="44" y1="338" x2="342" y2="338" stroke="#1E272B" stroke-width="1"/>
+<text x="44" y="358" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#E8EEF0" text-anchor="start" >TCP 0.0.0.0:8080 to :8080</text>
+<rect x="44" y="370" width="88" height="88" fill="#FFFFFF" rx="4"/>
+  <rect x="46.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="50.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="66.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="90.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="106.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="122.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="372.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="376.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="376.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="376.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="376.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="376.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="380.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="384.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="388.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="392.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="392.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="392.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="392.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="392.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="50.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="66.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="106.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="122.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="396.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="400.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="400.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="90.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="98.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="106.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="122.00" y="404.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="90.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="98.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="106.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="122.00" y="408.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="50.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="66.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="90.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="412.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="50.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="66.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="74.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="90.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="416.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="66.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="74.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="90.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="420.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="424.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="424.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="50.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="66.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="98.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="428.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="98.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="118.00" y="432.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="122.00" y="436.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="122.00" y="440.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="98.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="122.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="444.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="82.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="98.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="102.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="110.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="448.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="46.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="50.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="54.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="58.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="62.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="66.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="70.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="78.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="86.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="94.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="106.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="114.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+  <rect x="126.00" y="452.00" width="4.10" height="4.10" fill="#0D1011"/>
+<text x="146" y="390" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#7CE8C8" text-anchor="start" >http://10.0.2.16:8080</text>
+<rect x="146" y="404" width="70" height="32" fill="#1B2225" rx="6" stroke="#273136" stroke-width="1"/>
+<text x="181" y="424" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="middle" >Open</text>
+<rect x="224" y="404" width="70" height="32" fill="#1B2225" rx="6" stroke="#273136" stroke-width="1"/>
+<text x="259" y="424" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="middle" >Copy</text>
+<rect x="386" y="12" width="362" height="476" fill="#0D1011" rx="10" stroke="#273136" stroke-width="1.3"/>
+<text x="402" y="42" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="20" font-weight="700" fill="#E8EEF0" text-anchor="start" >Settings</text>
+<rect x="402" y="56" width="86" height="26" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <text x="445.0" y="72.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#8FA0A6" text-anchor="middle" >Appearance</text>
+<rect x="494" y="56" width="54" height="26" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <text x="521.0" y="72.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#8FA0A6" text-anchor="middle" >Input</text>
+<rect x="554" y="56" width="66" height="26" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <text x="587.0" y="72.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#8FA0A6" text-anchor="middle" >System</text>
+<rect x="626" y="56" width="78" height="26" fill="#2C190E" rx="6" stroke="#F06E1E" stroke-width="1"/>
+  <text x="665.0" y="72.85" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFB385" text-anchor="middle" >Licenses</text>
+<rect x="402" y="96" width="330" height="54" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<text x="416" y="118" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >TermVR Mono NF</text>
+<rect x="530" y="104" width="61" height="18" fill="#1B2225" rx="4" stroke="#273136" stroke-width="1"/>
+  <text x="560.5" y="116.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >OFL-1.1</text>
+<text x="416" y="138" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >v1.0.1  |  gfire-sigs/TermVR-Fonts</text>
+<path d="M714,118 L719,123 L714,128" fill="none" stroke="#8FA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="402" y="159" width="330" height="54" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<text x="416" y="181" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >gvx User-Space Kernel</text>
+<rect x="583" y="167" width="82" height="18" fill="#1B2225" rx="4" stroke="#273136" stroke-width="1"/>
+  <text x="624.0" y="179.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >Apache-2.0</text>
+<text x="416" y="201" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >v0.15.10002026110900  |  gfire-sigs/gvx</text>
+<path d="M714,181 L719,186 L714,191" fill="none" stroke="#8FA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="402" y="222" width="330" height="54" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<text x="416" y="244" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >Ghostty libghostty-vt</text>
+<rect x="583" y="230" width="34" height="18" fill="#1B2225" rx="4" stroke="#273136" stroke-width="1"/>
+  <text x="600.0" y="242.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >MIT</text>
+<text x="416" y="264" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >vt-1.0.1  |  ghostty-org/ghostty</text>
+<path d="M714,244 L719,249 L714,254" fill="none" stroke="#8FA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="402" y="285" width="330" height="54" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<text x="416" y="307" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >FreeType</text>
+<rect x="484" y="293" width="34" height="18" fill="#1B2225" rx="4" stroke="#273136" stroke-width="1"/>
+  <text x="501.0" y="305.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >FTL</text>
+<text x="416" y="327" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >2.13.3  |  freetype/freetype</text>
+<path d="M714,307 L719,312 L714,317" fill="none" stroke="#8FA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="402" y="348" width="330" height="54" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<text x="416" y="370" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >HarfBuzz</text>
+<rect x="484" y="356" width="34" height="18" fill="#1B2225" rx="4" stroke="#273136" stroke-width="1"/>
+  <text x="501.0" y="368.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >MIT</text>
+<text x="416" y="390" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >15.1.0  |  harfbuzz/harfbuzz</text>
+<path d="M714,370 L719,375 L714,380" fill="none" stroke="#8FA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="402" y="411" width="330" height="54" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<text x="416" y="433" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#E8EEF0" text-anchor="start" >Go Standard Library</text>
+<rect x="568" y="419" width="95" height="18" fill="#1B2225" rx="4" stroke="#273136" stroke-width="1"/>
+  <text x="615.5" y="431.5" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >BSD-3-Clause</text>
+<text x="416" y="453" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10.5" font-weight="500" fill="#8FA0A6" text-anchor="start" >1.27.4  |  go.googlesource.com/go</text>
+<path d="M714,433 L719,438 L714,443" fill="none" stroke="#8FA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

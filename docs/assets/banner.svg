@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420">
+<defs>
+  <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#22140D"/>
+    <stop offset="45%" stop-color="#0D1011"/>
+    <stop offset="100%" stop-color="#0B1E18"/>
+  </linearGradient>
+  <linearGradient id="accentLine" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#F06E1E"/>
+    <stop offset="100%" stop-color="#1DC99A"/>
+  </linearGradient>
+</defs>
+<rect x="0" y="0" width="1200" height="420" fill="url(#bgGrad)" rx="16"/>
+<rect x="16" y="16" width="1168" height="388" fill="#0D1011" rx="12" stroke="#273136" stroke-width="1.5"/>
+<path d="M16,28 a12,12 0 0 1 12,-12 H1172 a12,12 0 0 1 12,12 V50 H16 Z" fill="#14191B"/>
+<line x1="16" y1="50" x2="1184" y2="50" stroke="#273136" stroke-width="1"/>
+<circle cx="38" cy="33" r="5.5" fill="#F06E1E"/>
+<circle cx="56" cy="33" r="5.5" fill="#E5A93B"/>
+<circle cx="74" cy="33" r="5.5" fill="#1DC99A"/>
+<text x="600" y="37" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#8FA0A6" text-anchor="middle" >gfire-sigs/TermVR   |   Android 12+   |   Rootless Linux Containers</text>
+<rect x="36" y="64" width="1128" height="30" fill="#14191B" rx="6" stroke="#1E272B" stroke-width="1"/>
+<path d="M36,64 H140 L152,79 L140,94 H36 Z" fill="#F06E1E"/>
+<text x="88" y="83" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="13" font-weight="700" fill="#0D1011" text-anchor="middle" >TermVR</text>
+<path d="M143,64 H268 L280,79 L268,94 H143 L155,79 Z" fill="#1DC99A"/>
+<text x="212" y="83" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="13" font-weight="700" fill="#0D1011" text-anchor="middle" >Debian 13</text>
+<path d="M271,64 H382 L394,79 L382,94 H271 L283,79 Z" fill="#1B2225"/>
+<text x="333" y="83" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="middle" >Rootless</text>
+<text x="412" y="83" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="13" font-weight="500" fill="#8FA0A6" text-anchor="start" >&gt; launch debian:trixie-slim</text>
+<rect x="918" y="68" width="118" height="22" fill="#2C190E" rx="5" stroke="#F06E1E" stroke-width="1"/>
+  <text x="977.0" y="82.85" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="11" font-weight="600" fill="#FFB385" text-anchor="middle" >120 Hz GPU</text>
+<rect x="1044" y="68" width="112" height="22" fill="#1DC99A" rx="5" stroke="#1DC99A" stroke-width="1"/>
+  <text x="1100.0" y="82.85" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="11" font-weight="700" fill="#0D1011" text-anchor="middle" >Apache-2.0</text>
+<text x="40" y="166" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="58" font-weight="800" fill="#E8EEF0" text-anchor="start" >TermVR</text>
+<rect x="268" y="126" width="152" height="34" fill="#0F2B23" rx="6" stroke="#1DC99A" stroke-width="1.5"/>
+<text x="344" y="148" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="13" font-weight="700" fill="#7CE8C8" text-anchor="middle" >ROOTLESS OCI</text>
+<text x="42" y="204" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="20" font-weight="500" fill="#B6C5CA" text-anchor="start" >Run real Linux containers on Android without root.</text>
+<rect x="40" y="232" width="180" height="34" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <circle cx="52" cy="249.0" r="3.5" fill="#F06E1E"/>
+  <text x="62" y="253.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >Debian 13 Default</text>
+<rect x="230" y="232" width="176" height="34" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <circle cx="242" cy="249.0" r="3.5" fill="#1DC99A"/>
+  <text x="252" y="253.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >Multi-Container</text>
+<rect x="416" y="232" width="184" height="34" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <circle cx="428" cy="249.0" r="3.5" fill="#F06E1E"/>
+  <text x="438" y="253.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >TermVR Mono NF</text>
+<rect x="40" y="276" width="210" height="34" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <circle cx="52" cy="293.0" r="3.5" fill="#1DC99A"/>
+  <text x="62" y="297.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >120 Hz OpenGL ES 3.0</text>
+<rect x="260" y="276" width="164" height="34" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <circle cx="272" cy="293.0" r="3.5" fill="#F06E1E"/>
+  <text x="282" y="297.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >Docker &amp; K3s</text>
+<rect x="434" y="276" width="166" height="34" fill="#14191B" rx="6" stroke="#273136" stroke-width="1"/>
+  <circle cx="446" cy="293.0" r="3.5" fill="#1DC99A"/>
+  <text x="456" y="297.2" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#E8EEF0" text-anchor="start" >SAF Volumes</text>
+<rect x="40" y="328" width="560" height="56" fill="#14191B" rx="8" stroke="#273136" stroke-width="1"/>
+<rect x="40" y="328" width="4" height="56" fill="url(#accentLine)" rx="2"/>
+<text x="58" y="350" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="700" fill="#1DC99A" text-anchor="start" >ARCHITECTURE &amp; SUPPLY CHAIN</text>
+<text x="58" y="370" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="13" font-weight="500" fill="#E8EEF0" text-anchor="start" >arm64-v8a &amp; x86_64   |   4 KB &amp; 16 KB Kernels   |   Reproducible Build</text>
+<rect x="632" y="114" width="528" height="270" fill="#14191B" rx="10" stroke="#273136" stroke-width="1.2"/>
+<rect x="646" y="126" width="500" height="168" fill="#0D1011" rx="8" stroke="#1E272B" stroke-width="1"/>
+<rect x="646" y="126" width="500" height="30" fill="#1B2225" rx="8"/>
+<rect x="646" y="148" width="500" height="8" fill="#1B2225"/>
+<line x1="646" y1="156" x2="1146" y2="156" stroke="#273136" stroke-width="1"/>
+<rect x="654" y="130" width="86" height="22" fill="#14191B" rx="5" stroke="#1DC99A" stroke-width="1"/>
+  <circle cx="666" cy="141.0" r="3.5" fill="#1DC99A"/>
+  <text x="676" y="144.85" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="11" font-weight="600" fill="#E8EEF0" text-anchor="start" >Debian</text>
+<rect x="746" y="130" width="44" height="22" fill="#2C190E" rx="5" stroke="#F06E1E" stroke-width="1"/>
+  <text x="768.0" y="144.85" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="11" font-weight="600" fill="#FFB385" text-anchor="middle" >#1</text>
+<text x="1134" y="145" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="10" font-weight="500" fill="#8FA0A6" text-anchor="end" >120 Hz</text>
+<text x="660" y="178" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#8FA0A6" text-anchor="start" >root@gvx:/workspace# cat /etc/os-release</text>
+<text x="660" y="198" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#7CE8C8" text-anchor="start" >PRETTY_NAME=&quot;Debian GNU/Linux 13 (trixie)&quot;</text>
+<text x="660" y="218" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#8FA0A6" text-anchor="start" >root@gvx:/workspace# uname -srm</text>
+<text x="660" y="238" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#E8EEF0" text-anchor="start" >Linux 4.19.0-gvisor aarch64</text>
+<text x="660" y="258" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#8FA0A6" text-anchor="start" >root@gvx:/workspace# apt install -y git curl</text>
+<text x="660" y="278" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#FFB385" text-anchor="start" >root@gvx:/workspace# </text>
+<rect x="816" y="266" width="9" height="15" fill="#F06E1E" rx="1"/>
+<rect x="646" y="304" width="500" height="68" fill="#1B2225" rx="8" stroke="#273136" stroke-width="1"/>
+<circle cx="664" cy="326" r="4.5" fill="#1DC99A"/>
+<text x="676" y="330" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" fill="#E8EEF0" text-anchor="start" >Debian</text>
+<rect x="734" y="315" width="62" height="20" fill="#2C190E" rx="5" stroke="#F06E1E" stroke-width="1"/>
+  <text x="765.0" y="328.5" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFB385" text-anchor="middle" >Default</text>
+<rect x="804" y="315" width="74" height="20" fill="#0F2B23" rx="5" stroke="#1DC99A" stroke-width="1"/>
+  <text x="841.0" y="328.5" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#7CE8C8" text-anchor="middle" >Unlimited</text>
+<text x="664" y="354" font-family="'JetBrains Mono', 'SF Mono', 'Menlo', 'Apple SD Gothic Neo', monospace" font-size="12" font-weight="500" fill="#8FA0A6" text-anchor="start" >debian:trixie-slim   |   CPU 1%   23 MB   1 port</text>
+<rect x="1062" y="320" width="70" height="34" fill="#F06E1E" rx="6"/>
+<text x="1097" y="342" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#0D1011" text-anchor="middle" >Open</text>
+</svg>

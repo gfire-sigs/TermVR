@@ -1,11 +1,11 @@
-TermVR runs unmodified OCI Linux container images on Android 12 and newer without root privileges. It combines the gvx user-space Linux kernel (systrap engine) with the libghostty-vt terminal emulator and an OpenGL ES 3.0 GPU glyph renderer.
+TermVR runs unmodified OCI Linux container images on Android 12 and newer without root privileges. It combines a user-space Linux runtime with an OpenGL ES 3.0 terminal emulator and mobile touch controls.
 
 Capabilities:
-- Unmodified Linux distributions: Run Alpine, Debian, Ubuntu, Fedora, or custom OCI images compiled into read-only EROFS layers.
-- Prebuilt infrastructure recipes: Start an unprivileged Docker Engine (docker:dind) or a single-node Kubernetes cluster (k3s) on persistent ext4lite volumes.
-- GPU terminal rendering: Render monospace fonts, Nerd Font symbols, OpenType ligatures, CJK scripts, and Kitty inline graphics at up to 120 Hz.
-- Mobile input ergonomics: Configure a two-row auxiliary key bar with latched CTRL and ALT modifiers, cursor gestures, hardware shortcuts, and Hangul/CJK composition.
-- Explicit network and proxy control: Publish loopback (127.0.0.1) or LAN (0.0.0.0) ports, route traffic via HTTP, HTTPS, SOCKS5, SOCKS4, or system proxies, or run WireGuard tunnels.
-- Workspace and volume browser: Inspect ext4lite volumes, transfer files via Storage Access Framework, and open workspaces in external editors via DocumentsProvider.
-- Background lifecycle control: Monitor CPU and memory usage from the status notification, toggle a wake lock, and checkpoint or restore sandboxes.
-- Reproducible open-source build: Built exclusively from pinned upstream sources with zero proprietary libraries or tracking SDKs.
+- Debian 13 default with unlimited resources: Launch Debian 13 (debian:trixie-slim) with uncapped CPU and memory. Configure Ubuntu 24.04, Fedora 42, Alpine 3.21, or custom OCI images.
+- Concurrent multi-container sessions: Run multiple Linux containers side by side with multi-tab shells and one-tap Freeze and Resume.
+- Prebuilt container recipes: Start an unprivileged Docker Engine (docker:dind) or a single-node Kubernetes cluster (k3s) backed by persistent volumes.
+- 120 Hz GPU terminal and TermVR Mono NF: Render English, Korean Hangul, CJK scripts, OpenType ligatures, and Nerd Font icons at display refresh rates.
+- Mobile input controls: Configure a two-row auxiliary key bar with latched CTRL and ALT modifiers, cursor gestures, hardware shortcuts, and Hangul/CJK composition.
+- Explicit network and proxy control: Publish 127.0.0.1 or 0.0.0.0 ports with QR codes. Route traffic via HTTP, HTTPS, SOCKS5, SOCKS4, system proxies, or WireGuard.
+- Persistent volumes and file sharing: Create named ext4 volumes, transfer files through Storage Access Framework, and edit workspaces in external Android apps.
+- Offline open-source licenses and reproducible builds: TermVR compiles from pinned open-source commits with zero tracking SDKs and an offline license viewer.
