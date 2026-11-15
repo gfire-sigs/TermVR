@@ -20,8 +20,11 @@ android {
         applicationId = "dev.gfire.termvr"
         minSdk = 31
         targetSdk = 36
-        versionCode = 100
-        versionName = "0.1.0"
+        versionCode = libs.versions.termvrVersionCode.get().toInt()
+        versionName = libs.versions.termvrVersionName.get()
+
+        buildConfigField("String", "GVX_VERSION", "\"${libs.versions.gvx.get()}\"")
+        buildConfigField("String", "GVX_COMMIT", "\"${libs.versions.gvxCommit.get()}\"")
 
         ndk {
             abiFilters += configuredAbis

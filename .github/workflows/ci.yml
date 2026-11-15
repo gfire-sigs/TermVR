@@ -60,12 +60,16 @@ jobs:
           print("Lockfile and F-Droid metadata match across all 6 sources and NDK.")
           PY
 
+      - name: Verify gvx version alignment
+        run: ./scripts/sync-gvx-version.sh --check
+
       - name: Verify shell script syntax and executable mode
         run: |
           set -euo pipefail
           for script in \
             scripts/provision-toolchains-and-vendor.sh \
             scripts/build-native-deps.sh \
+            scripts/sync-gvx-version.sh \
             scripts/verify-16kb-alignment.sh \
             scripts/verify-reproducible-apk.sh
           do
@@ -159,7 +163,7 @@ jobs:
           if [ -x ./gradlew ]; then
             GRADLE_EXE="./gradlew"
           fi
-          "${GRADLE_EXE}" --no-daemon testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease -PtermvrAbis=arm64-v8a,x86_64
+          "${GRADLE_EXE}" --no-daemon :core:model:test testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease -PtermvrAbis=arm64-v8a,x86_64
 
       - name: Verify 16 KB ELF segment alignment on packaged APKs
         run: |

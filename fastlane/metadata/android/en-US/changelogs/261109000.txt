@@ -1,0 +1,5 @@
+TermVR 0.15.10002026110900 aligns with gvx v0.15.10002026110900 and delivers milestones M1 through M5.
+- Added the libghostty-vt JNI engine and OpenGL ES 3.0 terminal renderer.
+- Added the Hangul and CJK input bridge and two-row auxiliary key bar.
+- Added the gvx foreground service, termvr-agent multiplexer, loopback DNS, and proxy bridge.
+- Added Docker and Kubernetes recipes, SAF workspace provider, and reproducible F-Droid release gates.
