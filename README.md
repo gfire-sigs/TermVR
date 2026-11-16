@@ -18,7 +18,7 @@
 <p align="center">
   <strong><a href="https://github.com/gfire-sigs/TermVR/releases/latest">Download Latest APK</a></strong>
   &nbsp;&middot;&nbsp;
-  <strong><a href="docs/releases/v0.16.10002026110900.md">Release Notes</a></strong>
+  <strong><a href="docs/releases/v0.16.10012026110900.md">Release Notes</a></strong>
   &nbsp;&middot;&nbsp;
   <strong><a href="https://github.com/gfire-sigs/TermVR-Fonts">TermVR Mono NF</a></strong>
 </p>

@@ -1,0 +1,5 @@
+TermVR 0.16.10012026110900 (gvx v0.16.10012026110900):
+- Upgraded gvx to v0.16.10012026110900: fixed btop 'q' exit (#198), 16 KB arm64 Docker/k3s nginx relocations (#201), and checkpoint safety (#202).
+- Set LANG=C.UTF-8, bash shell defaults, and Debian / Shell 1 labels.
+- Fixed soft CTRL/ALT chords, key bar auto-clear, and FIFO PTY input order.
+- Added compact-screen Close tab? prompt and hardened Pause/Resume and snapshot cleanup.

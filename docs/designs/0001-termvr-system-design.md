@@ -359,7 +359,7 @@ This section links authoritative upstream specifications and records post-`v1.0`
 
 Four upstream specifications define the external contracts consumed by `TermVR`.
 
-- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.15.10002026110900`)
+- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.16.10012026110900`)
 - `Ghostty` and `libghostty-vt` C API: `https://github.com/ghostty-org/ghostty` (`vt-1.0.1`)
 - Elephant-Goldfish Design Model (`EGM`): `https://github.com/google/elephant-goldfish-model`
 - F-Droid Reproducible Builds Guide: `https://f-droid.org/docs/Reproducible_Builds/`
@@ -1042,7 +1042,7 @@ Four packaging controls guarantee identical unsigned APK bytes across independen
 - **`versionName` mapping**: `versionName` equals `<major>.<minor>.<patchStamp>` when `app_revision` is `0`, or `<major>.<minor>.<patchStamp>.<app_revision>` for app-only fixes on the same `gvx` commit.
 - **`versionCode` monotonic formula**: For `v<major>.<minor>.1<CCC><YYYYMMDD><SS>` tags, `sync-gvx-version.sh` computes `(major + 3) * 100_000_000 + minor * 100_000 + ccc * 10 + app_revision` (`301600000` for `v0.16.10002026110900`, `app_revision = 0`), staying monotonic above legacy `261109001` within signed 32-bit `Int`.
 - **Standard SemVer fallback**: When a `gvx` tag lacks a `1<CCC><YYYYMMDD><SS>` suffix, `sync-gvx-version.sh` falls back to embedded or commit-date `YYMMDDGGR` formatting (`GG` from `patch % 100`).
-- **Single-command sync and verification**: `./scripts/sync-gvx-version.sh --check [--expect-tag v...]` validates parity across `scripts/source-lock.json`, `gradle/libs.versions.toml`, `app/build.gradle.kts`, `fdroid/dev.gfire.termvr.yml`, and Fastlane changelogs.
+- **Single-command sync and verification**: `./scripts/sync-gvx-version.sh --check [--expect-tag v...]` validates parity across `scripts/source-lock.json`, `gradle/libs.versions.toml`, `app/build.gradle.kts`, `fdroid/dev.gfire.termvr.yml`, `CheckpointController.kt`, license notices, and Fastlane changelogs.
 - **Automated upstream tracking**: `--gvx-tag <tag> --gvx-commit <sha> [--app-rev 0..9]` and `--fetch-latest [--repo <url>]` update all version manifests atomically and seed missing Fastlane changelog stubs. `.github/workflows/sync-gvx.yml` runs `--fetch-latest` on schedule and opens a pull request when upstream `gvx` advances.
 
 ### 18.5 Clean-Room Verification Procedure (Procedural Module)

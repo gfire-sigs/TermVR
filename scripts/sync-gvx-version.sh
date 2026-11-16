@@ -304,6 +304,43 @@ def update_fdroid_yml(yml_text: str, gvx_commit: str, version_name: str, version
     return yml_text
 
 
+def update_checkpoint_controller(kt_text: str, gvx_tag: str) -> str:
+    return replace_exact_once(
+        kt_text,
+        r'^(\s*const\s+val\s+DEFAULT_GVX_VERSION:\s*String\s*=\s*)"[^"]*"\s*$',
+        rf'\g<1>"{gvx_tag}"',
+        "CheckpointController.kt DEFAULT_GVX_VERSION",
+    )
+
+
+def update_licenses_index(index_text: str, gvx_tag: str) -> str:
+    entries = json.loads(index_text)
+    updated = 0
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("id") == "gvx":
+            entry["version"] = gvx_tag
+            updated += 1
+    if updated != 1:
+        raise SyncError(f"Expected 1 gvx entry in app/src/main/assets/licenses/index.json, found {updated}")
+    return json.dumps(entries, indent=2) + "\n"
+
+
+def update_gvx_license_txt(license_text: str, gvx_tag: str, gvx_commit: str) -> str:
+    license_text = replace_exact_once(
+        license_text,
+        r"^gvx User-Space Linux Sandbox \([^)]+\)$",
+        f"gvx User-Space Linux Sandbox ({gvx_tag})",
+        "gvx.txt header version",
+    )
+    license_text = replace_exact_once(
+        license_text,
+        r"^Commit: [0-9a-fA-F]{40}$",
+        f"Commit: {gvx_commit}",
+        "gvx.txt commit SHA",
+    )
+    return license_text
+
+
 def ensure_fastlane_changelog(repo_root: Path, version_name: str, version_code: int, gvx_tag: str, gvx_commit: str) -> Path:
     changelog_path = repo_root / "fastlane/metadata/android/en-US/changelogs" / f"{version_code}.txt"
     if not changelog_path.exists():
@@ -421,6 +458,42 @@ def run_check(repo_root: Path, expect_tag: str | None) -> None:
         if not re.search(pattern, fdroid_text, re.M):
             raise SyncError(f"fdroid/dev.gfire.termvr.yml missing or mismatched: {desc}")
 
+    checkpoint_path = (
+        repo_root / "core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/CheckpointController.kt"
+    )
+    if not checkpoint_path.is_file():
+        raise SyncError(f"Missing CheckpointController.kt: {checkpoint_path.relative_to(repo_root)}")
+    checkpoint_text = checkpoint_path.read_text(encoding="utf-8")
+    if not re.search(
+        rf'^\s*const\s+val\s+DEFAULT_GVX_VERSION:\s*String\s*=\s*"{re.escape(gvx_tag)}"\s*$',
+        checkpoint_text,
+        re.M,
+    ):
+        raise SyncError(
+            f"CheckpointController.kt DEFAULT_GVX_VERSION != expected '{gvx_tag}'"
+        )
+
+    licenses_index_path = repo_root / "app/src/main/assets/licenses/index.json"
+    if not licenses_index_path.is_file():
+        raise SyncError(f"Missing licenses index: {licenses_index_path.relative_to(repo_root)}")
+    licenses_entries = json.loads(licenses_index_path.read_text(encoding="utf-8"))
+    gvx_license_entries = [
+        entry for entry in licenses_entries if isinstance(entry, dict) and entry.get("id") == "gvx"
+    ]
+    if len(gvx_license_entries) != 1 or gvx_license_entries[0].get("version") != gvx_tag:
+        raise SyncError(
+            f"app/src/main/assets/licenses/index.json gvx version != expected '{gvx_tag}'"
+        )
+
+    gvx_license_path = repo_root / "app/src/main/assets/licenses/gvx.txt"
+    if not gvx_license_path.is_file():
+        raise SyncError(f"Missing gvx license notice: {gvx_license_path.relative_to(repo_root)}")
+    gvx_license_text = gvx_license_path.read_text(encoding="utf-8")
+    if not re.search(rf"^gvx User-Space Linux Sandbox \({re.escape(gvx_tag)}\)$", gvx_license_text, re.M):
+        raise SyncError(f"app/src/main/assets/licenses/gvx.txt header != expected '{gvx_tag}'")
+    if not re.search(rf"^Commit: {re.escape(gvx_commit)}$", gvx_license_text, re.M):
+        raise SyncError(f"app/src/main/assets/licenses/gvx.txt commit != expected '{gvx_commit}'")
+
     changelog_path = repo_root / "fastlane/metadata/android/en-US/changelogs" / f"{version_code}.txt"
     if not changelog_path.is_file():
         raise SyncError(f"Missing Fastlane changelog: {changelog_path.relative_to(repo_root)}")
@@ -457,6 +530,11 @@ def run_sync(
     lock_path = repo_root / "scripts/source-lock.json"
     toml_path = repo_root / "gradle/libs.versions.toml"
     fdroid_path = repo_root / "fdroid/dev.gfire.termvr.yml"
+    checkpoint_path = (
+        repo_root / "core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/CheckpointController.kt"
+    )
+    licenses_index_path = repo_root / "app/src/main/assets/licenses/index.json"
+    gvx_license_path = repo_root / "app/src/main/assets/licenses/gvx.txt"
 
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     lock["sources"]["gvx"]["tag"] = gvx_tag
@@ -469,6 +547,9 @@ def run_sync(
     new_lock = json.dumps(lock, indent=2) + "\n"
     new_toml = update_versions_toml(toml_path.read_text(encoding="utf-8"), gvx_tag, gvx_commit, version_name, version_code)
     new_fdroid = update_fdroid_yml(fdroid_path.read_text(encoding="utf-8"), gvx_commit, version_name, version_code)
+    new_checkpoint = update_checkpoint_controller(checkpoint_path.read_text(encoding="utf-8"), gvx_tag)
+    new_licenses_index = update_licenses_index(licenses_index_path.read_text(encoding="utf-8"), gvx_tag)
+    new_gvx_license = update_gvx_license_txt(gvx_license_path.read_text(encoding="utf-8"), gvx_tag, gvx_commit)
 
     if dry_run:
         log(f"DRY RUN: gvx={gvx_tag} ({gvx_commit[:12]}) app_rev={app_rev} versionName={version_name} versionCode={version_code}")
@@ -477,6 +558,9 @@ def run_sync(
     atomic_write_text(lock_path, new_lock)
     atomic_write_text(toml_path, new_toml)
     atomic_write_text(fdroid_path, new_fdroid)
+    atomic_write_text(checkpoint_path, new_checkpoint)
+    atomic_write_text(licenses_index_path, new_licenses_index)
+    atomic_write_text(gvx_license_path, new_gvx_license)
     ensure_fastlane_changelog(repo_root, version_name, version_code, gvx_tag, gvx_commit)
     log(f"Synced: gvx={gvx_tag} ({gvx_commit[:12]}) versionName={version_name} versionCode={version_code}")
 

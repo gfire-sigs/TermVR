@@ -82,7 +82,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "${BRANCH_NAME}"
-          git add scripts/source-lock.json gradle/libs.versions.toml fdroid/dev.gfire.termvr.yml fastlane/metadata/android/en-US/changelogs/
+          git add \
+            scripts/source-lock.json \
+            gradle/libs.versions.toml \
+            fdroid/dev.gfire.termvr.yml \
+            core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/CheckpointController.kt \
+            app/src/main/assets/licenses/index.json \
+            app/src/main/assets/licenses/gvx.txt \
+            fastlane/metadata/android/en-US/changelogs/
           git commit -m "build(deps): sync gvx to ${GVX_TAG}"
           git push --force-with-lease origin "${BRANCH_NAME}"
 

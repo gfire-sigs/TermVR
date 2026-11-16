@@ -6,7 +6,30 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.16.10002026110900`.
+This section tracks changes staged on `main` after `0.16.10012026110900`.
+
+---
+
+## [0.16.10012026110900]
+
+This release (`versionCode` `301600010`) upgrades the bundled `gvx` runtime to `v0.16.10012026110900` (`fd2571c34f87`). It improves terminal key chords, guest shell defaults, compact tab controls, checkpoint lifecycles, and nested containers on 16 KB `arm64` hosts.
+
+### Terminal input, shells, and compact tab controls
+
+Soft-keyboard chords, guest shell defaults, and narrow-screen tab bars now behave consistently across distributions and terminal apps. Exited tabs still close in one tap while live tabs guard against accidental taps.
+
+- Fixed `AuxiliaryKeyBar` one-shot modifier highlight updates, IME composition `CTRL`/`ALT` chords, C0 punctuation encoding, and FIFO PTY write ordering.
+- Set `LANG=C.UTF-8`, preferred `/bin/bash` over `/bin/sh` when installed, bypassed guest-local subnets in `termvr-agent` proxy settings, and renamed defaults to `Debian` and `Shell 1`.
+- Fixed `btop` `'q'` exit hangs via `gvx` `devpts` non-canonical `VMIN` and `VTIME` replica reads (`gvx#198`).
+- Hid inline close icons on unselected compact tabs and added a `Close tab?` confirmation modal for live tabs and split panes.
+
+### Lifecycle hardening and 16 KB nested containers
+
+Surface recreation, checkpoint consumption, and 16 KB `arm64` memory management now handle repeated pause, resume, stop, and nested container workloads cleanly. `scripts/sync-gvx-version.sh` also keeps `CheckpointController.DEFAULT_GVX_VERSION` and bundled license notices synchronized.
+
+- Hardened OpenGL ES 3.0 thread teardown, `NativeVtSession` locking, per-tab surface controllers, and foreground service resume handling.
+- Marked consumed `active-slot.json` checkpoints superseded on restore and container stop so later cold starts do not reuse stale snapshots.
+- Upgraded `gvx` (`gvx#201` and `gvx#202`) to fix 16 KB `arm64` split `.relr.dyn` sub-block unmapping for `Docker (DinD)` and `k3s` `nginx:alpine` workloads and retain guest memory through teardown.
 
 ---
 
