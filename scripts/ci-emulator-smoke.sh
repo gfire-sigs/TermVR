@@ -5,6 +5,15 @@ if ! command -v adb >/dev/null 2>&1 && [ -n "${ANDROID_HOME:-}" ] && [ -x "${AND
   export PATH="${ANDROID_HOME}/platform-tools:${PATH}"
 fi
 
+dump_failure_logs() {
+  echo "=== crash logcat ===" >&2
+  adb logcat -d -b crash -v threadtime || true
+  echo "=== filtered main/system logcat ===" >&2
+  adb logcat -d -b main,system -v threadtime | grep -iE 'termvr|AndroidRuntime|libc|DEBUG|fatal|crash|sig|kill|died|lmkd|lowmemory|oom|anr|OpenGLRenderer|RenderThread|hwui' | tail -n 150 || true
+  echo "=== activity processes ===" >&2
+  adb shell dumpsys activity processes dev.gfire.termvr | tail -n 60 || true
+}
+
 page_size="$(adb shell getconf PAGESIZE | tr -d '\r')"
 echo "Emulator page size: ${page_size}"
 if [ "${page_size}" != "16384" ]; then
@@ -29,7 +38,7 @@ done
 
 if [ -z "${app_pid}" ]; then
   echo "dev.gfire.termvr process is not running after launch" >&2
-  adb logcat -d -s AndroidRuntime:E libc:F DEBUG:* ActivityManager:I ActivityTaskManager:I || true
+  dump_failure_logs
   exit 1
 fi
 
@@ -38,7 +47,7 @@ sleep 3
 
 if ! adb shell pidof dev.gfire.termvr >/dev/null 2>&1; then
   echo "dev.gfire.termvr exited shortly after launch" >&2
-  adb logcat -d -s AndroidRuntime:E libc:F DEBUG:* || true
+  dump_failure_logs
   exit 1
 fi
 
