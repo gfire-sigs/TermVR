@@ -2,8 +2,11 @@ package dev.gfire.termvr.core.runtime
 
 import android.content.ComponentCallbacks2
 import android.content.Context
+import android.os.Build
+import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.HostReadinessReport
+import dev.gfire.termvr.core.model.ListenHost
 import dev.gfire.termvr.core.model.MuxMode
 import dev.gfire.termvr.core.model.OutboundProxyConfig
 import dev.gfire.termvr.core.model.OutboundProxyMode
@@ -27,6 +30,7 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -199,6 +203,7 @@ class SandboxSupervisor(
     private val guestArch: GuestLinuxArch = GuestLinuxArch.ARM64,
     private val ptyBackend: PtyBackend = NativePtyBridge,
     private val hostPssSampler: HostProcessPssSampler = HostProcessPssSampler { 0L },
+    private val hostPortProbe: HostPortProbe = NoOpHostPortProbe,
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
     private val nanoClock: () -> Long = { System.nanoTime() },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -234,6 +239,7 @@ class SandboxSupervisor(
     private val bridgeLock = Any()
     private val helperSeq = AtomicInteger(1)
     private val telemetryPollCount = AtomicLong(0L)
+    private val observedChildSigkill = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
 
     @Volatile
@@ -254,7 +260,15 @@ class SandboxSupervisor(
         get() = telemetryPollCount.get()
 
     fun refreshHostReadiness(): HostReadinessReport {
-        val report = readinessInspector.inspect()
+        val rawReport = readinessInspector.inspect()
+        val report = if (observedChildSigkill.get() && !rawReport.phantomKillerDetected) {
+            rawReport.copy(
+                phantomKillerDetected = true,
+                remediationKind = HostReadinessInspector.remediationForSdk(rawReport.hostSdkInt),
+            )
+        } else {
+            rawReport
+        }
         _hostReadiness.value = report
         return report
     }
@@ -307,10 +321,22 @@ class SandboxSupervisor(
         profile: SandboxProfile,
         hostRpcDelegate: HostRpcDelegate? = null,
         reconfirmLan: Boolean = false,
+        preserveCheckpointOnFailure: Boolean = false,
     ): SandboxRunState = withContext(Dispatchers.IO) {
-        profileMutex(profile.id).withLock {
+        var upgradeLanRulesWhileRunning = false
+        val lockResult: SandboxRunState? = profileMutex(profile.id).withLock {
             val existing = sessions[profile.id]
             if (existing != null && existing.process.isAlive) {
+                cachedProfiles[profile.id] = profile
+                if (reconfirmLan) {
+                    _lanReconfirmationRequired.update { it - profile.id }
+                    if (profile.portForwards.any { it.exposesLan } &&
+                        existing.profile.portForwards.none { it.exposesLan }
+                    ) {
+                        upgradeLanRulesWhileRunning = true
+                        return@withLock null
+                    }
+                }
                 return@withLock _runStates.value[profile.id] ?: SandboxRunState.RUNNING
             }
 
@@ -328,9 +354,6 @@ class SandboxSupervisor(
             } else {
                 profile.portForwards
             }
-            if (reconfirmLan) {
-                _lanReconfirmationRequired.update { it - profile.id }
-            }
 
             val prevMeta = checkpointController.readMetadata(profile.id)
             val activeCheckpoint = checkpointController.resolveActiveCheckpoint(profile.id)
@@ -339,12 +362,38 @@ class SandboxSupervisor(
                     "Saved checkpoint for '${profile.displayName}' was superseded after engine update; starting cold boot."
             }
 
+            val isRestore = activeCheckpoint != null
+            val launchPorts = if (activeCheckpoint != null) {
+                val checkpointPorts = if (needsLanGate) {
+                    activeCheckpoint.metadata.resolvedPorts.map { it.downgradeLanToLoopback() }
+                } else {
+                    activeCheckpoint.metadata.resolvedPorts
+                }
+                resolveRestorePorts(effectivePorts, checkpointPorts)
+            } else {
+                effectivePorts
+            }
+
+            try {
+                validatePortRulesBeforeBind(
+                    profileId = profile.id,
+                    displayName = profile.displayName,
+                    candidateRules = launchPorts,
+                )
+            } catch (e: PortConflictException) {
+                setRunState(profile.id, if (isRestore) SandboxRunState.FROZEN else SandboxRunState.FAILED)
+                throw e
+            }
+
+            if (reconfirmLan) {
+                _lanReconfirmationRequired.update { it - profile.id }
+            }
+
             val dnsPort = dnsProxy.boundPort
             val controlSock = commandBuilder.controlSocketFile(profile.id)
             controlSock.parentFile?.mkdirs()
             if (controlSock.exists()) controlSock.delete()
 
-            val isRestore = activeCheckpoint != null
             val preopenedCheckpointDir = activeCheckpoint?.slotDir
                 ?: checkpointController.prepareCheckpointSlotDir(profile.id)
             setRunState(profile.id, if (isRestore) SandboxRunState.RESTORING else SandboxRunState.STARTING)
@@ -356,17 +405,12 @@ class SandboxSupervisor(
             )
 
             val args = if (activeCheckpoint != null) {
-                val restorePorts = if (needsLanGate) {
-                    activeCheckpoint.metadata.resolvedPorts.map { it.downgradeLanToLoopback() }
-                } else {
-                    activeCheckpoint.metadata.resolvedPorts.ifEmpty { effectivePorts }
-                }
                 commandBuilder.buildRestoreArgs(
                     profile = profile,
                     slotDir = activeCheckpoint.slotDir,
                     dnsPort = dnsPort,
                     controlSock = controlSock,
-                    resolvedPorts = restorePorts,
+                    resolvedPorts = launchPorts,
                     guestArch = guestArch,
                 )
             } else {
@@ -374,7 +418,7 @@ class SandboxSupervisor(
                     profile = profile,
                     dnsPort = dnsPort,
                     controlSock = controlSock,
-                    activePorts = effectivePorts,
+                    activePorts = launchPorts,
                     guestArch = guestArch,
                     checkpointDir = preopenedCheckpointDir,
                 )
@@ -391,11 +435,27 @@ class SandboxSupervisor(
                 processLauncher.launch(args, hostEnv, ptySlaveDevice)
             } catch (e: Exception) {
                 rawPtyHandle?.close()
-                setRunState(profile.id, SandboxRunState.FAILED)
+                val addressInUse = PortConflictDetector.isAddressInUseError(e)
+                if (isRestore && (preserveCheckpointOnFailure || addressInUse)) {
+                    setRunState(profile.id, SandboxRunState.FROZEN)
+                } else {
+                    setRunState(profile.id, SandboxRunState.FAILED)
+                }
+                if (addressInUse) {
+                    val msg = PortConflictDetector.formatAddressInUseMessage(e.message.orEmpty(), launchPorts)
+                    throw PortConflictException(
+                        conflictingPort = PortConflictDetector.extractAddressInUsePort(e.message.orEmpty(), launchPorts),
+                        protocol = null,
+                        message = msg,
+                        cause = e,
+                    )
+                }
                 throw e
             }
 
-            val publishedList = ArrayList<PublishedPortMapping>()
+            val publishedList = ArrayList<PublishedPortMapping>().apply {
+                addAll(PortConflictDetector.buildFixedPublishedPortMappings(launchPorts))
+            }
             val recentStderr = ArrayDeque<String>()
             val stderrThread = Thread(
                 {
@@ -414,7 +474,15 @@ class SandboxSupervisor(
                                 val parsed = GvxCommandBuilder.parsePublishingLine(line)
                                 if (parsed != null) {
                                     synchronized(publishedList) {
-                                        publishedList.add(parsed)
+                                        val exists = publishedList.any {
+                                            it.protocol == parsed.protocol &&
+                                                it.hostPort == parsed.hostPort &&
+                                                it.guestPort == parsed.guestPort &&
+                                                it.listenHost == parsed.listenHost
+                                        }
+                                        if (!exists) {
+                                            publishedList.add(parsed)
+                                        }
                                         _publishedPortsByProfile.update { current ->
                                             current + (profile.id to publishedList.toList())
                                         }
@@ -457,16 +525,57 @@ class SandboxSupervisor(
                         } catch (_: InterruptedException) {
                             Thread.currentThread().interrupt()
                         }
+                        _publishedPortsByProfile.update { current -> current - profile.id }
                         val stderrTail = synchronized(recentStderr) { recentStderr.joinToString(" | ") }
+                        val exitCode = if (!process.isAlive) {
+                            runCatching { process.waitForExit() }.getOrDefault(-1)
+                        } else {
+                            -1
+                        }
+                        val addressInUse = PortConflictDetector.isAddressInUseError(e, stderrTail)
                         val reason = e.message?.takeIf { it.isNotBlank() }
-                            ?: if (e is TimeoutException) "Timed out waiting for sandbox handshake" else "Sandbox start failed"
+                            ?: if (e is TimeoutException) {
+                                "Timed out waiting for sandbox handshake"
+                            } else {
+                                "Sandbox start failed"
+                            }
+
                         if (isRestore) {
-                            checkpointController.markSuperseded(
-                                profileId = profile.id,
-                                reason = "Restore failed: $reason",
+                            if (preserveCheckpointOnFailure || addressInUse) {
+                                setRunState(profile.id, SandboxRunState.FROZEN)
+                            } else {
+                                checkpointController.markSuperseded(
+                                    profileId = profile.id,
+                                    reason = "Restore failed: $reason",
+                                )
+                                setRunState(profile.id, SandboxRunState.FAILED)
+                            }
+                        } else {
+                            setRunState(profile.id, SandboxRunState.FAILED)
+                        }
+
+                        if (addressInUse) {
+                            val combined = stderrTail.ifBlank { e.message.orEmpty() }
+                            val msg = PortConflictDetector.formatAddressInUseMessage(combined, launchPorts)
+                            throw PortConflictException(
+                                conflictingPort = PortConflictDetector.extractAddressInUsePort(combined, launchPorts),
+                                protocol = null,
+                                message = msg,
+                                cause = e,
                             )
                         }
-                        setRunState(profile.id, SandboxRunState.FAILED)
+                        if (isSigkillExitCode(exitCode)) {
+                            observedChildSigkill.set(true)
+                            val readiness = refreshHostReadiness()
+                            val msg = formatUnexpectedExitDiagnostic(
+                                containerName = profile.displayName,
+                                exitCode = exitCode,
+                                hostSdkInt = readiness.hostSdkInt,
+                                stderrSummary = stderrTail,
+                            )
+                            _activeServiceNotice.value = msg
+                            throw IOException(msg, e)
+                        }
                         if (stderrTail.isNotBlank()) {
                             throw IOException("$reason: $stderrTail", e)
                         }
@@ -479,17 +588,23 @@ class SandboxSupervisor(
 
             val now = clockMillis()
             val managed = ManagedSandbox(
-                profile = profile.copy(portForwards = effectivePorts),
+                profile = profile.copy(portForwards = launchPorts),
                 process = process,
                 muxClient = muxClient,
                 rawPtyHandle = rawPtyHandle,
                 controlSock = controlSock,
                 preopenedCheckpointDir = preopenedCheckpointDir,
                 stderrThread = stderrThread,
+                recentStderr = recentStderr,
                 publishedPorts = publishedList,
                 lastActivityMillis = AtomicLong(now),
             )
             sessions[profile.id] = managed
+            synchronized(publishedList) {
+                _publishedPortsByProfile.update { current ->
+                    current + (profile.id to publishedList.toList())
+                }
+            }
             if (isRestore) {
                 // Mark the consumed snapshot superseded once the resumed sandbox begins mutating storage.
                 checkpointController.markSuperseded(
@@ -501,6 +616,15 @@ class SandboxSupervisor(
             refreshHostReadiness()
             SandboxRunState.RUNNING
         }
+        if (upgradeLanRulesWhileRunning) {
+            return@withContext applyPortForwards(
+                profileId = profile.id,
+                updatedRules = profile.portForwards,
+                checkpointAndRestore = true,
+                hostRpcDelegate = hostRpcDelegate,
+            )
+        }
+        lockResult!!
     }
 
     /**
@@ -599,6 +723,15 @@ class SandboxSupervisor(
     ): SandboxRunState {
         val current = sessions[profileId]?.profile ?: cachedProfiles[profileId]
             ?: error("Unknown profile $profileId")
+        val alreadyBoundBySelf = collectBoundPortSet(current.portForwards, _publishedPortsByProfile.value[profileId].orEmpty())
+        validatePortRulesBeforeBind(
+            profileId = profileId,
+            displayName = current.displayName,
+            candidateRules = updatedRules,
+            skipAlreadyBoundOnProfile = alreadyBoundBySelf,
+        )
+
+        val previousProfile = current
         val updatedProfile = current.copy(portForwards = updatedRules)
         cachedProfiles[profileId] = updatedProfile
 
@@ -607,8 +740,38 @@ class SandboxSupervisor(
             return state
         }
         return if (checkpointAndRestore) {
-            freezeSandbox(profileId)
-            startOrResumeSandbox(updatedProfile, hostRpcDelegate = hostRpcDelegate, reconfirmLan = true)
+            try {
+                freezeSandbox(profileId)
+            } catch (e: Exception) {
+                cachedProfiles[profileId] = previousProfile
+                throw e
+            }
+            try {
+                startOrResumeSandbox(
+                    profile = updatedProfile,
+                    hostRpcDelegate = hostRpcDelegate,
+                    reconfirmLan = true,
+                    preserveCheckpointOnFailure = true,
+                )
+            } catch (cancelled: CancellationException) {
+                cachedProfiles[profileId] = previousProfile
+                throw cancelled
+            } catch (restoreErr: Exception) {
+                cachedProfiles[profileId] = previousProfile
+                if (previousProfile.portForwards != updatedRules &&
+                    checkpointController.resolveActiveCheckpoint(profileId) != null
+                ) {
+                    runCatching {
+                        startOrResumeSandbox(
+                            profile = previousProfile,
+                            hostRpcDelegate = hostRpcDelegate,
+                            reconfirmLan = true,
+                            preserveCheckpointOnFailure = true,
+                        )
+                    }
+                }
+                throw restoreErr
+            }
         } else {
             stopSandbox(profileId)
             startOrResumeSandbox(updatedProfile, hostRpcDelegate = hostRpcDelegate, reconfirmLan = true)
@@ -619,14 +782,22 @@ class SandboxSupervisor(
      * Marks LAN-exposed sandboxes for reconfirmation when Android switches network handles.
      */
     fun onNetworkHandleChanged(networkHandle: Long?) {
+        if (networkHandle == null) {
+            return
+        }
         val prev = lastNetworkHandle
         lastNetworkHandle = networkHandle
-        if (prev == null || networkHandle == null || prev == networkHandle) {
+        if (prev == null || prev == networkHandle) {
             return
         }
         val affected = HashSet<String>()
         for ((id, profile) in cachedProfiles) {
             if (profile.portForwards.any { it.exposesLan }) {
+                affected.add(id)
+            }
+        }
+        for ((id, managed) in sessions) {
+            if (managed.profile.portForwards.any { it.exposesLan }) {
                 affected.add(id)
             }
         }
@@ -648,6 +819,11 @@ class SandboxSupervisor(
         val updated = LinkedHashMap<String, SandboxTelemetrySnapshot>()
         val activeIds = sessions.keys.toList()
 
+        val liveChildCount = readinessInspector.countLiveChildProcesses()
+        if (liveChildCount != _hostReadiness.value.liveChildProcessCount) {
+            _hostReadiness.update { it.copy(liveChildProcessCount = liveChildCount) }
+        }
+
         for (id in activeIds) {
             val managed = sessions[id] ?: continue
             if ((_runStates.value[id] ?: SandboxRunState.STOPPED) != SandboxRunState.RUNNING) {
@@ -657,9 +833,25 @@ class SandboxSupervisor(
                 if (sessions.remove(id, managed)) {
                     cleanupSessionResources(id, managed)
                     val exitCode = runCatching { managed.process.waitForExit() }.getOrDefault(-1)
-                    setRunState(id, if (exitCode == 0) SandboxRunState.STOPPED else SandboxRunState.FAILED)
+                    val stderrTail = synchronized(managed.recentStderr) {
+                        managed.recentStderr.joinToString(" | ")
+                    }
+                    if (isSigkillExitCode(exitCode)) {
+                        observedChildSigkill.set(true)
+                    }
+                    val readiness = refreshHostReadiness()
+                    if (exitCode == 0) {
+                        setRunState(id, SandboxRunState.STOPPED)
+                    } else {
+                        setRunState(id, SandboxRunState.FAILED)
+                        _activeServiceNotice.value = formatUnexpectedExitDiagnostic(
+                            containerName = managed.profile.displayName,
+                            exitCode = exitCode,
+                            hostSdkInt = readiness.hostSdkInt,
+                            stderrSummary = stderrTail,
+                        )
+                    }
                     releaseWakeLockIfNoRunningSandboxes()
-                    refreshHostReadiness()
                 }
                 continue
             }
@@ -849,6 +1041,8 @@ class SandboxSupervisor(
 
     private fun cleanupSessionResources(profileId: String, managed: ManagedSandbox) {
         sessions.remove(profileId, managed)
+        _publishedPortsByProfile.update { current -> current - profileId }
+        _telemetryByProfile.update { current -> current - profileId }
         managed.muxClient?.close()
         managed.rawPtyHandle?.close()
         try {
@@ -857,6 +1051,94 @@ class SandboxSupervisor(
             Thread.currentThread().interrupt()
         }
         managed.controlSock.delete()
+    }
+
+    private fun validatePortRulesBeforeBind(
+        profileId: String,
+        displayName: String,
+        candidateRules: List<PortForwardRule>,
+        skipAlreadyBoundOnProfile: List<SelfBoundPort> = emptyList(),
+    ) {
+        PortConflictDetector.detectSelfRuleConflict(candidateRules, displayName)?.let { match ->
+            throw PortConflictDetector.toException(match)
+        }
+        val activeProfiles = LinkedHashMap<String, SandboxProfile>()
+        activeProfiles.putAll(cachedProfiles)
+        for ((id, managed) in sessions) {
+            activeProfiles[id] = managed.profile
+        }
+        PortConflictDetector.detectCrossProfileConflict(
+            targetProfileId = profileId,
+            candidateRules = candidateRules,
+            profiles = activeProfiles.values,
+            runStates = _runStates.value,
+            publishedPortsByProfile = _publishedPortsByProfile.value,
+        )?.let { match ->
+            throw PortConflictDetector.toException(match)
+        }
+        for (rule in candidateRules) {
+            if (!rule.enabled) continue
+            if (rule.protocol != ForwardProtocol.TCP && rule.protocol != ForwardProtocol.UDP) continue
+            if (rule.hostPortStart <= 0) continue
+            for (port in rule.hostPortStart..rule.hostPortEnd) {
+                val overlapsSelf = skipAlreadyBoundOnProfile.any { bound ->
+                    bound.protocol == rule.protocol &&
+                        bound.port == port &&
+                        (bound.listenHost == null || PortConflictDetector.listenHostsConflict(rule.listenHost, bound.listenHost))
+                }
+                if (overlapsSelf) continue
+                try {
+                    hostPortProbe.verifyAvailable(rule.listenHost, port, rule.protocol)
+                } catch (e: PortConflictException) {
+                    throw e
+                } catch (e: IOException) {
+                    if (PortConflictDetector.isAddressInUseError(e)) {
+                        val msg = PortConflictDetector.formatAddressInUseMessage(
+                            "port $port: ${e.message.orEmpty()}",
+                            listOf(rule),
+                        )
+                        throw PortConflictException(
+                            conflictingPort = port,
+                            protocol = rule.protocol,
+                            message = msg,
+                            cause = e,
+                        )
+                    }
+                    throw e
+                }
+            }
+        }
+    }
+
+    private data class SelfBoundPort(
+        val protocol: ForwardProtocol,
+        val listenHost: ListenHost?,
+        val port: Int,
+    )
+
+    private fun collectBoundPortSet(
+        rules: List<PortForwardRule>,
+        published: List<PublishedPortMapping>,
+    ): List<SelfBoundPort> {
+        val out = ArrayList<SelfBoundPort>()
+        for (rule in rules) {
+            if (!rule.enabled) continue
+            if (rule.protocol != ForwardProtocol.TCP && rule.protocol != ForwardProtocol.UDP) continue
+            if (rule.hostPortStart <= 0) continue
+            for (port in rule.hostPortStart..rule.hostPortEnd) {
+                out.add(SelfBoundPort(rule.protocol, rule.listenHost, port))
+            }
+        }
+        for (mapping in published) {
+            out.add(
+                SelfBoundPort(
+                    protocol = mapping.protocol,
+                    listenHost = PortConflictDetector.parseListenHost(mapping.listenHost),
+                    port = mapping.hostPort,
+                ),
+            )
+        }
+        return out
     }
 
     private fun setRunState(profileId: String, state: SandboxRunState) {
@@ -874,6 +1156,7 @@ class SandboxSupervisor(
         val controlSock: File,
         val preopenedCheckpointDir: File,
         val stderrThread: Thread,
+        val recentStderr: ArrayDeque<String>,
         val publishedPorts: MutableList<PublishedPortMapping>,
         val lastActivityMillis: AtomicLong,
         var lastCpuNanos: Long = 0L,
@@ -886,6 +1169,67 @@ class SandboxSupervisor(
         const val DEFAULT_IDLE_FREEZE_MINUTES: Int = 5
         const val COLD_BOOT_HELLO_TIMEOUT_MS: Long = 300_000L
         const val RESTORE_RESYNC_TIMEOUT_MS: Long = 30_000L
+        const val SIGKILL_SIGNAL_NUMBER: Int = 9
+        const val SIGKILL_EXIT_CODE: Int = 128 + SIGKILL_SIGNAL_NUMBER
+
+        fun isSigkillExitCode(exitCode: Int): Boolean =
+            exitCode == SIGKILL_EXIT_CODE || exitCode == -SIGKILL_SIGNAL_NUMBER
+
+        /**
+         * Formats an actionable diagnostic message when `librungv.so` terminates unexpectedly.
+         */
+        fun formatUnexpectedExitDiagnostic(
+            containerName: String,
+            exitCode: Int,
+            hostSdkInt: Int,
+            stderrSummary: String = "",
+        ): String {
+            if (isSigkillExitCode(exitCode)) {
+                return if (hostSdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    "Container '$containerName' stopped on SIGKILL (exit $exitCode) from Android process or memory limits. " +
+                        "Enable 'Disable child process restrictions' in Developer Options, or freeze idle containers."
+                } else {
+                    "Container '$containerName' stopped on SIGKILL (exit $exitCode) from Android 32-process or memory limits. " +
+                        "Keep at most 3 containers running, or check System Diagnostics for ADB setup."
+                }
+            }
+            if (PortConflictDetector.isAddressInUseError(null, stderrSummary)) {
+                return PortConflictDetector.formatAddressInUseMessage(stderrSummary, emptyList())
+            }
+            val detail = stderrSummary.trim().take(160)
+            return if (detail.isNotEmpty()) {
+                "Container '$containerName' exited unexpectedly (code $exitCode): $detail"
+            } else {
+                "Container '$containerName' exited unexpectedly (code $exitCode)."
+            }
+        }
+
+        internal fun resolveRestorePorts(
+            effectivePorts: List<PortForwardRule>,
+            checkpointResolvedPorts: List<PortForwardRule>,
+        ): List<PortForwardRule> {
+            if (effectivePorts.isEmpty()) return emptyList()
+            return effectivePorts.map { rule ->
+                if (!rule.enabled || rule.protocol == ForwardProtocol.UNIX_STREAM || rule.hostPortStart != 0) {
+                    return@map rule
+                }
+                if (rule.guestPortStart != rule.guestPortEnd) {
+                    return@map rule
+                }
+                val matched = checkpointResolvedPorts.firstOrNull {
+                    it.id == rule.id && it.protocol == rule.protocol && it.hostPortStart > 0
+                } ?: checkpointResolvedPorts.firstOrNull {
+                    it.protocol == rule.protocol &&
+                        it.guestPortStart == rule.guestPortStart &&
+                        it.hostPortStart > 0
+                }
+                if (matched != null) {
+                    rule.copy(hostPortStart = matched.hostPortStart, hostPortEnd = matched.hostPortEnd)
+                } else {
+                    rule
+                }
+            }
+        }
 
         fun formatProxyBadgeLabel(config: OutboundProxyConfig): String? {
             return when (config.mode) {

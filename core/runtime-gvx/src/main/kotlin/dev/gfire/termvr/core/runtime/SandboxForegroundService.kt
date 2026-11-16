@@ -430,14 +430,25 @@ class SandboxForegroundService : LifecycleService() {
     }
 
     private fun registerNetworkCallback() {
+        runCatching {
+            val active = connectivityManager.activeNetwork
+            val caps = active?.let { connectivityManager.getNetworkCapabilities(it) }
+            if (active != null && caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                supervisorInstance.onNetworkHandleChanged(active.networkHandle)
+            }
+        }
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 supervisorInstance.onNetworkHandleChanged(network.networkHandle)
             }
+
+            override fun onLost(network: Network) {
+                supervisorInstance.onNetworkHandleChanged(null)
+            }
         }
         networkCallback = cb
         val req = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
         runCatching { connectivityManager.registerNetworkCallback(req, cb) }
     }
@@ -493,6 +504,7 @@ class SandboxForegroundService : LifecycleService() {
             agentExtractor = AndroidAgentAssetExtractor(appCtx, files),
             guestArch = arch,
             hostPssSampler = pssSampler,
+            hostPortProbe = SocketBindHostPortProbe,
         )
     }
 
