@@ -1,0 +1,5 @@
+TermVR 0.16.10022026110900 (gvx v0.16.10022026110900):
+- Upgraded gvx to v0.16.10022026110900: fixed 16 KB arm64 TBI0/STLUR and JIT I-cache (#203) plus PTY hangup and job control (#205).
+- Enabled Hangul/CJK soft keyboards, debounced SIGWINCH, and hardened TUI selection and bracketed paste.
+- Preserved POSIX modes on SAF saves, streamed imports, and clarified active volume locks.
+- Added port conflict checks, WireGuard SAF caps, DNS TCP fallback, and child-process readiness.

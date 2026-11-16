@@ -6,7 +6,30 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.16.10012026110900`.
+This section tracks changes staged on `main` after `0.16.10022026110900`.
+
+---
+
+## [0.16.10022026110900]
+
+This release (`versionCode` `301600020`) upgrades the bundled `gvx` runtime to `v0.16.10022026110900` (`4f7bbd5ff889`). It improves CJK input, touch selection, SAF workspace saves, port checks, DNS roaming, and 16 KB `arm64` JIT support.
+
+### CJK input, touch selection, and SAF workspace storage
+
+Soft keyboards, TUI mouse views, external SAF editors, and volume browsers now preserve character composition, POSIX permissions, and single-writer volume safety.
+
+- Enabled Hangul and CJK soft-keyboard modes by dropping `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD` and adding `IME_FLAG_NO_PERSONALIZED_LEARNING` on `TerminalInputConnection`.
+- Hardened 2-beolsik `CTRL`/`ALT` jamo chords, coalesced `SIGWINCH` resize bursts (`48 ms` debounce), added TUI long-press selection, and sanitized bracketed paste bytes.
+- Preserved POSIX executable modes and `"wa"` / `"rw"` contents in `TermVrDocumentsProvider`, and streamed `64 KiB` SAF imports within `255`-byte filename bounds.
+- Paused live volume helpers to protect single-writer `ext4lite` mounts and added `Open Workspace`, `Stop Container`, and `Discard Checkpoint` actions in `Files`.
+
+### Network resilience, process readiness, and 16 KB gvx runtime
+
+Live port edits, DNS queries, and 16 KB `arm64` runtimes now handle port collisions, truncated UDP replies, V8 JIT caches, and PTY hangups cleanly.
+
+- Added self, cross-profile, and host socket port conflict checks (`PortConflictDetector`), capped SAF WireGuard imports at `64 KiB`, and rolled back failed port applies.
+- Added RFC 1035 and EDNS0 (`TC=1`) TCP DNS fallback in `LoopbackDnsProxy`, preserved Wi-Fi LAN reconfirmation state, and surfaced `X/32 procs` and `SIGKILL` diagnostics.
+- Upgraded `gvx` (`gvx#203`, `gvx#204`, and `gvx#205`) to untag `TBI0` faults, decode `STLUR`, clean split JIT caches, and route `devpts` hangup and job-control ioctls.
 
 ---
 

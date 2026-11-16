@@ -359,7 +359,7 @@ This section links authoritative upstream specifications and records post-`v1.0`
 
 Four upstream specifications define the external contracts consumed by `TermVR`.
 
-- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.16.10012026110900`)
+- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.16.10022026110900`)
 - `Ghostty` and `libghostty-vt` C API: `https://github.com/ghostty-org/ghostty` (`vt-1.0.1`)
 - Elephant-Goldfish Design Model (`EGM`): `https://github.com/google/elephant-goldfish-model`
 - F-Droid Reproducible Builds Guide: `https://f-droid.org/docs/Reproducible_Builds/`
@@ -808,7 +808,7 @@ Android soft keyboards (Gboard, Samsung Keyboard, Naver SmartBoard, Mozc, Pinyin
 
 `TerminalInputConnection` extends `BaseInputConnection(targetView, fullEditor = true)` over a **64-space virtual sentinel buffer** with the virtual cursor parked at index `32`:
 
-- **`onCreateInputConnection(outAttrs: EditorInfo)`**: Sets `inputType = TYPE_CLASS_TEXT or TYPE_TEXT_FLAG_NO_SUGGESTIONS or TYPE_TEXT_VARIATION_VISIBLE_PASSWORD`, `imeOptions = IME_FLAG_NO_FULLSCREEN or IME_FLAG_NO_EXTRACT_UI or IME_ACTION_NONE`, and `initialSelStart = initialSelEnd = 32`.
+- **`onCreateInputConnection(outAttrs: EditorInfo)`**: Sets `inputType = TYPE_CLASS_TEXT or TYPE_TEXT_FLAG_NO_SUGGESTIONS`, `imeOptions = IME_FLAG_NO_FULLSCREEN or IME_FLAG_NO_EXTRACT_UI or IME_FLAG_NO_PERSONALIZED_LEARNING or IME_ACTION_NONE`, and `initialSelStart = initialSelEnd = 32`.
 - **`setComposingText(text, newCursorPosition)`**: Stores `text` in `activePreedit` on `TerminalSurfaceView` and schedules a VSYNC frame to draw the inline underlined preedit box at the terminal cursor. Zero bytes are written to the PTY while composition remains open, so Hangul `ㅎ` + `ㅏ` + `ㄴ` + `글` assembles cleanly into `"한글"`.
 - **`commitText(text, newCursorPosition)`**: Clears `activePreedit`, resets the virtual sentinel buffer to 64 spaces at `(32, 32)`, and routes `text` to the PTY:
   - Active `ONE_SHOT`, `LOCKED`, or `HELD` modifiers on a single ASCII character encode via `ghostty_key_encoder_encode` (for example `CTRL` + `"c"` emits `0x03`) and clear `ONE_SHOT` state.
@@ -990,7 +990,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 `TermVrDocumentsProvider` subclasses `android.provider.DocumentsProvider` (`android:authorities="dev.gfire.termvr.documents"`, `android:exported="true"`, `android:grantUriPermissions="true"`, `android:permission="android.permission.MANAGE_DOCUMENTS"`), publishing each profile's `/workspace` under Android's system file picker (`TermVR Workspaces`):
 
 - **Canonical path confinement**: Every `documentId` resolves via `File(workspaceRoot, relPath).canonicalFile` and verifies `canonicalPath.startsWith(workspaceRoot.canonicalPath + File.separator)` before opening descriptors, rejecting `..` segments and symlink escapes.
-- **Atomic `.termvr.tmp` save swap**: `openDocument` in write mode (`"w"`, `"wt"`, `"wa"`) opens a sibling `<filename>.termvr.tmp` descriptor (`ParcelFileDescriptor.open(..., MODE_WRITE_ONLY or MODE_CREATE or MODE_TRUNCATE, handler, onCloseListener)`). On clean descriptor close, `onCloseListener` runs `Os.fsync` and renames `<filename>.termvr.tmp` over `<filename>` so guest watchers never read partial saves.
+- **Atomic `.termvr.tmp` save swap**: `openDocument` in write mode (`"w"`, `"wt"`, `"wa"`, `"rw"`) stages writes in a bounded sibling `.termvr.tmp` file, copying prior bytes for append or read-write opens. On clean descriptor close, `onCloseListener` syncs disk, preserves POSIX file modes, and moves the staging file over the target.
 - **`FROZEN` workspace write lock**: Upstream `gvx` `hostfs` validates host file sizes and modification timestamps during `rungv restore` (`ValidateFileSizes` / `ValidateFileTimestamps`). While a profile is `FREEZING` or `FROZEN`, both `TermVrDocumentsProvider` and `FilesScreen` omit `Document.FLAG_SUPPORTS_WRITE` / `FLAG_SUPPORTS_DELETE` so external edits cannot corrupt the saved checkpoint. `FilesScreen` offers an explicit `"Discard Checkpoint & Unlock Workspace"` button when offline host edits are required.
 
 ---
