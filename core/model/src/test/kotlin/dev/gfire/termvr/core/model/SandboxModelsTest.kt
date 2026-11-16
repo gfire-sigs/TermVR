@@ -255,6 +255,10 @@ class SandboxModelsTest {
             listOf("Debian 13", "Ubuntu 24.04", "Fedora 42", "Alpine 3.21"),
             arm64Entries.map { it.displayName },
         )
+        assertEquals(listOf("/bin/bash"), arm64Entries[0].defaultShellArgv)
+        assertEquals(listOf("/bin/bash"), arm64Entries[1].defaultShellArgv)
+        assertEquals(listOf("/bin/bash"), arm64Entries[2].defaultShellArgv)
+        assertEquals(listOf("/bin/ash"), arm64Entries[3].defaultShellArgv)
         assertEquals("debian-trixie", arm64Entries.first().id)
         assertEquals("docker.io/library/debian:trixie-slim", arm64Entries.first().imageRef)
         assertTrue(arm64Entries.all { it.recommendedMemoryMiB == 0 && it.defaultMemoryMiB == 0 })

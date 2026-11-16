@@ -7,7 +7,10 @@ import dev.gfire.termvr.core.model.MuxMode
 import dev.gfire.termvr.core.model.NetBackend
 import dev.gfire.termvr.core.model.NetworkModeConfig
 import dev.gfire.termvr.core.model.OutboundProxyConfig
+import dev.gfire.termvr.core.model.OutboundProxyMode
 import dev.gfire.termvr.core.model.PortForwardRule
+import dev.gfire.termvr.core.model.ProxyEndpointSpec
+import dev.gfire.termvr.core.model.ProxyProtocol
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.VolumeKind
 import dev.gfire.termvr.core.model.VolumeMountSpec
@@ -86,7 +89,12 @@ class GvxCommandBuilderTest {
             network = NetworkModeConfig(
                 backend = NetBackend.NAT,
                 isolateLanEgress = true,
-                outboundProxy = OutboundProxyConfig(transparentTcp = true, noProxyEntries = listOf("localhost", ".svc")),
+                outboundProxy = OutboundProxyConfig(
+                    mode = OutboundProxyMode.CUSTOM,
+                    customEndpoint = ProxyEndpointSpec(ProxyProtocol.SOCKS5, "127.0.0.1", 9050),
+                    transparentTcp = true,
+                    noProxyEntries = listOf("localhost", ".svc"),
+                ),
             ),
             portForwards = listOf(
                 PortForwardRule("api", ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 6443, 6443, 6443, 6443),
@@ -119,6 +127,9 @@ class GvxCommandBuilderTest {
         assertTrue(args.contains("8")) // clamped from 16.0 to 8
         assertTrue(args.contains("--privileged=true"))
         assertFalse(args.contains("--net-raw")) // privileged=true supersedes --net-raw
+        assertTrue(args.contains("-h"))
+        val hostIdx = args.indexOf("-h")
+        assertEquals("k3s-dev", args[hostIdx + 1])
         assertTrue(args.contains("--host-ca-certs"))
         assertTrue(args.contains("-net=nat"))
         assertTrue(args.contains("-isolate-lan"))
@@ -379,7 +390,7 @@ class GvxCommandBuilderTest {
     }
 
     @Test
-    fun `appendRunEnvFlags injects TERM xterm-256color COLORTERM and TERM_PROGRAM unless overridden`() {
+    fun `appendRunEnvFlags injects TERM xterm-256color COLORTERM and LANG C UTF-8 without TERM_PROGRAM unless overridden`() {
         val builder = newBuilder()
         val stdioProfile = SandboxProfile(
             id = "term-stdio",
@@ -390,7 +401,9 @@ class GvxCommandBuilderTest {
         val stdioArgs = builder.buildRunArgs(stdioProfile, 5353, builder.controlSocketFile(stdioProfile.id))
         assertTrue(stdioArgs.contains("TERM=xterm-256color"))
         assertTrue(stdioArgs.contains("COLORTERM=truecolor"))
-        assertTrue(stdioArgs.contains("TERM_PROGRAM=TermVR"))
+        assertTrue(stdioArgs.contains("LANG=C.UTF-8"))
+        assertFalse(stdioArgs.any { it.startsWith("TERM_PROGRAM=") })
+        assertTrue(stdioArgs.contains("HTTP_PROXY=http://127.0.0.1:1080"))
 
         val rawProfile = stdioProfile.copy(
             id = "term-raw",
@@ -399,13 +412,15 @@ class GvxCommandBuilderTest {
         val rawArgs = builder.buildRunArgs(rawProfile, 5353, builder.controlSocketFile(rawProfile.id))
         assertTrue(rawArgs.contains("TERM=xterm-256color"))
         assertTrue(rawArgs.contains("COLORTERM=truecolor"))
-        assertTrue(rawArgs.contains("TERM_PROGRAM=TermVR"))
+        assertTrue(rawArgs.contains("LANG=C.UTF-8"))
+        assertFalse(rawArgs.any { it.startsWith("TERM_PROGRAM=") })
 
         val overridden = stdioProfile.copy(
             envVars = mapOf(
                 "TERM" to "vt100",
                 "COLORTERM" to "24bit",
                 "TERM_PROGRAM" to "CustomTerm",
+                "LANG" to "en_US.UTF-8",
             ),
         )
         val overrideArgs = builder.buildRunArgs(overridden, 5353, builder.controlSocketFile(overridden.id))
@@ -413,6 +428,33 @@ class GvxCommandBuilderTest {
         assertFalse(overrideArgs.contains("TERM=xterm-256color"))
         assertTrue(overrideArgs.contains("COLORTERM=24bit"))
         assertTrue(overrideArgs.contains("TERM_PROGRAM=CustomTerm"))
+        assertTrue(overrideArgs.contains("LANG=en_US.UTF-8"))
+        assertFalse(overrideArgs.contains("LANG=C.UTF-8"))
+
+        val lcAllOnly = stdioProfile.copy(
+            envVars = mapOf("LC_ALL" to "C.UTF-8"),
+        )
+        val lcAllArgs = builder.buildRunArgs(lcAllOnly, 5353, builder.controlSocketFile(lcAllOnly.id))
+        assertTrue(lcAllArgs.contains("LC_ALL=C.UTF-8"))
+        assertFalse(lcAllArgs.any { it.startsWith("LANG=") })
+    }
+
+    @Test
+    fun `buildRunArgs omits guest proxy env for daemon recipes under DIRECT mode`() {
+        val builder = newBuilder()
+        val k3sDirect = SandboxProfile(
+            id = "k3s-direct",
+            displayName = "k3s Direct",
+            imageRef = "rancher/k3s:v1.32.2-k3s1",
+            muxMode = MuxMode.STDIO_MUX,
+            initDaemonArgv = listOf("/bin/k3s", "server"),
+            network = NetworkModeConfig(
+                outboundProxy = OutboundProxyConfig(mode = OutboundProxyMode.DIRECT),
+            ),
+        )
+        val directArgs = builder.buildRunArgs(k3sDirect, 5353, builder.controlSocketFile(k3sDirect.id))
+        assertFalse(directArgs.any { it.startsWith("HTTP_PROXY=") || it.startsWith("HTTPS_PROXY=") || it.startsWith("ALL_PROXY=") })
+        assertFalse(directArgs.any { it.startsWith("http_proxy=") || it.startsWith("https_proxy=") || it.startsWith("all_proxy=") })
     }
 
     @Test

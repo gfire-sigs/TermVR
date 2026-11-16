@@ -205,10 +205,15 @@ class AppViewModelsTest {
 
         vm.createProfile("Worker A", "docker.io/library/debian:trixie-slim")
         vm.createProfile("Worker B", "docker.io/library/alpine:3.21")
+        vm.createProfile("", "")
         advanceUntilIdle()
 
         val pA = vm.uiState.value.profiles.first { it.displayName == "Worker A" }
         val pB = vm.uiState.value.profiles.first { it.displayName == "Worker B" }
+        val pDefault = vm.uiState.value.profiles.first { it.id == "debian" }
+        assertEquals("Debian", pDefault.displayName)
+        assertTrue(pDefault.defaultShellArgv.isEmpty())
+        assertTrue(pA.defaultShellArgv.isEmpty())
         assertEquals(SandboxProfile.UNLIMITED_MEMORY_MIB, pA.memoryMiB)
         assertEquals(SandboxProfile.UNLIMITED_CPU_CORES, pA.cpuCores)
 

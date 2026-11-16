@@ -284,7 +284,7 @@ class HomeViewModel(
             errorMessage.value = null
             statusMessage.value = null
             runCatching {
-                val cleanName = displayName.trim().ifEmpty { "Debian Shell" }
+                val cleanName = displayName.trim().ifEmpty { "Debian" }
                 val cleanImage = imageRef.trim().ifEmpty { DEFAULT_DEBIAN_IMAGE_REF }
                 val baseSlug = cleanName.lowercase()
                     .replace(Regex("""[^a-z0-9._-]+"""), "-")
@@ -303,7 +303,7 @@ class HomeViewModel(
                     displayName = cleanName,
                     imageRef = cleanImage,
                     muxMode = muxMode,
-                    defaultShellArgv = listOf("/bin/sh"),
+                    defaultShellArgv = emptyList(),
                     memoryMiB = SandboxProfile.clampMemoryMiB(memoryMiB),
                     cpuCores = SandboxProfile.clampCpuCores(cpuCores),
                     volumes = listOf(

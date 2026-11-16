@@ -514,7 +514,7 @@ data class DistributionCatalogEntry(
                     imageRef = "docker.io/library/debian:trixie-slim",
                     approximateDownloadMiB = 30,
                     defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
-                    defaultShellArgv = listOf("/bin/bash", "-l"),
+                    defaultShellArgv = listOf("/bin/bash"),
                 ),
                 DistributionCatalogEntry(
                     id = "ubuntu-noble",
@@ -526,7 +526,7 @@ data class DistributionCatalogEntry(
                     imageRef = "docker.io/library/ubuntu:24.04",
                     approximateDownloadMiB = 32,
                     defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
-                    defaultShellArgv = listOf("/bin/bash", "-l"),
+                    defaultShellArgv = listOf("/bin/bash"),
                 ),
                 DistributionCatalogEntry(
                     id = "fedora-42",
@@ -538,7 +538,7 @@ data class DistributionCatalogEntry(
                     imageRef = "docker.io/library/fedora:42",
                     approximateDownloadMiB = 72,
                     defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
-                    defaultShellArgv = listOf("/bin/bash", "-l"),
+                    defaultShellArgv = listOf("/bin/bash"),
                 ),
                 DistributionCatalogEntry(
                     id = "alpine-3-21",
@@ -550,7 +550,7 @@ data class DistributionCatalogEntry(
                     imageRef = "docker.io/library/alpine:3.21",
                     approximateDownloadMiB = 15,
                     defaultMemoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
-                    defaultShellArgv = listOf("/bin/ash", "-l"),
+                    defaultShellArgv = listOf("/bin/ash"),
                 ),
             )
         }

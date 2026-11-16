@@ -191,9 +191,38 @@ func (s *ProxyServer) acceptMixedLoop() {
 	}
 }
 
-// DialTarget connects to host:port via mux, or directly if matched by NO_PROXY or ErrDirectBypass.
+// isGuestDirectHost reports whether host is a loopback, private, link-local, CGNAT, or
+// unspecified IP literal (or localhost) that must be dialed directly inside the guest.
+func isGuestDirectHost(host string) bool {
+	h := asciiTrimSpace(asciiToLower(host))
+	h = strings.TrimPrefix(h, "[")
+	h = strings.TrimSuffix(h, "]")
+	if h == "" {
+		return false
+	}
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ipStr, _, _ := strings.Cut(h, "%")
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		// RFC 6598 shared/CGNAT address space (100.64.0.0/10).
+		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+			return true
+		}
+	}
+	return false
+}
+
+// DialTarget connects to host:port via mux, or directly for guest-local/private targets, NO_PROXY, or ErrDirectBypass.
 func (s *ProxyServer) DialTarget(ctx context.Context, host string, port uint16) (io.ReadWriteCloser, error) {
-	if MatchesNoProxy(host, s.cfg.NoProxyEntries) || s.cfg.Session == nil {
+	if isGuestDirectHost(host) || MatchesNoProxy(host, s.cfg.NoProxyEntries) || s.cfg.Session == nil {
 		return s.dialDirect(ctx, host, port)
 	}
 	stream, err := s.cfg.Session.DialProxy(ctx, host, port)

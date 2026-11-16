@@ -501,7 +501,7 @@ private fun CreateContainerDialog(
     onDismiss: () -> Unit,
     onCreate: (String, String, Int, Double, MuxMode, Boolean) -> Unit,
 ) {
-    var name by remember { mutableStateOf("Dev Shell") }
+    var name by remember { mutableStateOf("Debian") }
     var imageRef by remember { mutableStateOf(HomeViewModel.DEFAULT_DEBIAN_IMAGE_REF) }
     var showLimits by remember { mutableStateOf(false) }
     var memoryText by remember { mutableStateOf("") }
