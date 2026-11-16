@@ -193,17 +193,6 @@ class TerminalSurfaceView @JvmOverloads constructor(
     private val accessibilityManager: AccessibilityManager? =
         context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
 
-    private data class PaneGeometrySnapshot(
-        val sessionRef: NativeVtSession,
-        val cols: Int,
-        val rows: Int,
-        val widthPx: Int,
-        val heightPx: Int,
-        val cellWidthPx: Int,
-        val cellHeightPx: Int,
-    )
-
-    private val lastNotifiedPaneGeometry = HashMap<String, PaneGeometrySnapshot>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var glThread: TermVrGlThread? = null
 
@@ -217,9 +206,39 @@ class TerminalSurfaceView @JvmOverloads constructor(
     private var latestLayout: SplitLayoutResult = SplitLayoutResult(emptyList(), emptyList())
     private var latestMetrics: CellMetrics = CellMetrics(10, 20, 16)
 
-    private var selectionState: TerminalSelectionUiState = TerminalSelectionUiState()
     private var activeInputConnection: TerminalInputConnection? = null
     private var a11yProvider: TerminalAccessibilityNodeProvider? = null
+
+    private val resizeDebouncer = PaneResizeDebouncer(
+        debounceDelayMs = PaneResizeDebouncer.DEFAULT_DEBOUNCE_DELAY_MS,
+        scheduleDelayed = { runnable, delayMs -> mainHandler.postDelayed(runnable, delayMs) },
+        cancelScheduled = { runnable -> mainHandler.removeCallbacks(runnable) },
+        onGridResized = { paneId, cols, rows, widthPx, heightPx ->
+            onGridResized(paneId, cols, rows, widthPx, heightPx)
+        },
+        onAfterGridResized = {
+            glThread?.requestRender(dirty = true, forceFullRedraw = true)
+            invalidateAccessibilityTree()
+        },
+    )
+
+    private val touchRouter = TerminalTouchGestureRouter(
+        layoutProvider = { latestLayout },
+        metricsProvider = { latestMetrics },
+        focusedPaneIdProvider = { focusedPaneId },
+        modifierLatchProvider = { modifierLatchMachine },
+        onFocusPane = { newPaneId ->
+            focusedPaneId = newPaneId
+            onPaneFocused(newPaneId)
+            glThread?.updateLayout(splitRoot, focusedPaneId)
+        },
+        onSendPtyBytes = { paneId, bytes -> onSendPtyBytes(paneId, bytes) },
+        onSelectionChanged = { state -> onSelectionChanged(state) },
+        onLinkDetected = { link -> onLinkDetected(link) },
+        onRequestShowKeyboard = { requestShowKeyboard() },
+        onRequestRender = { glThread?.requestRender(dirty = true) },
+        onMarkActivity = { markUserOrPtyActivity() },
+    )
 
     private val inputSession = TerminalInputSession(
         sessionProvider = { focusedPane()?.session },
@@ -249,9 +268,6 @@ class TerminalSurfaceView @JvmOverloads constructor(
 
     // Touch gesture trackers.
     private var ignoreCurrentGesture = false
-    private var isDraggingScrollOrMouse = false
-    private var isLongPressSelecting = false
-    private var scrollAccumYPx = 0f
     private var velocityTracker: VelocityTracker? = null
     private val flingScroller = OverScroller(context)
     private var flingLastY = 0
@@ -264,7 +280,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
             val dy = currY - flingLastY
             flingLastY = currY
             if (dy != 0) {
-                applyScrollbackPixelDelta(dy.toFloat())
+                touchRouter.applyScrollbackPixelDelta(dy.toFloat())
             }
             if (!flingScroller.isFinished) {
                 postOnAnimation(this)
@@ -299,55 +315,17 @@ class TerminalSurfaceView @JvmOverloads constructor(
             override fun onDown(e: MotionEvent): Boolean {
                 flingScroller.forceFinished(true)
                 removeCallbacks(flingRunnable)
-                isLongPressSelecting = false
-                isDraggingScrollOrMouse = false
-                scrollAccumYPx = 0f
-                return true
+                return touchRouter.onDown(e.x, e.y)
             }
 
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                val pane = SplitPaneLayoutCalculator.paneAt(latestLayout, e.x, e.y) ?: return false
-                if (pane.paneId != focusedPaneId) {
-                    focusedPaneId = pane.paneId
-                    onPaneFocused(pane.paneId)
-                    glThread?.updateLayout(splitRoot, focusedPaneId)
-                }
-                if (selectionState.active) {
-                    clearSelection()
-                } else if (pane.session.isMouseTrackingActive() && !isShiftOverrideActive(e.metaState)) {
-                    val (col, row) = pixelToCell(pane, e.x, e.y)
-                    val mods = modifierLatchMachine.activeModifierMask()
-                    sendMouse(pane, VtMouseAction.PRESS, VtMouseButton.LEFT, mods, col, row, e.x.toInt(), e.y.toInt())
-                    sendMouse(pane, VtMouseAction.RELEASE, VtMouseButton.LEFT, mods, col, row, e.x.toInt(), e.y.toInt())
-                }
-                requestShowKeyboard()
-                markUserOrPtyActivity()
-                return true
-            }
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean =
+                touchRouter.onSingleTapConfirmed(e.x, e.y, e.metaState)
 
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                val pane = SplitPaneLayoutCalculator.paneAt(latestLayout, e.x, e.y) ?: return false
-                val (col, row) = pixelToCell(pane, e.x, e.y)
-                val link = pane.session.detectLinkAt(row, col)
-                if (link != null) {
-                    pane.session.setSelection(true, link.startRow, link.startCol, link.endRow, link.endCol)
-                    glThread?.requestRender(dirty = true)
-                    onLinkDetected(link)
-                    return true
-                }
-                return false
-            }
+            override fun onDoubleTap(e: MotionEvent): Boolean =
+                touchRouter.onDoubleTap(e.x, e.y, e.metaState)
 
             override fun onLongPress(e: MotionEvent) {
-                val pane = SplitPaneLayoutCalculator.paneAt(latestLayout, e.x, e.y) ?: return
-                if (pane.paneId != focusedPaneId) {
-                    focusedPaneId = pane.paneId
-                    onPaneFocused(pane.paneId)
-                }
-                val (col, row) = pixelToCell(pane, e.x, e.y)
-                isLongPressSelecting = true
-                updateSelectionBounds(pane, row, col, row, col)
-                markUserOrPtyActivity()
+                touchRouter.onLongPress(e.x, e.y)
             }
 
             override fun onScroll(
@@ -357,31 +335,15 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 distanceY: Float,
             ): Boolean {
                 if (scaleGestureDetector.isInProgress) return false
-                val pane = focusedPane() ?: return false
-                if (isLongPressSelecting) {
-                    val (col, row) = pixelToCell(pane, e2.x, e2.y)
-                    updateSelectionBounds(pane, selectionState.startRow, selectionState.startCol, row, col)
-                    return true
-                }
-                isDraggingScrollOrMouse = true
-                if (pane.session.isMouseTrackingActive() && !isShiftOverrideActive(e2.metaState)) {
-                    scrollAccumYPx += distanceY
-                    val cellH = max(1, latestMetrics.cellHeightPx).toFloat()
-                    val steps = (scrollAccumYPx / cellH).toInt()
-                    if (steps != 0) {
-                        scrollAccumYPx -= steps * cellH
-                        val (col, row) = pixelToCell(pane, e2.x, e2.y)
-                        val action = if (steps > 0) VtMouseAction.WHEEL_DOWN else VtMouseAction.WHEEL_UP
-                        val mods = modifierLatchMachine.activeModifierMask()
-                        repeat(abs(steps)) {
-                            sendMouse(pane, action, VtMouseButton.NONE, mods, col, row, e2.x.toInt(), e2.y.toInt())
-                        }
-                    }
-                } else {
-                    applyScrollbackPixelDelta(-distanceY)
-                }
-                markUserOrPtyActivity()
-                return true
+                return touchRouter.onScroll(
+                    downX = e1?.x,
+                    downY = e1?.y,
+                    currentX = e2.x,
+                    currentY = e2.y,
+                    distanceX = distanceX,
+                    distanceY = distanceY,
+                    hardwareMetaState = e2.metaState,
+                )
             }
 
             override fun onFling(
@@ -390,8 +352,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 velocityX: Float,
                 velocityY: Float,
             ): Boolean {
-                val pane = focusedPane() ?: return false
-                if (isLongPressSelecting || (pane.session.isMouseTrackingActive() && !isShiftOverrideActive(e2.metaState))) {
+                if (!touchRouter.canFling(e1?.x, e1?.y, e2.metaState)) {
                     return false
                 }
                 flingLastY = 0
@@ -401,9 +362,6 @@ class TerminalSurfaceView @JvmOverloads constructor(
             }
         },
     )
-
-    private fun isShiftOverrideActive(metaState: Int): Boolean =
-        modifierLatchMachine.isShiftActive() || (metaState and KeyEvent.META_SHIFT_ON) != 0
 
     init {
         isFocusable = true
@@ -417,6 +375,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        resizeDebouncer.flushPending()
         removeCallbacks(flingRunnable)
         velocityTracker?.recycle()
         velocityTracker = null
@@ -435,39 +394,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 mainHandler.post {
                     latestLayout = layout
                     latestMetrics = metrics
-                    val activePaneIds = HashSet<String>(layout.panes.size)
-                    var anyGridResized = false
-                    for (pane in layout.panes) {
-                        activePaneIds.add(pane.paneId)
-                        if (pane.session.isClosed) continue
-                        val cols = max(1, pane.widthPx / max(1, metrics.cellWidthPx))
-                        val rows = max(1, pane.heightPx / max(1, metrics.cellHeightPx))
-                        val gridChanged = pane.session.cols != cols || pane.session.rows != rows
-                        val snapshot = PaneGeometrySnapshot(
-                            sessionRef = pane.session,
-                            cols = cols,
-                            rows = rows,
-                            widthPx = pane.widthPx,
-                            heightPx = pane.heightPx,
-                            cellWidthPx = metrics.cellWidthPx,
-                            cellHeightPx = metrics.cellHeightPx,
-                        )
-                        val prev = lastNotifiedPaneGeometry[pane.paneId]
-                        if (gridChanged || prev != snapshot) {
-                            if (pane.session.resizeGrid(cols, rows, metrics.cellWidthPx, metrics.cellHeightPx)) {
-                                lastNotifiedPaneGeometry[pane.paneId] = snapshot
-                                onGridResized(pane.paneId, cols, rows, pane.widthPx, pane.heightPx)
-                                if (gridChanged) {
-                                    anyGridResized = true
-                                }
-                            }
-                        }
-                    }
-                    lastNotifiedPaneGeometry.keys.retainAll(activePaneIds)
-                    if (anyGridResized) {
-                        glThread?.requestRender(dirty = true)
-                    }
-                    invalidateAccessibilityTree()
+                    resizeDebouncer.onLayoutComputed(layout, metrics)
                 }
             },
         )
@@ -515,12 +442,14 @@ class TerminalSurfaceView @JvmOverloads constructor(
     }
 
     fun notifySessionClosed(sessionHandle: Long) {
+        resizeDebouncer.onSessionClosed(sessionHandle)
         if (sessionHandle != 0L) {
             glThread?.detachSession(sessionHandle)
         }
     }
 
     fun detachSessionBlocking(sessionHandle: Long, timeoutMs: Long = 150L) {
+        resizeDebouncer.onSessionClosed(sessionHandle)
         if (sessionHandle != 0L) {
             glThread?.detachSessionBlocking(sessionHandle, timeoutMs)
         }
@@ -578,6 +507,10 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 if (bytes.isNotEmpty()) onSendPtyBytes(pane.paneId, bytes)
             }
         }
+        if (slot !is KeySlotSpec.Modifier && mods != 0) {
+            modifierLatchMachine.onNonModifierKeyEmitted()
+            onModifierStateChanged()
+        }
         markUserOrPtyActivity()
     }
 
@@ -608,12 +541,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
     }
 
     fun clearSelection() {
-        focusedPane()?.session?.clearSelection()
-        if (selectionState.active) {
-            selectionState = TerminalSelectionUiState()
-            onSelectionChanged(selectionState)
-        }
-        glThread?.requestRender(dirty = true)
+        touchRouter.clearSelection()
     }
 
     fun copySelectionToClipboard(): String? {
@@ -632,22 +560,30 @@ class TerminalSurfaceView @JvmOverloads constructor(
         val text = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() ?: return
         if (text.isEmpty()) return
         val pane = focusedPane() ?: return
-        if (!pane.session.isPasteSafe(text)) {
-            onUnsafePastePrompt(pane.paneId, text)
-            return
-        }
-        val encoded = pane.session.encodePaste(text, allowUnsafe = false) ?: return
-        if (encoded.isNotEmpty()) {
-            onSendPtyBytes(pane.paneId, encoded)
+        val dispatched = TerminalPasteDispatcher.dispatchClipboardPaste(
+            paneId = pane.paneId,
+            session = pane.session,
+            text = text,
+            allowUnsafe = false,
+            onUnsafePastePrompt = onUnsafePastePrompt,
+            onSendPtyBytes = onSendPtyBytes,
+        )
+        if (dispatched) {
             markUserOrPtyActivity()
         }
     }
 
     fun confirmUnsafePaste(paneId: String, text: String) {
         val pane = latestLayout.panes.firstOrNull { it.paneId == paneId } ?: focusedPane() ?: return
-        val encoded = pane.session.encodePaste(text, allowUnsafe = true) ?: return
-        if (encoded.isNotEmpty()) {
-            onSendPtyBytes(pane.paneId, encoded)
+        val dispatched = TerminalPasteDispatcher.dispatchClipboardPaste(
+            paneId = pane.paneId,
+            session = pane.session,
+            text = text,
+            allowUnsafe = true,
+            onUnsafePastePrompt = onUnsafePastePrompt,
+            onSendPtyBytes = onSendPtyBytes,
+        )
+        if (dispatched) {
             markUserOrPtyActivity()
         }
     }
@@ -662,6 +598,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
     }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        activeInputConnection?.markSuperseded()
         TerminalInputConnection.configureEditorInfo(outAttrs)
         val conn = TerminalInputConnection(
             targetView = this,
@@ -778,13 +715,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
             MotionEvent.ACTION_MOVE -> {
                 if (ignoreCurrentGesture) return false
                 velocityTracker?.addMovement(event)
-                if (isLongPressSelecting) {
-                    val pane = focusedPane()
-                    if (pane != null) {
-                        val (col, row) = pixelToCell(pane, event.x, event.y)
-                        updateSelectionBounds(pane, selectionState.startRow, selectionState.startCol, row, col)
-                    }
-                }
+                touchRouter.onPointerMove(event.x, event.y)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (ignoreCurrentGesture) {
@@ -793,8 +724,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 }
                 velocityTracker?.recycle()
                 velocityTracker = null
-                isLongPressSelecting = false
-                isDraggingScrollOrMouse = false
+                touchRouter.onPointerUpOrCancel(event.x, event.y, event.metaState)
             }
         }
 
@@ -816,6 +746,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
+        resizeDebouncer.flushPending()
         // Lock-free UNBIND_SURFACE handoff: never acquires vt_mu.
         glThread?.unbindSurfaceBlocking(timeoutMs = 50L)
     }
@@ -837,112 +768,8 @@ class TerminalSurfaceView @JvmOverloads constructor(
     private fun focusedPane(): PaneLayoutRect? =
         latestLayout.panes.firstOrNull { it.focused } ?: latestLayout.panes.firstOrNull()
 
-    private fun pixelToCell(pane: PaneLayoutRect, xPx: Float, yPx: Float): Pair<Int, Int> {
-        val cw = max(1, latestMetrics.cellWidthPx)
-        val ch = max(1, latestMetrics.cellHeightPx)
-        val col = ((xPx - pane.xPx) / cw).toInt().coerceIn(0, max(0, pane.session.cols - 1))
-        val row = ((yPx - pane.yPx) / ch).toInt().coerceIn(0, max(0, pane.session.rows - 1))
-        return col to row
-    }
-
-    private fun sendMouse(
-        pane: PaneLayoutRect,
-        action: VtMouseAction,
-        button: VtMouseButton,
-        mods: Int,
-        col: Int,
-        row: Int,
-        pixelX: Int,
-        pixelY: Int,
-    ) {
-        val bytes = pane.session.encodeMouse(
-            VtMouseEvent(
-                action = action,
-                button = button,
-                modifierMask = mods,
-                col = col,
-                row = row,
-                pixelX = pixelX,
-                pixelY = pixelY,
-            ),
-        )
-        if (bytes.isNotEmpty()) {
-            onSendPtyBytes(pane.paneId, bytes)
-        }
-    }
-
-    private fun applyScrollbackPixelDelta(deltaYPx: Float) {
-        val pane = focusedPane() ?: return
-        scrollAccumYPx += deltaYPx
-        val cellH = max(1, latestMetrics.cellHeightPx).toFloat()
-        val deltaLines = (scrollAccumYPx / cellH).toInt()
-        if (deltaLines != 0) {
-            scrollAccumYPx -= deltaLines * cellH
-            val maxOff = pane.session.getScrollbackCount()
-            val next = (pane.session.getScrollbackOffset() + deltaLines).coerceIn(0, maxOff)
-            if (next != pane.session.getScrollbackOffset()) {
-                pane.session.setScrollbackOffset(next)
-                glThread?.requestRender(dirty = true)
-            }
-        }
-    }
-
-    internal fun updateSelectionBounds(
-        pane: PaneLayoutRect,
-        startRow: Int,
-        startCol: Int,
-        endRow: Int,
-        endCol: Int,
-    ) {
-        val maxR = max(0, pane.session.rows - 1)
-        val maxC = max(0, pane.session.cols - 1)
-        val sr = startRow.coerceIn(0, maxR)
-        val sc = startCol.coerceIn(0, maxC)
-        val er = endRow.coerceIn(0, maxR)
-        val ec = endCol.coerceIn(0, maxC)
-        pane.session.setSelection(true, sr, sc, er, ec)
-        selectionState = TerminalSelectionUiState(
-            active = true,
-            paneId = pane.paneId,
-            paneXPx = pane.xPx,
-            paneYPx = pane.yPx,
-            paneWidthPx = pane.widthPx,
-            paneHeightPx = pane.heightPx,
-            cellWidthPx = max(1, latestMetrics.cellWidthPx),
-            cellHeightPx = max(1, latestMetrics.cellHeightPx),
-            startRow = sr,
-            startCol = sc,
-            endRow = er,
-            endCol = ec,
-        )
-        onSelectionChanged(selectionState)
-        glThread?.requestRender(dirty = true)
-    }
-
     internal fun adjustSelectionHandle(isStart: Boolean, dxPx: Float, dyPx: Float) {
-        val pane = latestLayout.panes.firstOrNull { it.paneId == selectionState.paneId } ?: focusedPane() ?: return
-        val cw = max(1, latestMetrics.cellWidthPx)
-        val ch = max(1, latestMetrics.cellHeightPx)
-        val dCol = (dxPx / cw).roundToInt()
-        val dRow = (dyPx / ch).roundToInt()
-        if (dCol == 0 && dRow == 0) return
-        if (isStart) {
-            updateSelectionBounds(
-                pane,
-                selectionState.startRow + dRow,
-                selectionState.startCol + dCol,
-                selectionState.endRow,
-                selectionState.endCol,
-            )
-        } else {
-            updateSelectionBounds(
-                pane,
-                selectionState.startRow,
-                selectionState.startCol,
-                selectionState.endRow + dRow,
-                selectionState.endCol + dCol,
-            )
-        }
+        touchRouter.adjustSelectionHandle(isStart = isStart, dxPx = dxPx, dyPx = dyPx)
     }
 
     private fun markUserOrPtyActivity() {
@@ -1027,6 +854,7 @@ private class TermVrGlThread(
                     MSG_UNBIND_SURFACE -> handleUnbindSurface(msg.obj as CountDownLatch)
                     MSG_REQUEST_RENDER -> {
                         if (msg.arg1 != 0) dirtyPending = true
+                        if (msg.arg2 != 0) needsFullRedrawFrames = TRIPLE_BUFFER_FRAMES
                         scheduleVsync()
                     }
                     MSG_UPDATE_LAYOUT -> {
@@ -1120,9 +948,9 @@ private class TermVrGlThread(
         }
     }
 
-    fun requestRender(dirty: Boolean) {
+    fun requestRender(dirty: Boolean, forceFullRedraw: Boolean = false) {
         if (shuttingDown) return
-        handler?.obtainMessage(MSG_REQUEST_RENDER, if (dirty) 1 else 0, 0)?.sendToTarget()
+        handler?.obtainMessage(MSG_REQUEST_RENDER, if (dirty) 1 else 0, if (forceFullRedraw) 1 else 0)?.sendToTarget()
     }
 
     fun updateLayout(root: TerminalSplitNode?, focusedId: String) {
@@ -1865,4 +1693,603 @@ private fun openUrlInCustomTab(context: Context?, rawUrl: String) {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     runCatching { context.startActivity(intent) }
+}
+
+/**
+ * Applies initial pane dimensions immediately and coalesces subsequent 60-120Hz resize storms via a trailing timer.
+ */
+internal class PaneResizeDebouncer(
+    val debounceDelayMs: Long = DEFAULT_DEBOUNCE_DELAY_MS,
+    private val scheduleDelayed: (Runnable, Long) -> Unit,
+    private val cancelScheduled: (Runnable) -> Unit,
+    private val onGridResized: (paneId: String, cols: Int, rows: Int, widthPx: Int, heightPx: Int) -> Unit,
+    private val onAfterGridResized: () -> Unit = {},
+) {
+    private data class PaneGridGeometry(
+        val paneId: String,
+        val sessionRef: NativeVtSession,
+        val cols: Int,
+        val rows: Int,
+        val widthPx: Int,
+        val heightPx: Int,
+        val cellWidthPx: Int,
+        val cellHeightPx: Int,
+    ) {
+        fun matchesGridAndMetrics(other: PaneGridGeometry): Boolean =
+            sessionRef === other.sessionRef &&
+                cols == other.cols &&
+                rows == other.rows &&
+                cellWidthPx == other.cellWidthPx &&
+                cellHeightPx == other.cellHeightPx
+    }
+
+    private val lastDispatched = LinkedHashMap<String, PaneGridGeometry>()
+    private val pending = LinkedHashMap<String, PaneGridGeometry>()
+    private var timerArmed = false
+
+    private val flushRunnable = Runnable {
+        timerArmed = false
+        drainPending()
+    }
+
+    fun onLayoutComputed(layout: SplitLayoutResult, metrics: CellMetrics) {
+        val activePaneIds = HashSet<String>(layout.panes.size)
+        var anyImmediateResize = false
+        var pendingUpdated = false
+
+        for (pane in layout.panes) {
+            activePaneIds.add(pane.paneId)
+            if (pane.session.isClosed) {
+                pending.remove(pane.paneId)
+                continue
+            }
+            val cw = max(1, metrics.cellWidthPx)
+            val ch = max(1, metrics.cellHeightPx)
+            val cols = max(1, pane.widthPx / cw)
+            val rows = max(1, pane.heightPx / ch)
+            val target = PaneGridGeometry(
+                paneId = pane.paneId,
+                sessionRef = pane.session,
+                cols = cols,
+                rows = rows,
+                widthPx = pane.widthPx,
+                heightPx = pane.heightPx,
+                cellWidthPx = cw,
+                cellHeightPx = ch,
+            )
+
+            val prev = lastDispatched[pane.paneId]
+            if (prev == null || prev.sessionRef !== pane.session) {
+                pending.remove(pane.paneId)
+                if (pane.session.resizeGrid(cols, rows, cw, ch)) {
+                    lastDispatched[pane.paneId] = target
+                    onGridResized(pane.paneId, cols, rows, pane.widthPx, pane.heightPx)
+                    anyImmediateResize = true
+                }
+            } else if (prev.matchesGridAndMetrics(target)) {
+                pending.remove(pane.paneId)
+            } else {
+                pending[pane.paneId] = target
+                pendingUpdated = true
+            }
+        }
+
+        lastDispatched.keys.retainAll(activePaneIds)
+        pending.keys.retainAll(activePaneIds)
+
+        if (pending.isEmpty()) {
+            if (timerArmed) {
+                cancelScheduled(flushRunnable)
+                timerArmed = false
+            }
+        } else if (pendingUpdated) {
+            if (timerArmed) {
+                cancelScheduled(flushRunnable)
+            }
+            timerArmed = true
+            scheduleDelayed(flushRunnable, debounceDelayMs)
+        }
+
+        if (anyImmediateResize) {
+            onAfterGridResized()
+        }
+    }
+
+    fun flushPending() {
+        if (timerArmed) {
+            cancelScheduled(flushRunnable)
+            timerArmed = false
+        }
+        drainPending()
+    }
+
+    fun onSessionClosed(sessionHandle: Long) {
+        val pred: (PaneGridGeometry) -> Boolean = { geom ->
+            geom.sessionRef.isClosed || (sessionHandle != 0L && geom.sessionRef.nativeHandle == sessionHandle)
+        }
+        pending.entries.removeIf { pred(it.value) }
+        lastDispatched.entries.removeIf { pred(it.value) }
+        if (pending.isEmpty() && timerArmed) {
+            cancelScheduled(flushRunnable)
+            timerArmed = false
+        }
+    }
+
+    private fun drainPending() {
+        if (pending.isEmpty()) return
+        val entries = ArrayList(pending.values)
+        pending.clear()
+        var anyApplied = false
+        for (target in entries) {
+            if (target.sessionRef.isClosed) continue
+            val prev = lastDispatched[target.paneId]
+            if (prev != null && prev.matchesGridAndMetrics(target)) continue
+            if (target.sessionRef.resizeGrid(target.cols, target.rows, target.cellWidthPx, target.cellHeightPx)) {
+                lastDispatched[target.paneId] = target
+                onGridResized(target.paneId, target.cols, target.rows, target.widthPx, target.heightPx)
+                anyApplied = true
+            }
+        }
+        if (anyApplied) {
+            onAfterGridResized()
+        }
+    }
+
+    companion object {
+        const val DEFAULT_DEBOUNCE_DELAY_MS: Long = 48L
+    }
+}
+
+/**
+ * Routes single-finger tap, quantized SGR 1006 mouse wheel, button-drag, and long-press local selection.
+ */
+internal class TerminalTouchGestureRouter(
+    private val layoutProvider: () -> SplitLayoutResult,
+    private val metricsProvider: () -> CellMetrics,
+    private val focusedPaneIdProvider: () -> String,
+    private val modifierLatchProvider: () -> ModifierLatchMachine,
+    private val onFocusPane: (String) -> Unit,
+    private val onSendPtyBytes: (paneId: String, bytes: ByteArray) -> Unit,
+    private val onSelectionChanged: (TerminalSelectionUiState) -> Unit,
+    private val onLinkDetected: (VtDetectedLink?) -> Unit = {},
+    private val onRequestShowKeyboard: () -> Unit = {},
+    private val onRequestRender: () -> Unit = {},
+    private val onMarkActivity: () -> Unit = {},
+) {
+    private enum class DragMode {
+        NONE,
+        SCROLLBACK,
+        MOUSE_WHEEL,
+        MOUSE_BUTTON_DRAG,
+    }
+
+    var selectionState: TerminalSelectionUiState = TerminalSelectionUiState()
+        private set
+
+    var isLongPressSelecting: Boolean = false
+        private set
+
+    private var activeDragMode: DragMode = DragMode.NONE
+    private var activeGesturePaneId: String = ""
+    private var doubleTapDragArmed: Boolean = false
+    private var mouseButtonDownSent: Boolean = false
+    private var lastDragCol: Int = -1
+    private var lastDragRow: Int = -1
+    private var scrollAccumYPx: Float = 0f
+
+    private var startHandleAccumXPx: Float = 0f
+    private var startHandleAccumYPx: Float = 0f
+    private var endHandleAccumXPx: Float = 0f
+    private var endHandleAccumYPx: Float = 0f
+
+    fun onDown(xPx: Float, yPx: Float): Boolean {
+        isLongPressSelecting = false
+        activeDragMode = DragMode.NONE
+        mouseButtonDownSent = false
+        lastDragCol = -1
+        lastDragRow = -1
+        scrollAccumYPx = 0f
+        val pane = SplitPaneLayoutCalculator.paneAt(layoutProvider(), xPx, yPx)
+        activeGesturePaneId = pane?.paneId ?: ""
+        return true
+    }
+
+    fun onSingleTapConfirmed(xPx: Float, yPx: Float, hardwareMetaState: Int = 0): Boolean {
+        val layout = layoutProvider()
+        val pane = SplitPaneLayoutCalculator.paneAt(layout, xPx, yPx) ?: return false
+        ensureFocused(pane)
+        if (selectionState.active) {
+            clearSelection()
+        } else if (pane.session.isMouseTrackingActive() && !isShiftOverrideActive(hardwareMetaState)) {
+            val (col, row) = pixelToCell(pane, xPx, yPx)
+            val mods = modifierLatchProvider().activeModifierMask()
+            sendMouse(pane, VtMouseAction.PRESS, VtMouseButton.LEFT, mods, col, row, xPx.toInt(), yPx.toInt())
+            sendMouse(pane, VtMouseAction.RELEASE, VtMouseButton.LEFT, mods, col, row, xPx.toInt(), yPx.toInt())
+        }
+        onRequestShowKeyboard()
+        onMarkActivity()
+        return true
+    }
+
+    fun onDoubleTap(xPx: Float, yPx: Float, hardwareMetaState: Int = 0): Boolean {
+        val layout = layoutProvider()
+        val pane = SplitPaneLayoutCalculator.paneAt(layout, xPx, yPx) ?: return false
+        ensureFocused(pane)
+        val (col, row) = pixelToCell(pane, xPx, yPx)
+        val link = pane.session.detectLinkAt(row, col)
+        if (link != null) {
+            pane.session.setSelection(true, link.startRow, link.startCol, link.endRow, link.endCol)
+            onRequestRender()
+            onLinkDetected(link)
+            return true
+        }
+        if (!selectionState.active && pane.session.isMouseTrackingActive() && !isShiftOverrideActive(hardwareMetaState)) {
+            doubleTapDragArmed = true
+            return true
+        }
+        return false
+    }
+
+    fun onLongPress(xPx: Float, yPx: Float) {
+        if (activeDragMode != DragMode.NONE) return
+        val layout = layoutProvider()
+        val pane = SplitPaneLayoutCalculator.paneAt(layout, xPx, yPx) ?: return
+        ensureFocused(pane)
+        val (col, row) = pixelToCell(pane, xPx, yPx)
+        isLongPressSelecting = true
+        doubleTapDragArmed = false
+        resetHandleAccumulators()
+        updateSelectionBounds(pane, row, col, row, col)
+        onMarkActivity()
+    }
+
+    fun onScroll(
+        downX: Float?,
+        downY: Float?,
+        currentX: Float,
+        currentY: Float,
+        distanceX: Float,
+        distanceY: Float,
+        hardwareMetaState: Int = 0,
+    ): Boolean {
+        val pane = resolveGesturePane(downX, downY) ?: return false
+        if (isLongPressSelecting) {
+            val (col, row) = pixelToCell(pane, currentX, currentY)
+            updateSelectionBounds(pane, selectionState.startRow, selectionState.startCol, row, col)
+            onMarkActivity()
+            return true
+        }
+
+        if (pane.session.isMouseTrackingActive() && !isShiftOverrideActive(hardwareMetaState)) {
+            if (activeDragMode == DragMode.NONE) {
+                activeDragMode = if (doubleTapDragArmed || abs(distanceX) > abs(distanceY)) {
+                    DragMode.MOUSE_BUTTON_DRAG
+                } else {
+                    DragMode.MOUSE_WHEEL
+                }
+                if (activeDragMode == DragMode.MOUSE_BUTTON_DRAG) {
+                    val startX = downX ?: currentX
+                    val startY = downY ?: currentY
+                    val (startCol, startRow) = pixelToCell(pane, startX, startY)
+                    val mods = modifierLatchProvider().activeModifierMask()
+                    sendMouse(
+                        pane,
+                        VtMouseAction.PRESS,
+                        VtMouseButton.LEFT,
+                        mods,
+                        startCol,
+                        startRow,
+                        startX.toInt(),
+                        startY.toInt(),
+                    )
+                    mouseButtonDownSent = true
+                    lastDragCol = startCol
+                    lastDragRow = startRow
+                }
+            }
+
+            when (activeDragMode) {
+                DragMode.MOUSE_WHEEL -> {
+                    scrollAccumYPx += distanceY
+                    val cellH = max(1, metricsProvider().cellHeightPx).toFloat()
+                    val steps = (scrollAccumYPx / cellH).toInt()
+                    if (steps != 0) {
+                        scrollAccumYPx -= steps * cellH
+                        val (col, row) = pixelToCell(pane, currentX, currentY)
+                        val action = if (steps > 0) VtMouseAction.WHEEL_DOWN else VtMouseAction.WHEEL_UP
+                        val mods = modifierLatchProvider().activeModifierMask()
+                        repeat(abs(steps)) {
+                            sendMouse(
+                                pane,
+                                action,
+                                VtMouseButton.NONE,
+                                mods,
+                                col,
+                                row,
+                                currentX.toInt(),
+                                currentY.toInt(),
+                            )
+                        }
+                    }
+                }
+                DragMode.MOUSE_BUTTON_DRAG -> {
+                    val (col, row) = pixelToCell(pane, currentX, currentY)
+                    if (col != lastDragCol || row != lastDragRow) {
+                        lastDragCol = col
+                        lastDragRow = row
+                        val mods = modifierLatchProvider().activeModifierMask()
+                        sendMouse(
+                            pane,
+                            VtMouseAction.MOTION,
+                            VtMouseButton.LEFT,
+                            mods,
+                            col,
+                            row,
+                            currentX.toInt(),
+                            currentY.toInt(),
+                        )
+                    }
+                }
+                else -> Unit
+            }
+        } else {
+            activeDragMode = DragMode.SCROLLBACK
+            applyScrollbackPixelDeltaForPane(pane, -distanceY)
+        }
+        onMarkActivity()
+        return true
+    }
+
+    fun onPointerMove(currentX: Float, currentY: Float) {
+        if (!isLongPressSelecting) return
+        val pane = resolveGesturePane(null, null) ?: return
+        val (col, row) = pixelToCell(pane, currentX, currentY)
+        updateSelectionBounds(pane, selectionState.startRow, selectionState.startCol, row, col)
+    }
+
+    fun onPointerUpOrCancel(xPx: Float, yPx: Float, hardwareMetaState: Int = 0) {
+        val pane = resolveGesturePane(null, null)
+        if (pane != null) {
+            if (activeDragMode == DragMode.MOUSE_BUTTON_DRAG && mouseButtonDownSent) {
+                val (col, row) = pixelToCell(pane, xPx, yPx)
+                val mods = modifierLatchProvider().activeModifierMask()
+                sendMouse(pane, VtMouseAction.RELEASE, VtMouseButton.LEFT, mods, col, row, xPx.toInt(), yPx.toInt())
+            } else if (doubleTapDragArmed &&
+                !isLongPressSelecting &&
+                activeDragMode == DragMode.NONE &&
+                pane.session.isMouseTrackingActive() &&
+                !isShiftOverrideActive(hardwareMetaState)
+            ) {
+                val (col, row) = pixelToCell(pane, xPx, yPx)
+                val mods = modifierLatchProvider().activeModifierMask()
+                repeat(2) {
+                    sendMouse(pane, VtMouseAction.PRESS, VtMouseButton.LEFT, mods, col, row, xPx.toInt(), yPx.toInt())
+                    sendMouse(pane, VtMouseAction.RELEASE, VtMouseButton.LEFT, mods, col, row, xPx.toInt(), yPx.toInt())
+                }
+            }
+        }
+        isLongPressSelecting = false
+        activeDragMode = DragMode.NONE
+        mouseButtonDownSent = false
+        doubleTapDragArmed = false
+        lastDragCol = -1
+        lastDragRow = -1
+    }
+
+    fun canFling(downX: Float?, downY: Float?, hardwareMetaState: Int = 0): Boolean {
+        val pane = resolveGesturePane(downX, downY) ?: return false
+        if (isLongPressSelecting || activeDragMode == DragMode.MOUSE_BUTTON_DRAG) {
+            return false
+        }
+        return !pane.session.isMouseTrackingActive() || isShiftOverrideActive(hardwareMetaState)
+    }
+
+    fun applyScrollbackPixelDelta(deltaYPx: Float) {
+        val pane = resolveGesturePane(null, null) ?: return
+        applyScrollbackPixelDeltaForPane(pane, deltaYPx)
+    }
+
+    private fun applyScrollbackPixelDeltaForPane(pane: PaneLayoutRect, deltaYPx: Float) {
+        scrollAccumYPx += deltaYPx
+        val cellH = max(1, metricsProvider().cellHeightPx).toFloat()
+        val deltaLines = (scrollAccumYPx / cellH).toInt()
+        if (deltaLines != 0) {
+            scrollAccumYPx -= deltaLines * cellH
+            val maxOff = pane.session.getScrollbackCount()
+            val next = (pane.session.getScrollbackOffset() + deltaLines).coerceIn(0, maxOff)
+            if (next != pane.session.getScrollbackOffset()) {
+                pane.session.setScrollbackOffset(next)
+                onRequestRender()
+            }
+        }
+    }
+
+    fun adjustSelectionHandle(isStart: Boolean, dxPx: Float, dyPx: Float) {
+        if (!selectionState.active) return
+        val layout = layoutProvider()
+        val pane = layout.panes.firstOrNull { it.paneId == selectionState.paneId } ?: focusedPane(layout) ?: return
+        val cw = max(1, metricsProvider().cellWidthPx).toFloat()
+        val ch = max(1, metricsProvider().cellHeightPx).toFloat()
+        val dCol: Int
+        val dRow: Int
+        if (isStart) {
+            startHandleAccumXPx += dxPx
+            startHandleAccumYPx += dyPx
+            dCol = (startHandleAccumXPx / cw).toInt()
+            dRow = (startHandleAccumYPx / ch).toInt()
+            if (dCol != 0) startHandleAccumXPx -= dCol * cw
+            if (dRow != 0) startHandleAccumYPx -= dRow * ch
+        } else {
+            endHandleAccumXPx += dxPx
+            endHandleAccumYPx += dyPx
+            dCol = (endHandleAccumXPx / cw).toInt()
+            dRow = (endHandleAccumYPx / ch).toInt()
+            if (dCol != 0) endHandleAccumXPx -= dCol * cw
+            if (dRow != 0) endHandleAccumYPx -= dRow * ch
+        }
+        if (dCol == 0 && dRow == 0) return
+        if (isStart) {
+            updateSelectionBounds(
+                pane,
+                selectionState.startRow + dRow,
+                selectionState.startCol + dCol,
+                selectionState.endRow,
+                selectionState.endCol,
+            )
+        } else {
+            updateSelectionBounds(
+                pane,
+                selectionState.startRow,
+                selectionState.startCol,
+                selectionState.endRow + dRow,
+                selectionState.endCol + dCol,
+            )
+        }
+    }
+
+    fun clearSelection() {
+        val layout = layoutProvider()
+        val target = layout.panes.firstOrNull { it.paneId == selectionState.paneId } ?: focusedPane(layout)
+        target?.session?.clearSelection()
+        resetHandleAccumulators()
+        if (selectionState.active) {
+            selectionState = TerminalSelectionUiState()
+            onSelectionChanged(selectionState)
+        }
+        onRequestRender()
+    }
+
+    private fun resetHandleAccumulators() {
+        startHandleAccumXPx = 0f
+        startHandleAccumYPx = 0f
+        endHandleAccumXPx = 0f
+        endHandleAccumYPx = 0f
+    }
+
+    private fun updateSelectionBounds(
+        pane: PaneLayoutRect,
+        startRow: Int,
+        startCol: Int,
+        endRow: Int,
+        endCol: Int,
+    ) {
+        val metrics = metricsProvider()
+        val maxR = max(0, pane.session.rows - 1)
+        val maxC = max(0, pane.session.cols - 1)
+        val sr = startRow.coerceIn(0, maxR)
+        val sc = startCol.coerceIn(0, maxC)
+        val er = endRow.coerceIn(0, maxR)
+        val ec = endCol.coerceIn(0, maxC)
+        pane.session.setSelection(true, sr, sc, er, ec)
+        selectionState = TerminalSelectionUiState(
+            active = true,
+            paneId = pane.paneId,
+            paneXPx = pane.xPx,
+            paneYPx = pane.yPx,
+            paneWidthPx = pane.widthPx,
+            paneHeightPx = pane.heightPx,
+            cellWidthPx = max(1, metrics.cellWidthPx),
+            cellHeightPx = max(1, metrics.cellHeightPx),
+            startRow = sr,
+            startCol = sc,
+            endRow = er,
+            endCol = ec,
+        )
+        onSelectionChanged(selectionState)
+        onRequestRender()
+    }
+
+    private fun ensureFocused(pane: PaneLayoutRect) {
+        if (pane.paneId != focusedPaneIdProvider()) {
+            onFocusPane(pane.paneId)
+        }
+    }
+
+    private fun resolveGesturePane(downX: Float?, downY: Float?): PaneLayoutRect? {
+        val layout = layoutProvider()
+        if (activeGesturePaneId.isNotEmpty()) {
+            val remembered = layout.panes.firstOrNull { it.paneId == activeGesturePaneId }
+            if (remembered != null) return remembered
+        }
+        if (downX != null && downY != null) {
+            val hit = SplitPaneLayoutCalculator.paneAt(layout, downX, downY)
+            if (hit != null) return hit
+        }
+        return focusedPane(layout)
+    }
+
+    private fun focusedPane(layout: SplitLayoutResult): PaneLayoutRect? =
+        layout.panes.firstOrNull { it.focused } ?: layout.panes.firstOrNull()
+
+    private fun isShiftOverrideActive(metaState: Int): Boolean =
+        modifierLatchProvider().isShiftActive() || (metaState and KeyEvent.META_SHIFT_ON) != 0
+
+    private fun pixelToCell(pane: PaneLayoutRect, xPx: Float, yPx: Float): Pair<Int, Int> {
+        val metrics = metricsProvider()
+        val cw = max(1, metrics.cellWidthPx)
+        val ch = max(1, metrics.cellHeightPx)
+        val col = ((xPx - pane.xPx) / cw).toInt().coerceIn(0, max(0, pane.session.cols - 1))
+        val row = ((yPx - pane.yPx) / ch).toInt().coerceIn(0, max(0, pane.session.rows - 1))
+        return col to row
+    }
+
+    private fun sendMouse(
+        pane: PaneLayoutRect,
+        action: VtMouseAction,
+        button: VtMouseButton,
+        mods: Int,
+        col: Int,
+        row: Int,
+        pixelX: Int,
+        pixelY: Int,
+    ) {
+        val bytes = pane.session.encodeMouse(
+            VtMouseEvent(
+                action = action,
+                button = button,
+                modifierMask = mods,
+                col = col,
+                row = row,
+                pixelX = pixelX,
+                pixelY = pixelY,
+            ),
+        )
+        if (bytes.isNotEmpty()) {
+            onSendPtyBytes(pane.paneId, bytes)
+        }
+    }
+}
+
+/**
+ * Validates clipboard paste safety and dispatches UTF-8 boundary-safe chunks to the active pane stream.
+ */
+internal object TerminalPasteDispatcher {
+    fun dispatchClipboardPaste(
+        paneId: String,
+        session: NativeVtSession,
+        text: String,
+        allowUnsafe: Boolean,
+        maxChunkBytes: Int = NativeVtSession.DEFAULT_PASTE_CHUNK_BYTES,
+        onUnsafePastePrompt: (paneId: String, text: String) -> Unit,
+        onSendPtyBytes: (paneId: String, bytes: ByteArray) -> Unit,
+    ): Boolean {
+        if (text.isEmpty() || session.isClosed) return false
+        if (!allowUnsafe && !session.isPasteSafe(text)) {
+            onUnsafePastePrompt(paneId, text)
+            return false
+        }
+        val chunks = session.encodePasteChunks(
+            text = text,
+            allowUnsafe = allowUnsafe,
+            maxChunkBytes = maxChunkBytes,
+        ) ?: return false
+        var sentAny = false
+        for (chunk in chunks) {
+            if (chunk.isNotEmpty()) {
+                onSendPtyBytes(paneId, chunk)
+                sentAny = true
+            }
+        }
+        return sentAny
+    }
 }

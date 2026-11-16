@@ -213,7 +213,9 @@ fun AuxiliaryKeyBar(
                                 .weight(1f)
                                 .fillMaxHeight(),
                             onModifierPressDown = { mod ->
-                                currentOnBeforeControlKey()
+                                if (mod != ModifierKey.SHIFT) {
+                                    currentOnBeforeControlKey()
+                                }
                                 latchMachine.onFingerDown(mod)
                                 triggerHaptic()
                                 scope.launch {
@@ -238,11 +240,6 @@ fun AuxiliaryKeyBar(
 
                                     var cancelledBySwipe = false
                                     var emittedInitial = false
-
-                                    if (!isPageSlot) {
-                                        emitNonModifier(interactionSlot)
-                                        emittedInitial = true
-                                    }
 
                                     val repeatJob: Job? = if (isRepeatable) {
                                         scope.launch {
@@ -287,7 +284,7 @@ fun AuxiliaryKeyBar(
                                     }
 
                                     repeatJob?.cancel()
-                                    if (!cancelledBySwipe && isPageSlot && !emittedInitial) {
+                                    if (!cancelledBySwipe && !emittedInitial) {
                                         emitNonModifier(interactionSlot)
                                     }
                                 }

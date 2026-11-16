@@ -27,30 +27,83 @@ class TerminalInputConnection(
             Selection.setSelection(it, TerminalInputSession.SENTINEL_ANCHOR, TerminalInputSession.SENTINEL_ANCHOR)
         }
 
+    @Volatile
+    private var inactive: Boolean = false
+    private var batchDepth: Int = 0
+
+    fun markSuperseded() {
+        inactive = true
+    }
+
+    override fun closeConnection() {
+        inactive = true
+        super.closeConnection()
+    }
+
     override fun getEditable(): Editable = virtualEditable
 
+    override fun beginBatchEdit(): Boolean {
+        if (inactive) return false
+        batchDepth++
+        inputSession.beginBatchEdit()
+        return super.beginBatchEdit()
+    }
+
+    override fun endBatchEdit(): Boolean {
+        val superResult = super.endBatchEdit()
+        if (batchDepth > 0) {
+            batchDepth--
+        }
+        inputSession.endBatchEdit()
+        if (!inactive &&
+            batchDepth == 0 &&
+            inputSession.activePreedit.isEmpty() &&
+            !inputSession.hasRetroactiveComposingRegion
+        ) {
+            recenterEditableAndImm()
+        }
+        return batchDepth > 0 && superResult
+    }
+
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        if (inactive) return false
         val ok = super.setComposingText(text ?: "", newCursorPosition)
         inputSession.setComposingText(text, newCursorPosition)
         if (inputSession.activePreedit.isEmpty()) {
+            recenterAfterEdit()
+        }
+        return ok
+    }
+
+    override fun setComposingRegion(start: Int, end: Int): Boolean {
+        if (inactive) return false
+        val ok = super.setComposingRegion(start, end)
+        inputSession.setComposingRegion(start, end)
+        if (batchDepth == 0 &&
+            inputSession.activePreedit.isEmpty() &&
+            !inputSession.hasRetroactiveComposingRegion
+        ) {
             recenterEditableAndImm()
         }
         return ok
     }
 
     override fun finishComposingText(): Boolean {
+        if (inactive) return false
         val ok = inputSession.finishComposingText()
-        recenterEditableAndImm()
+        recenterAfterEdit()
         return ok
     }
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        if (inactive) return false
         val ok = inputSession.commitText(text, newCursorPosition)
-        recenterEditableAndImm()
+        recenterAfterEdit()
         return ok
     }
 
     override fun setSelection(start: Int, end: Int): Boolean {
+        if (inactive) return false
         if (inputSession.activePreedit.isEmpty() &&
             start == TerminalInputSession.SENTINEL_ANCHOR &&
             end == TerminalInputSession.SENTINEL_ANCHOR
@@ -59,24 +112,35 @@ class TerminalInputConnection(
         }
         val ok = inputSession.setSelection(start, end)
         if (inputSession.activePreedit.isEmpty()) {
-            recenterEditableAndImm()
+            recenterAfterEdit()
         }
         return ok
     }
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+        if (inactive) return false
         val ok = inputSession.deleteSurroundingText(beforeLength, afterLength)
-        recenterEditableAndImm()
+        if (inputSession.activePreedit.isEmpty()) {
+            recenterAfterEdit()
+        } else {
+            syncPreeditIntoEditable()
+        }
         return ok
     }
 
     override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
+        if (inactive) return false
         val ok = inputSession.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
-        recenterEditableAndImm()
+        if (inputSession.activePreedit.isEmpty()) {
+            recenterAfterEdit()
+        } else {
+            syncPreeditIntoEditable()
+        }
         return ok
     }
 
     override fun sendKeyEvent(event: KeyEvent): Boolean {
+        if (inactive) return false
         if (onKeyEventDispatch(event)) {
             return true
         }
@@ -95,7 +159,15 @@ class TerminalInputConnection(
         else -> super.performContextMenuAction(id)
     }
 
-    fun recenterEditableAndImm() {
+    private fun recenterAfterEdit() {
+        if (batchDepth > 0) {
+            recenterEditableOnly()
+        } else {
+            recenterEditableAndImm()
+        }
+    }
+
+    private fun syncPreeditIntoEditable() {
         removeComposingSpans(virtualEditable)
         virtualEditable.replace(0, virtualEditable.length, TerminalInputSession.SENTINEL_TEXT)
         Selection.setSelection(
@@ -103,6 +175,21 @@ class TerminalInputConnection(
             TerminalInputSession.SENTINEL_ANCHOR,
             TerminalInputSession.SENTINEL_ANCHOR,
         )
+        super.setComposingText(inputSession.activePreedit, 1)
+    }
+
+    private fun recenterEditableOnly() {
+        removeComposingSpans(virtualEditable)
+        virtualEditable.replace(0, virtualEditable.length, TerminalInputSession.SENTINEL_TEXT)
+        Selection.setSelection(
+            virtualEditable,
+            TerminalInputSession.SENTINEL_ANCHOR,
+            TerminalInputSession.SENTINEL_ANCHOR,
+        )
+    }
+
+    fun recenterEditableAndImm() {
+        recenterEditableOnly()
         imm?.updateSelection(
             targetView,
             TerminalInputSession.SENTINEL_ANCHOR,
@@ -115,10 +202,10 @@ class TerminalInputConnection(
     companion object {
         fun configureEditorInfo(outAttrs: EditorInfo) {
             outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
-                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
                 EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or
                 EditorInfo.IME_ACTION_NONE
             outAttrs.initialSelStart = TerminalInputSession.SENTINEL_ANCHOR
             outAttrs.initialSelEnd = TerminalInputSession.SENTINEL_ANCHOR
