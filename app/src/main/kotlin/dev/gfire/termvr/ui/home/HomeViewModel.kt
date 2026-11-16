@@ -4,8 +4,10 @@ import dev.gfire.termvr.core.data.CatalogRepository
 import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.model.ColorPalette
 import dev.gfire.termvr.core.model.DistributionCatalogEntry
+import dev.gfire.termvr.core.model.GlobalAppSettings
 import dev.gfire.termvr.core.model.HostReadinessReport
 import dev.gfire.termvr.core.model.MuxMode
+import dev.gfire.termvr.core.model.PhantomProcessRemediation
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
@@ -42,11 +44,22 @@ data class HomeUiState(
     val statusMessage: String? = null,
     val errorMessage: String? = null,
 ) {
-    val hasReadinessWarning: Boolean
-        get() = hostReadiness.phantomKillerDetected || hostReadiness.exceedsRecommendedProcessBudget
-
     val runningCount: Int
         get() = runStates.values.count { it == SandboxRunState.RUNNING }
+
+    val exceedsRecommendedSandboxCount: Boolean
+        get() = runningCount > GlobalAppSettings.DEFAULT_MAX_ACTIVE_SANDBOXES
+
+    val hasReadinessWarning: Boolean
+        get() = hostReadiness.phantomKillerDetected ||
+            hostReadiness.exceedsRecommendedProcessBudget ||
+            exceedsRecommendedSandboxCount
+
+    val readinessWarningMessage: String?
+        get() = HomeViewModel.formatHostReadinessWarning(hostReadiness, runningCount)
+
+    val isNoticeError: Boolean
+        get() = errorMessage != null || HomeViewModel.isErrorServiceNotice(serviceNotice)
 
     val activeOrFrozenCount: Int
         get() = runStates.values.count {
@@ -213,6 +226,7 @@ class HomeViewModel(
             errorMessage.value = null
             runCatching {
                 runtimeGateway.freezeSandbox(profileId)
+                runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
                 errorMessage.value = err.message ?: "Failed to freeze container"
             }
@@ -227,6 +241,7 @@ class HomeViewModel(
             runCatching {
                 runtimeGateway.stopSandbox(profileId)
                 sessionCoordinator.closeProfileTabs(profileId)
+                runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
                 errorMessage.value = err.message ?: "Failed to stop container"
             }
@@ -247,6 +262,7 @@ class HomeViewModel(
                 runningIds.map { id ->
                     async { runtimeGateway.freezeSandbox(id) }
                 }.awaitAll()
+                runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
                 errorMessage.value = err.message ?: "Failed to freeze all containers"
             }
@@ -265,6 +281,7 @@ class HomeViewModel(
             runCatching {
                 runtimeGateway.stopAllSandboxes()
                 activeIds.forEach { sessionCoordinator.closeProfileTabs(it) }
+                runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
                 errorMessage.value = err.message ?: "Failed to stop all containers"
             }
@@ -414,6 +431,7 @@ class HomeViewModel(
     ) {
         val prevState = runtimeGateway.runStates.value[profile.id]
         val finalState = runtimeGateway.startOrResumeSandbox(profile, reconfirmLan = reconfirmLan)
+        runtimeGateway.refreshHostReadiness()
         if (finalState == SandboxRunState.RUNNING) {
             val settings = profileRepository.observeAppSettings().first()
             val palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK
@@ -477,5 +495,63 @@ class HomeViewModel(
     companion object {
         const val QUICK_DEBIAN_PROFILE_ID = "debian-main"
         const val DEFAULT_DEBIAN_IMAGE_REF = "docker.io/library/debian:trixie-slim"
+        private const val ANDROID_14_SDK_INT = 34
+
+        /**
+         * Formats an actionable host readiness warning for phantom-process kills and multi-container caps.
+         */
+        fun formatHostReadinessWarning(
+            report: HostReadinessReport,
+            runningCount: Int,
+            maxRecommendedSandboxes: Int = GlobalAppSettings.DEFAULT_MAX_ACTIVE_SANDBOXES,
+        ): String? {
+            return when {
+                report.phantomKillerDetected -> {
+                    if (report.remediationKind == PhantomProcessRemediation.ANDROID_14_DEV_TOGGLE ||
+                        report.hostSdkInt >= ANDROID_14_SDK_INT
+                    ) {
+                        "Android stopped a child process (SIGKILL). " +
+                            "Enable 'Disable child process restrictions' in Developer Options, or open System Diagnostics."
+                    } else {
+                        "Android stopped a child process (32-process or RAM limit). " +
+                            "Keep at most $maxRecommendedSandboxes containers running, or open System Diagnostics."
+                    }
+                }
+
+                report.exceedsRecommendedProcessBudget -> {
+                    "Active child processes (${report.liveChildProcessCount}/32) approach Android's 32-process limit. " +
+                        "Freeze idle containers or open System Diagnostics."
+                }
+
+                runningCount > maxRecommendedSandboxes -> {
+                    "Running $runningCount containers approaches Android's 32-process limit " +
+                        "(${report.liveChildProcessCount}/32 host processes). Freeze idle containers or open System Diagnostics."
+                }
+
+                else -> null
+            }
+        }
+
+        /**
+         * Formats the live running container and Android host child-process summary strip.
+         */
+        fun formatRunningStatusSummary(
+            runningCount: Int,
+            liveChildProcessCount: Int,
+        ): String {
+            val base = if (runningCount == 1) "1 running" else "$runningCount running"
+            return if (liveChildProcessCount > 0) {
+                "$base · $liveChildProcessCount/32 procs"
+            } else {
+                base
+            }
+        }
+
+        fun isErrorServiceNotice(notice: String?): Boolean {
+            if (notice.isNullOrBlank()) return false
+            return notice.contains("SIGKILL") ||
+                notice.contains("exited unexpectedly") ||
+                notice.contains("already in use", ignoreCase = true)
+        }
     }
 }
