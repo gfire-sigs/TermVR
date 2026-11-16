@@ -2,6 +2,9 @@ package dev.gfire.termvr.core.vt
 
 import dev.gfire.termvr.core.model.ColorPalette
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /**
  * Thread-safe Kotlin handle to one Ghostty VT terminal session with deterministic close teardown.
@@ -15,6 +18,7 @@ class NativeVtSession(
 ) : AutoCloseable {
 
     private val closed = AtomicBoolean(false)
+    private val backendLock = ReentrantReadWriteLock()
     private val backend: VtSessionBackend = when {
         backendFactory != null -> backendFactory(initialCols, initialRows, maxScrollbackLines)
         JniVtBindings.isNativeAvailable() -> JniVtSessionBackend(initialCols, initialRows, maxScrollbackLines)
@@ -35,14 +39,21 @@ class NativeVtSession(
     val isClosed: Boolean
         get() = closed.get()
 
+    private inline fun <T> withOpenBackend(defaultValue: T, block: (VtSessionBackend) -> T): T {
+        if (closed.get()) return defaultValue
+        return backendLock.read {
+            if (closed.get()) defaultValue else block(backend)
+        }
+    }
+
     fun resizeGrid(
         newCols: Int,
         newRows: Int,
         cellWidthPx: Int = DEFAULT_CELL_WIDTH_PX,
         cellHeightPx: Int = DEFAULT_CELL_HEIGHT_PX,
-    ): Boolean {
-        if (closed.get() || newCols <= 0 || newRows <= 0) return false
-        val ok = backend.resizeGrid(
+    ): Boolean = withOpenBackend(false) {
+        if (newCols <= 0 || newRows <= 0) return@withOpenBackend false
+        val ok = it.resizeGrid(
             cols = newCols,
             rows = newRows,
             cellWidthPx = cellWidthPx.coerceAtLeast(1),
@@ -52,80 +63,68 @@ class NativeVtSession(
             cols = newCols
             rows = newRows
         }
-        return ok
+        ok
     }
 
     fun writePtyBytes(data: ByteArray, offset: Int = 0, length: Int = data.size - offset) {
-        if (closed.get() || length <= 0 || offset < 0 || offset >= data.size) return
-        backend.writePtyBytes(data, offset, length)
+        if (length <= 0 || offset < 0 || offset >= data.size) return
+        withOpenBackend(Unit) { it.writePtyBytes(data, offset, length) }
     }
 
     /**
      * Drains terminal query replies queued during VT processing.
      */
-    fun drainPtyReplies(): ByteArray {
-        if (closed.get()) return ByteArray(0)
-        return backend.drainPtyReplies()
-    }
+    fun drainPtyReplies(): ByteArray = withOpenBackend(ByteArray(0)) { it.drainPtyReplies() }
 
     fun setPalette(palette: ColorPalette) {
-        if (closed.get()) return
-        backend.setPalette(palette)
+        withOpenBackend(Unit) { it.setPalette(palette) }
     }
 
     fun setScrollbackOffset(linesFromBottom: Int) {
-        if (closed.get()) return
-        backend.setScrollbackOffset(linesFromBottom.coerceAtLeast(0))
+        withOpenBackend(Unit) { it.setScrollbackOffset(linesFromBottom.coerceAtLeast(0)) }
     }
 
-    fun getScrollbackOffset(): Int = if (closed.get()) 0 else backend.getScrollbackOffset()
+    fun getScrollbackOffset(): Int = withOpenBackend(0) { it.getScrollbackOffset() }
 
-    fun getScrollbackCount(): Int = if (closed.get()) 0 else backend.getScrollbackCount()
+    fun getScrollbackCount(): Int = withOpenBackend(0) { it.getScrollbackCount() }
 
     fun setSelection(active: Boolean, startRow: Int, startCol: Int, endRow: Int, endCol: Int) {
-        if (closed.get()) return
-        backend.setSelection(active, startRow, startCol, endRow, endCol)
+        withOpenBackend(Unit) { it.setSelection(active, startRow, startCol, endRow, endCol) }
     }
 
     fun clearSelection() {
-        if (closed.get()) return
-        backend.clearSelection()
+        withOpenBackend(Unit) { it.clearSelection() }
     }
 
-    fun isDirty(): Boolean = !closed.get() && backend.isDirty()
+    fun isDirty(): Boolean = withOpenBackend(false) { it.isDirty() }
 
-    fun isMouseTrackingActive(): Boolean = !closed.get() && backend.isMouseTrackingActive()
+    fun isMouseTrackingActive(): Boolean = withOpenBackend(false) { it.isMouseTrackingActive() }
 
-    fun isBracketedPasteActive(): Boolean = !closed.get() && backend.isBracketedPasteActive()
+    fun isBracketedPasteActive(): Boolean = withOpenBackend(false) { it.isBracketedPasteActive() }
 
-    fun isApplicationCursorActive(): Boolean = !closed.get() && backend.isApplicationCursorActive()
+    fun isApplicationCursorActive(): Boolean = withOpenBackend(false) { it.isApplicationCursorActive() }
 
-    fun getWindowTitle(): String = if (closed.get()) "" else backend.getWindowTitle()
+    fun getWindowTitle(): String = withOpenBackend("") { it.getWindowTitle() }
 
-    fun getCursorState(): VtCursorState = if (closed.get()) {
-        VtCursorState(0, 0, visible = false, blink = false, shape = VtCursorShape.BLOCK)
-    } else {
-        backend.getCursorState()
-    }
+    fun getCursorState(): VtCursorState = withOpenBackend(
+        VtCursorState(0, 0, visible = false, blink = false, shape = VtCursorShape.BLOCK),
+    ) { it.getCursorState() }
 
-    fun encodeKey(event: VtKeyEvent): ByteArray =
-        if (closed.get()) ByteArray(0) else backend.encodeKey(event)
+    fun encodeKey(event: VtKeyEvent): ByteArray = withOpenBackend(ByteArray(0)) { it.encodeKey(event) }
 
-    fun encodeMouse(event: VtMouseEvent): ByteArray =
-        if (closed.get()) ByteArray(0) else backend.encodeMouse(event)
+    fun encodeMouse(event: VtMouseEvent): ByteArray = withOpenBackend(ByteArray(0)) { it.encodeMouse(event) }
 
     fun isPasteSafe(text: String): Boolean = backend.isPasteSafe(text)
 
     fun encodePaste(text: String, allowUnsafe: Boolean = false): ByteArray? =
-        if (closed.get()) null else backend.encodePaste(text, allowUnsafe)
+        withOpenBackend<ByteArray?>(null) { it.encodePaste(text, allowUnsafe) }
 
     fun formatViewportText(
         emitVt: Boolean = false,
         trimTrailingWhitespace: Boolean = true,
         unwrapSoftWraps: Boolean = true,
-    ): String {
-        if (closed.get()) return ""
-        return backend.formatText(
+    ): String = withOpenBackend("") {
+        it.formatText(
             emitVt = emitVt,
             useSelection = false,
             startRow = 0,
@@ -145,9 +144,8 @@ class NativeVtSession(
         emitVt: Boolean = false,
         trimTrailingWhitespace: Boolean = true,
         unwrapSoftWraps: Boolean = true,
-    ): String {
-        if (closed.get()) return ""
-        return backend.formatText(
+    ): String = withOpenBackend("") {
+        it.formatText(
             emitVt = emitVt,
             useSelection = false,
             startRow = startRow,
@@ -163,9 +161,8 @@ class NativeVtSession(
         emitVt: Boolean = false,
         trimTrailingWhitespace: Boolean = true,
         unwrapSoftWraps: Boolean = true,
-    ): String {
-        if (closed.get()) return ""
-        return backend.formatText(
+    ): String = withOpenBackend("") {
+        it.formatText(
             emitVt = emitVt,
             useSelection = true,
             startRow = 0,
@@ -182,13 +179,13 @@ class NativeVtSession(
         useRegex: Boolean = false,
         caseSensitive: Boolean = false,
     ): List<VtSearchMatch> {
-        if (closed.get() || query.isEmpty()) return emptyList()
-        return backend.searchScrollback(query, useRegex, caseSensitive)
+        if (query.isEmpty()) return emptyList()
+        return withOpenBackend(emptyList()) { it.searchScrollback(query, useRegex, caseSensitive) }
     }
 
     fun detectLinkAt(viewportRow: Int, viewportCol: Int): VtDetectedLink? {
-        if (closed.get() || viewportRow < 0 || viewportCol < 0) return null
-        return backend.detectLinkAt(viewportRow, viewportCol)
+        if (viewportRow < 0 || viewportCol < 0) return null
+        return withOpenBackend<VtDetectedLink?>(null) { it.detectLinkAt(viewportRow, viewportCol) }
     }
 
     /**
@@ -200,7 +197,9 @@ class NativeVtSession(
         if (handle != 0L) {
             onDetachPane?.invoke(handle)
         }
-        backend.close()
+        backendLock.write {
+            backend.close()
+        }
     }
 
     companion object {

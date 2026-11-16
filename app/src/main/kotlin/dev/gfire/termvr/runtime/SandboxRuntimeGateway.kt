@@ -436,7 +436,9 @@ class AndroidSandboxRuntimeGateway(
         val intent = Intent(appContext, SandboxForegroundService::class.java).apply {
             this.action = action
         }
-        appContext.startForegroundService(intent)
+        runCatching {
+            appContext.startForegroundService(intent)
+        }
     }
 
     private suspend fun awaitSupervisor(): SandboxSupervisor {

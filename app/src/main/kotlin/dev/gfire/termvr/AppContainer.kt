@@ -55,14 +55,18 @@ class AppContainer(context: Context) {
         SandboxForegroundService.resumeActionHandler = { profileId ->
             appScope.launch {
                 val profile = profileRepository.getProfile(profileId) ?: return@launch
-                runtimeGateway.startOrResumeSandbox(profile)
-                val settings = profileRepository.observeAppSettings().first()
-                val palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK
-                sessionCoordinator.reattachAfterResume(
-                    profile = profile,
-                    maxScrollbackLines = settings.defaultScrollbackLines,
-                    palette = palette,
-                )
+                runCatching {
+                    runtimeGateway.startOrResumeSandbox(profile)
+                    val settings = profileRepository.observeAppSettings().first()
+                    val palette = ColorPalette.byId(settings.selectedPaletteId) ?: ColorPalette.DEFAULT_DARK
+                    sessionCoordinator.reattachAfterResume(
+                        profile = profile,
+                        maxScrollbackLines = settings.defaultScrollbackLines,
+                        palette = palette,
+                    )
+                }.onFailure { err ->
+                    sessionCoordinator.reportError(err.message ?: "Failed to resume container")
+                }
             }
         }
     }

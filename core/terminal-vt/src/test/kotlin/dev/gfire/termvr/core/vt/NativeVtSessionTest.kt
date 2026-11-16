@@ -284,4 +284,65 @@ class NativeVtSessionTest {
             assertTrue(text.contains("ART2    Term: xterm-256color"))
         }
     }
+
+    @Test
+    fun `key encoder covers Ctrl punctuation, Space, Shift+Tab, navigation, and DECCKM arrows`() {
+        NativeVtSession(initialCols = 80, initialRows = 24).use { session ->
+            for (ch in 'a'..'z') {
+                val out = session.encodeKey(
+                    VtKeyEvent(
+                        key = VtKey.UNICODE,
+                        modifierMask = VtModifierMask.CTRL,
+                        unicodeCodepoint = ch.code,
+                        utf8Text = ch.toString(),
+                    ),
+                )
+                assertArrayEquals(byteArrayOf((ch.code - 'a'.code + 1).toByte()), out)
+            }
+
+            val ctrlCases = listOf(
+                '[' to byteArrayOf(0x1B),
+                '\\' to byteArrayOf(0x1C),
+                ']' to byteArrayOf(0x1D),
+                '/' to byteArrayOf(0x1F),
+                '-' to byteArrayOf(0x1F),
+                ' ' to byteArrayOf(0x00),
+                '@' to byteArrayOf(0x00),
+                '?' to byteArrayOf(0x7F),
+            )
+            for ((ch, expected) in ctrlCases) {
+                val out = session.encodeKey(
+                    VtKeyEvent(
+                        key = VtKey.UNICODE,
+                        modifierMask = VtModifierMask.CTRL,
+                        unicodeCodepoint = ch.code,
+                        utf8Text = ch.toString(),
+                    ),
+                )
+                assertArrayEquals(expected, out, "Mismatch for Ctrl+$ch")
+            }
+
+            assertArrayEquals("\u001b[Z".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.TAB, modifierMask = VtModifierMask.SHIFT)))
+            assertArrayEquals("\u001b".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.ESCAPE)))
+            assertArrayEquals("\t".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.TAB)))
+            assertArrayEquals("\r".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.ENTER)))
+            assertArrayEquals(byteArrayOf(0x7F), session.encodeKey(VtKeyEvent(VtKey.BACKSPACE)))
+            assertArrayEquals("\u001b[3~".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.DELETE)))
+            assertArrayEquals("\u001b[H".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.HOME)))
+            assertArrayEquals("\u001b[F".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.END)))
+            assertArrayEquals("\u001b[5~".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.PAGE_UP)))
+            assertArrayEquals("\u001b[6~".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.PAGE_DOWN)))
+
+            assertArrayEquals("\u001b[A".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.UP)))
+            assertArrayEquals("\u001b[B".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.DOWN)))
+            assertArrayEquals("\u001b[C".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.RIGHT)))
+            assertArrayEquals("\u001b[D".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.LEFT)))
+
+            session.writePtyBytes("\u001b[?1h".toByteArray())
+            assertArrayEquals("\u001bOA".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.UP)))
+            assertArrayEquals("\u001bOB".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.DOWN)))
+            assertArrayEquals("\u001bOC".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.RIGHT)))
+            assertArrayEquals("\u001bOD".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.LEFT)))
+        }
+    }
 }

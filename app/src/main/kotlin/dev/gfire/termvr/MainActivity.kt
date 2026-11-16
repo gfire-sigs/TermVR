@@ -1,6 +1,7 @@
 package dev.gfire.termvr
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.gfire.termvr.core.model.ColorPalette
 import dev.gfire.termvr.core.model.GlobalAppSettings
+import dev.gfire.termvr.core.runtime.SandboxForegroundService
 import dev.gfire.termvr.ui.catalog.CatalogViewModel
 import dev.gfire.termvr.ui.files.FilesViewModel
 import dev.gfire.termvr.ui.home.HomeViewModel
@@ -78,6 +80,7 @@ class MainActivity : ComponentActivity() {
 
         syncNotificationsPermissionState(container)
         requestNotificationsIfNeeded()
+        handleIntent(intent)
 
         setContent {
             val appSettings by container.profileRepository.observeAppSettings()
@@ -99,11 +102,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
     override fun onResume() {
         super.onResume()
         val container = (application as TermVrApplication).container
         syncNotificationsPermissionState(container)
         container.runtimeGateway.refreshHostReadiness()
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.action == SandboxForegroundService.ACTION_RESUME_FROZEN) {
+            val profileId = intent.getStringExtra(SandboxForegroundService.EXTRA_PROFILE_ID)
+            if (!profileId.isNullOrBlank()) {
+                SandboxForegroundService.resumeActionHandler?.invoke(profileId)
+            }
+        }
     }
 
     override fun onDestroy() {

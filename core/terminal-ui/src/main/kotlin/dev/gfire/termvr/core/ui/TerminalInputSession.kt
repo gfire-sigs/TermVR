@@ -13,13 +13,31 @@ import kotlin.math.abs
  */
 class TerminalInputSession(
     private val sessionProvider: () -> NativeVtSession?,
-    private val modifierLatchMachine: ModifierLatchMachine,
+    private val modifierLatchProvider: () -> ModifierLatchMachine,
     private val onPreeditChanged: (String) -> Unit = {},
     private val onSendPtyBytes: (ByteArray) -> Unit = {},
     private val onUnsafePasteConfirmationNeeded: (String) -> Unit = {},
     private val onResetImeSelection: (Int, Int) -> Unit = { _, _ -> },
     private val onRestartInput: () -> Unit = {},
 ) {
+    constructor(
+        sessionProvider: () -> NativeVtSession?,
+        modifierLatchMachine: ModifierLatchMachine,
+        onPreeditChanged: (String) -> Unit = {},
+        onSendPtyBytes: (ByteArray) -> Unit = {},
+        onUnsafePasteConfirmationNeeded: (String) -> Unit = {},
+        onResetImeSelection: (Int, Int) -> Unit = { _, _ -> },
+        onRestartInput: () -> Unit = {},
+    ) : this(
+        sessionProvider = sessionProvider,
+        modifierLatchProvider = { modifierLatchMachine },
+        onPreeditChanged = onPreeditChanged,
+        onSendPtyBytes = onSendPtyBytes,
+        onUnsafePasteConfirmationNeeded = onUnsafePasteConfirmationNeeded,
+        onResetImeSelection = onResetImeSelection,
+        onRestartInput = onRestartInput,
+    )
+
     var activePreedit: String = ""
         private set
 
@@ -34,6 +52,17 @@ class TerminalInputSession(
 
     fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val next = text?.toString() ?: ""
+        val mods = modifierLatchProvider().activeModifierMask()
+        if ((mods and (VtModifierMask.CTRL or VtModifierMask.ALT)) != 0 &&
+            next.length == 1 &&
+            next[0].code in 0x20..0x7E
+        ) {
+            emitSingleAsciiModifiedKey(next[0].code, next, mods)
+            clearPreeditAndRecenter()
+            onRestartInput()
+            return true
+        }
+
         activePreedit = next
         val prefix = SENTINEL_TEXT.substring(0, SENTINEL_ANCHOR)
         val suffix = SENTINEL_TEXT.substring(SENTINEL_ANCHOR)
@@ -68,24 +97,12 @@ class TerminalInputSession(
         }
 
         val session = sessionProvider()
-        val mods = modifierLatchMachine.activeModifierMask()
+        val latch = modifierLatchProvider()
+        val mods = latch.activeModifierMask()
         val isMultiLine = (committed.contains('\n') || committed.contains('\r')) && committed.length > 1
 
         if (mods != VtModifierMask.NONE && committed.length == 1 && committed[0].code in 0..0x7F) {
-            val cp = committed[0].code
-            val encoded = session?.encodeKey(
-                VtKeyEvent(
-                    key = VtKey.UNICODE,
-                    action = VtKeyAction.PRESS,
-                    modifierMask = mods,
-                    unicodeCodepoint = cp,
-                    utf8Text = committed,
-                ),
-            ) ?: committed.toByteArray(StandardCharsets.UTF_8)
-            modifierLatchMachine.onNonModifierKeyEmitted()
-            if (encoded.isNotEmpty()) {
-                onSendPtyBytes(encoded)
-            }
+            emitSingleAsciiModifiedKey(committed[0].code, committed, mods)
             return true
         }
 
@@ -103,10 +120,26 @@ class TerminalInputSession(
         }
 
         if (mods != VtModifierMask.NONE) {
-            modifierLatchMachine.onNonModifierKeyEmitted()
+            latch.onNonModifierKeyEmitted()
         }
         onSendPtyBytes(committed.toByteArray(StandardCharsets.UTF_8))
         return true
+    }
+
+    private fun emitSingleAsciiModifiedKey(cp: Int, text: String, mods: Int) {
+        val encoded = sessionProvider()?.encodeKey(
+            VtKeyEvent(
+                key = VtKey.UNICODE,
+                action = VtKeyAction.PRESS,
+                modifierMask = mods,
+                unicodeCodepoint = cp,
+                utf8Text = text,
+            ),
+        ) ?: text.toByteArray(StandardCharsets.UTF_8)
+        modifierLatchProvider().onNonModifierKeyEmitted()
+        if (encoded.isNotEmpty()) {
+            onSendPtyBytes(encoded)
+        }
     }
 
     fun setSelection(start: Int, end: Int): Boolean {
@@ -118,7 +151,8 @@ class TerminalInputSession(
             val steps = abs(delta).coerceAtMost(SENTINEL_LENGTH)
             val key = if (delta < 0) VtKey.LEFT else VtKey.RIGHT
             val session = sessionProvider()
-            val mods = modifierLatchMachine.activeModifierMask()
+            val latch = modifierLatchProvider()
+            val mods = latch.activeModifierMask()
             repeat(steps) {
                 val bytes = session?.encodeKey(
                     VtKeyEvent(
@@ -132,7 +166,7 @@ class TerminalInputSession(
                 }
             }
             if (steps > 0) {
-                modifierLatchMachine.onNonModifierKeyEmitted()
+                latch.onNonModifierKeyEmitted()
             }
             resetSentinel()
             return true
@@ -146,7 +180,8 @@ class TerminalInputSession(
         val before = beforeLength.coerceAtLeast(0)
         val after = afterLength.coerceAtLeast(0)
         val session = sessionProvider()
-        val mods = modifierLatchMachine.activeModifierMask()
+        val latch = modifierLatchProvider()
+        val mods = latch.activeModifierMask()
 
         repeat(before) {
             val bytes = session?.encodeKey(
@@ -165,7 +200,7 @@ class TerminalInputSession(
             }
         }
         if (before > 0 || after > 0) {
-            modifierLatchMachine.onNonModifierKeyEmitted()
+            latch.onNonModifierKeyEmitted()
         }
         resetSentinel()
         return true

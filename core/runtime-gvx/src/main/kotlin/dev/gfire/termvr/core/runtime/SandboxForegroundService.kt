@@ -146,12 +146,15 @@ class SandboxForegroundService : LifecycleService() {
             ACTION_STOP_ALL -> {
                 lifecycleScope.launch {
                     supervisorInstance.stopAllSandboxes()
+                    notificationManager.cancel(NOTIFICATION_STATUS_ID)
+                    notificationManager.cancel(NOTIFICATION_FROZEN_ID)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
             }
 
             ACTION_RESUME_FROZEN -> {
+                promoteToForeground(buildActiveNotification())
                 val targetId = intent.getStringExtra(EXTRA_PROFILE_ID)
                 if (!targetId.isNullOrBlank()) {
                     // Forwarded to UI or handled via callback registered by :app.
@@ -160,8 +163,8 @@ class SandboxForegroundService : LifecycleService() {
             }
         }
 
-        val runningCount = supervisorInstance.runStates.value.values.count { it == SandboxRunState.RUNNING }
-        if (runningCount > 0 || intent?.action == ACTION_START_FOREGROUND) {
+        val activeCount = supervisorInstance.runStates.value.values.count(::isForegroundActiveState)
+        if (activeCount > 0 || intent?.action == ACTION_START_FOREGROUND) {
             promoteToForeground(buildActiveNotification())
         }
         return START_STICKY
@@ -210,14 +213,15 @@ class SandboxForegroundService : LifecycleService() {
 
     private fun updateNotifications() {
         val states = supervisorInstance.runStates.value
-        val runningCount = states.values.count { it == SandboxRunState.RUNNING }
+        val activeCount = states.values.count(::isForegroundActiveState)
         val frozenIds = states.filterValues { it == SandboxRunState.FROZEN }.keys.toList()
 
-        if (runningCount > 0) {
+        if (activeCount > 0) {
             notificationManager.cancel(NOTIFICATION_FROZEN_ID)
             promoteToForeground(buildActiveNotification())
         } else {
             stopForeground(STOP_FOREGROUND_REMOVE)
+            notificationManager.cancel(NOTIFICATION_STATUS_ID)
             if (frozenIds.isNotEmpty() && hasPostNotificationsPermission()) {
                 notificationManager.notify(NOTIFICATION_FROZEN_ID, buildFrozenNotification(frozenIds))
             } else {
@@ -227,21 +231,36 @@ class SandboxForegroundService : LifecycleService() {
     }
 
     private fun promoteToForeground(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_STATUS_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-            )
-        } else {
-            startForeground(NOTIFICATION_STATUS_ID, notification)
+        val promoted = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_STATUS_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(NOTIFICATION_STATUS_ID, notification)
+            }
+        }
+        if (promoted.isFailure) {
+            val err = promoted.exceptionOrNull()
+            if (err is IllegalStateException ||
+                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    err is android.app.ForegroundServiceStartNotAllowedException)
+            ) {
+                if (hasPostNotificationsPermission()) {
+                    runCatching { notificationManager.notify(NOTIFICATION_STATUS_ID, notification) }
+                }
+            } else if (err != null) {
+                throw err
+            }
         }
     }
 
     private fun buildActiveNotification(): Notification {
         val states = supervisorInstance.runStates.value
         val snapshots = supervisorInstance.telemetryByProfile.value
-        val activeIds = states.filterValues { it == SandboxRunState.RUNNING }.keys
+        val activeIds = states.filterValues(::isForegroundActiveState).keys
         val runningSnapshots = snapshots.filterKeys { it in activeIds }.values
         val activeCount = activeIds.size.coerceAtLeast(1)
 
@@ -294,16 +313,30 @@ class SandboxForegroundService : LifecycleService() {
 
     private fun buildFrozenNotification(frozenIds: List<String>): Notification {
         val firstId = frozenIds.first()
-        val resumeIntent = Intent(this, SandboxForegroundService::class.java).apply {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             action = ACTION_RESUME_FROZEN
             putExtra(EXTRA_PROFILE_ID, firstId)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-        val resumePending = PendingIntent.getService(
-            this,
-            REQUEST_CODE_RESUME,
-            resumeIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val resumePending = if (launchIntent != null) {
+            PendingIntent.getActivity(
+                this,
+                REQUEST_CODE_RESUME,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        } else {
+            val resumeIntent = Intent(this, SandboxForegroundService::class.java).apply {
+                action = ACTION_RESUME_FROZEN
+                putExtra(EXTRA_PROFILE_ID, firstId)
+            }
+            PendingIntent.getForegroundService(
+                this,
+                REQUEST_CODE_RESUME,
+                resumeIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
         val text = if (frozenIds.size == 1) {
             "1 container frozen ($firstId)"
         } else {
@@ -314,6 +347,7 @@ class SandboxForegroundService : LifecycleService() {
             .setContentTitle("Frozen Containers")
             .setContentText(text)
             .setAutoCancel(true)
+            .setContentIntent(resumePending)
             .addAction(NotificationCompat.Action(0, "Resume", resumePending))
             .build()
     }
@@ -484,6 +518,19 @@ class SandboxForegroundService : LifecycleService() {
 
         @Volatile
         var resumeActionHandler: ((String) -> Unit)? = null
+
+        /**
+         * Returns true when [state] represents an active or transitioning sandbox requiring foreground protection.
+         */
+        fun isForegroundActiveState(state: SandboxRunState): Boolean = when (state) {
+            SandboxRunState.STARTING,
+            SandboxRunState.RUNNING,
+            SandboxRunState.RESTORING,
+            SandboxRunState.FREEZING -> true
+            SandboxRunState.STOPPED,
+            SandboxRunState.FROZEN,
+            SandboxRunState.FAILED -> false
+        }
 
         /**
          * Formats the `sandbox_status` notification title for single or multiple active containers.

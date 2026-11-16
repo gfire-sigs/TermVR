@@ -133,6 +133,10 @@ class TerminalSurfaceController {
         viewRef.get()?.notifySessionClosed(sessionHandle)
     }
 
+    fun detachSessionBlocking(sessionHandle: Long, timeoutMs: Long = 150L) {
+        viewRef.get()?.detachSessionBlocking(sessionHandle, timeoutMs)
+    }
+
     fun flushImeAndRestartInput() {
         viewRef.get()?.flushImeAndRestartInput()
     }
@@ -219,7 +223,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
 
     private val inputSession = TerminalInputSession(
         sessionProvider = { focusedPane()?.session },
-        modifierLatchMachine = modifierLatchMachine,
+        modifierLatchProvider = { modifierLatchMachine },
         onPreeditChanged = { preedit ->
             glThread?.updatePreedit(preedit)
             markUserOrPtyActivity()
@@ -435,6 +439,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
                     var anyGridResized = false
                     for (pane in layout.panes) {
                         activePaneIds.add(pane.paneId)
+                        if (pane.session.isClosed) continue
                         val cols = max(1, pane.widthPx / max(1, metrics.cellWidthPx))
                         val rows = max(1, pane.heightPx / max(1, metrics.cellHeightPx))
                         val gridChanged = pane.session.cols != cols || pane.session.rows != rows
@@ -449,11 +454,12 @@ class TerminalSurfaceView @JvmOverloads constructor(
                         )
                         val prev = lastNotifiedPaneGeometry[pane.paneId]
                         if (gridChanged || prev != snapshot) {
-                            pane.session.resizeGrid(cols, rows, metrics.cellWidthPx, metrics.cellHeightPx)
-                            lastNotifiedPaneGeometry[pane.paneId] = snapshot
-                            onGridResized(pane.paneId, cols, rows, pane.widthPx, pane.heightPx)
-                            if (gridChanged) {
-                                anyGridResized = true
+                            if (pane.session.resizeGrid(cols, rows, metrics.cellWidthPx, metrics.cellHeightPx)) {
+                                lastNotifiedPaneGeometry[pane.paneId] = snapshot
+                                onGridResized(pane.paneId, cols, rows, pane.widthPx, pane.heightPx)
+                                if (gridChanged) {
+                                    anyGridResized = true
+                                }
                             }
                         }
                     }
@@ -511,6 +517,12 @@ class TerminalSurfaceView @JvmOverloads constructor(
     fun notifySessionClosed(sessionHandle: Long) {
         if (sessionHandle != 0L) {
             glThread?.detachSession(sessionHandle)
+        }
+    }
+
+    fun detachSessionBlocking(sessionHandle: Long, timeoutMs: Long = 150L) {
+        if (sessionHandle != 0L) {
+            glThread?.detachSessionBlocking(sessionHandle, timeoutMs)
         }
     }
 
@@ -805,7 +817,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         // Lock-free UNBIND_SURFACE handoff: never acquires vt_mu.
-        glThread?.unbindSurfaceBlocking(timeoutMs = 16L)
+        glThread?.unbindSurfaceBlocking(timeoutMs = 50L)
     }
 
     override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider {
@@ -979,6 +991,8 @@ private class TermVrGlThread(
     private var lastActivityMs: Long = SystemClock.uptimeMillis()
     private var cursorBlinkVisible: Boolean = true
     private var blinkScheduled: Boolean = false
+    @Volatile
+    private var shuttingDown: Boolean = false
 
     private val blinkRunnable = object : Runnable {
         override fun run() {
@@ -1035,7 +1049,9 @@ private class TermVrGlThread(
                     MSG_UPDATE_PALETTE -> {
                         currentPalette = msg.obj as ColorPalette
                         for (pane in latestLayout.panes) {
-                            pane.session.setPalette(currentPalette)
+                            if (!pane.session.isClosed) {
+                                pane.session.setPalette(currentPalette)
+                            }
                         }
                         needsFullRedrawFrames = TRIPLE_BUFFER_FRAMES
                         scheduleVsync()
@@ -1046,8 +1062,22 @@ private class TermVrGlThread(
                         scheduleVsync()
                     }
                     MSG_DETACH_SESSION -> {
-                        val handle = msg.obj as Long
-                        renderer.detachSession(handle)
+                        val payload = msg.obj as? DetachPayload
+                        val handle = payload?.handle ?: (msg.obj as? Long ?: 0L)
+                        try {
+                            if (handle != 0L) {
+                                renderer.detachSession(handle)
+                                latestLayout = latestLayout.copy(
+                                    panes = latestLayout.panes.filterNot {
+                                        it.session.isClosed ||
+                                            it.session.nativeHandle == handle ||
+                                            it.session.nativeHandle == 0L
+                                    },
+                                )
+                            }
+                        } finally {
+                            payload?.latch?.countDown()
+                        }
                     }
                     MSG_MARK_ACTIVITY -> {
                         lastActivityMs = SystemClock.uptimeMillis()
@@ -1081,6 +1111,7 @@ private class TermVrGlThread(
     }
 
     fun unbindSurfaceBlocking(timeoutMs: Long) {
+        if (shuttingDown || !isAlive) return
         val h = handler ?: return
         val latch = CountDownLatch(1)
         val msg = h.obtainMessage(MSG_UNBIND_SURFACE, latch)
@@ -1090,36 +1121,62 @@ private class TermVrGlThread(
     }
 
     fun requestRender(dirty: Boolean) {
+        if (shuttingDown) return
         handler?.obtainMessage(MSG_REQUEST_RENDER, if (dirty) 1 else 0, 0)?.sendToTarget()
     }
 
     fun updateLayout(root: TerminalSplitNode?, focusedId: String) {
+        if (shuttingDown) return
         handler?.obtainMessage(MSG_UPDATE_LAYOUT, LayoutPayload(root, focusedId))?.sendToTarget()
     }
 
     fun updateFontConfig(config: FontConfig) {
+        if (shuttingDown) return
         handler?.obtainMessage(MSG_UPDATE_FONT, config)?.sendToTarget()
     }
 
     fun updatePalette(palette: ColorPalette) {
+        if (shuttingDown) return
         handler?.obtainMessage(MSG_UPDATE_PALETTE, palette)?.sendToTarget()
     }
 
     fun updatePreedit(preedit: String) {
+        if (shuttingDown) return
         handler?.obtainMessage(MSG_UPDATE_PREEDIT, preedit)?.sendToTarget()
     }
 
     fun detachSession(sessionHandle: Long) {
-        handler?.obtainMessage(MSG_DETACH_SESSION, sessionHandle)?.sendToTarget()
+        if (shuttingDown || sessionHandle == 0L) return
+        handler?.obtainMessage(MSG_DETACH_SESSION, DetachPayload(sessionHandle))?.sendToTarget()
+    }
+
+    fun detachSessionBlocking(sessionHandle: Long, timeoutMs: Long) {
+        if (shuttingDown || sessionHandle == 0L || !isAlive) return
+        val h = handler ?: return
+        val latch = CountDownLatch(1)
+        val msg = h.obtainMessage(MSG_DETACH_SESSION, DetachPayload(sessionHandle, latch))
+        if (h.sendMessage(msg)) {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        }
     }
 
     fun markActivity() {
+        if (shuttingDown) return
         handler?.sendEmptyMessage(MSG_MARK_ACTIVITY)
     }
 
     fun shutdown() {
-        handler?.sendEmptyMessage(MSG_SHUTDOWN)
-        runCatching { join(200L) }
+        shuttingDown = true
+        val h = handler
+        if (h != null) {
+            h.removeCallbacks(blinkRunnable)
+            if (!h.sendEmptyMessage(MSG_SHUTDOWN)) {
+                quitSafely()
+            }
+        } else {
+            quitSafely()
+        }
+        runCatching { join(1000L) }
     }
 
     private fun initEglAndRenderer() {
@@ -1181,18 +1238,31 @@ private class TermVrGlThread(
     }
 
     private fun handleBindSurface(surface: Surface, width: Int, height: Int) {
+        if (shuttingDown) return
         activeNativeSurface = surface
         surfaceWidthPx = width
         surfaceHeightPx = height
         destroyWindowSurface()
 
         val cfg = eglConfig ?: return
-        if (eglContext == EGL14.EGL_NO_CONTEXT || !surface.isValid) return
+        if (eglDisplay == EGL14.EGL_NO_DISPLAY || eglContext == EGL14.EGL_NO_CONTEXT || !surface.isValid) {
+            return
+        }
 
         val winAttribs = intArrayOf(EGL14.EGL_NONE)
         windowSurface = EGL14.eglCreateWindowSurface(eglDisplay, cfg, surface, winAttribs, 0)
-        if (windowSurface != EGL14.EGL_NO_SURFACE) {
-            EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
+        if (windowSurface == EGL14.EGL_NO_SURFACE) {
+            activeNativeSurface = null
+            return
+        }
+        if (!EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)) {
+            if (EGL14.eglGetError() == EGL14.EGL_CONTEXT_LOST) {
+                handleContextLost()
+            } else {
+                destroyWindowSurface()
+                activeNativeSurface = null
+            }
+            return
         }
         recomputeLayout()
         needsFullRedrawFrames = TRIPLE_BUFFER_FRAMES
@@ -1234,12 +1304,14 @@ private class TermVrGlThread(
     }
 
     private fun handleShutdown() {
+        shuttingDown = true
         if (frameScheduled) {
             choreographer?.removeFrameCallback(this)
             frameScheduled = false
         }
         handler?.removeCallbacks(blinkRunnable)
         blinkScheduled = false
+        activeNativeSurface = null
         makeSurfacelessCurrent()
         renderer.close()
         destroyWindowSurface()
@@ -1259,7 +1331,7 @@ private class TermVrGlThread(
     }
 
     private fun scheduleVsync() {
-        if (!frameScheduled && windowSurface != EGL14.EGL_NO_SURFACE) {
+        if (!shuttingDown && !frameScheduled && windowSurface != EGL14.EGL_NO_SURFACE) {
             frameScheduled = true
             choreographer?.postFrameCallback(this)
         }
@@ -1267,7 +1339,7 @@ private class TermVrGlThread(
 
     private fun scheduleNextBlinkTick() {
         val h = handler ?: return
-        if (!blinkScheduled) {
+        if (!shuttingDown && !blinkScheduled) {
             blinkScheduled = true
             h.postDelayed(blinkRunnable, BLINK_PERIOD_MS)
         }
@@ -1275,12 +1347,18 @@ private class TermVrGlThread(
 
     override fun doFrame(frameTimeNanos: Long) {
         frameScheduled = false
-        if (windowSurface == EGL14.EGL_NO_SURFACE || surfaceWidthPx <= 0 || surfaceHeightPx <= 0) {
+        if (shuttingDown ||
+            windowSurface == EGL14.EGL_NO_SURFACE ||
+            activeNativeSurface?.isValid == false ||
+            surfaceWidthPx <= 0 ||
+            surfaceHeightPx <= 0
+        ) {
             return
         }
 
+        val activePanes = latestLayout.panes.filter { !it.session.isClosed }
         val forceFull = needsFullRedrawFrames > 0
-        val anySessionDirty = latestLayout.panes.any { it.session.isDirty() }
+        val anySessionDirty = activePanes.any { it.session.isDirty() }
         if (!forceFull && !dirtyPending && !preeditDirty && !anySessionDirty) {
             return
         }
@@ -1295,7 +1373,8 @@ private class TermVrGlThread(
             return
         }
 
-        val renderTargets = latestLayout.panes.map { pane ->
+        val renderTargets = activePanes.mapNotNull { pane ->
+            if (pane.session.isClosed) return@mapNotNull null
             val cursor = pane.session.getCursorState()
             val showPreedit = pane.focused && activePreedit.isNotEmpty()
             PaneRenderTarget(
@@ -1367,15 +1446,18 @@ private class TermVrGlThread(
     private fun recomputeLayout() {
         val root = splitRoot ?: return
         val dividerPx = max(1, (1f * density).roundToInt())
-        latestLayout = SplitPaneLayoutCalculator.compute(
+        val computed = SplitPaneLayoutCalculator.compute(
             root = root,
             focusedPaneId = focusedPaneId,
             surfaceWidthPx = surfaceWidthPx,
             surfaceHeightPx = surfaceHeightPx,
             dividerThicknessPx = dividerPx,
         )
+        latestLayout = computed.copy(panes = computed.panes.filterNot { it.session.isClosed })
         for (pane in latestLayout.panes) {
-            pane.session.setPalette(currentPalette)
+            if (!pane.session.isClosed) {
+                pane.session.setPalette(currentPalette)
+            }
         }
         onLayoutComputed(latestLayout, currentMetrics)
     }
@@ -1413,6 +1495,7 @@ private class TermVrGlThread(
 
     private data class BindPayload(val surface: Surface, val width: Int, val height: Int)
     private data class LayoutPayload(val root: TerminalSplitNode?, val focusedPaneId: String)
+    private data class DetachPayload(val handle: Long, val latch: CountDownLatch? = null)
 
     companion object {
         private const val MSG_BIND_SURFACE = 1

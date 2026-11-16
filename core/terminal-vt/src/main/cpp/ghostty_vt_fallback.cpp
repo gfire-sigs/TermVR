@@ -2287,8 +2287,10 @@ TvGhosttyResult tv_ghostty_key_encoder_encode(
                     seq.push_back(static_cast<char>(upper - 0x40u));
                 } else if (upper == '?') {
                     seq.push_back('\x7f');
-                } else if (upper == '/') {
+                } else if (upper == '/' || upper == '-') {
                     seq.push_back('\x1f');
+                } else if (upper == '6') {
+                    seq.push_back('\x1e');
                 } else {
                     AppendUtf8(cp, &seq);
                 }

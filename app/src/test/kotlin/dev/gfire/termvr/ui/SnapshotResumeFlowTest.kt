@@ -60,6 +60,7 @@ import kotlinx.serialization.encodeToString
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -227,6 +228,69 @@ class SnapshotResumeFlowTest {
                 pool.shutdownNow()
             }
         }
+
+    @Test
+    fun `split panes share one tab controller and concurrent reattach is idempotent`() = runTest(testDispatcher) {
+        val pool = Executors.newCachedThreadPool()
+        val gateway = PipedMuxGateway(tempDir, pool)
+        val profile = SandboxProfile(
+            id = "split-idem",
+            displayName = "Split Idem",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            muxMode = MuxMode.STDIO_MUX,
+        )
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> RecordingVtBackend() })
+            },
+        )
+        try {
+            assertEquals(SandboxRunState.RUNNING, gateway.startOrResumeSandbox(profile))
+            val tab = coordinator.openNewShellTab(profile, 1000, ColorPalette.DEFAULT_DARK)!!
+            val firstController = coordinator.activeController()
+            val deadline1 = System.currentTimeMillis() + 3_000L
+            while (gateway.latestGuestSession()?.openedStreamIds?.size != 1 &&
+                System.currentTimeMillis() < deadline1
+            ) {
+                Thread.sleep(10L)
+            }
+            assertEquals(1, gateway.latestGuestSession()!!.openedStreamIds.size)
+
+            // Splitting creates a second pane sharing the same tab controller.
+            coordinator.splitFocusedPane(
+                tabId = tab.tabId,
+                direction = dev.gfire.termvr.core.ui.SplitDirection.HORIZONTAL,
+                profile = profile,
+                maxScrollbackLines = 1000,
+                palette = ColorPalette.DEFAULT_DARK,
+            )
+            val splitController = coordinator.activeController()
+            assertSame(firstController, splitController)
+
+            val deadline2 = System.currentTimeMillis() + 3_000L
+            while (gateway.latestGuestSession()?.openedStreamIds?.size != 2 &&
+                System.currentTimeMillis() < deadline2
+            ) {
+                Thread.sleep(10L)
+            }
+            assertEquals(2, gateway.latestGuestSession()!!.openedStreamIds.size)
+
+            // Concurrent reattach calls for the same running mux must NOT open duplicate PTYs.
+            coordinator.reattachAfterResume(profile, 1000, ColorPalette.DEFAULT_DARK)
+            coordinator.reattachAfterResume(profile, 1000, ColorPalette.DEFAULT_DARK)
+            Thread.sleep(60L)
+            assertEquals(2, gateway.latestGuestSession()!!.openedStreamIds.size)
+
+            // Closing the tab clears _tabs first and cleanly closes sessions.
+            coordinator.closeTab(tab.tabId)
+            assertTrue(coordinator.tabs.value.isEmpty())
+            assertNull(coordinator.lastError.value)
+        } finally {
+            gateway.closeAll()
+            pool.shutdownNow()
+        }
+    }
 }
 
 private class PipedMuxGateway(

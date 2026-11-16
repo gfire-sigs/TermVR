@@ -4,6 +4,9 @@ import dev.gfire.termvr.core.model.ModifierKey
 import dev.gfire.termvr.core.model.ModifierLatchState
 import dev.gfire.termvr.core.vt.VtModifierMask
 import java.util.EnumMap
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Tracks touch modifier latch transitions for CTRL, ALT, SHIFT, and SUPER slots.
@@ -21,11 +24,23 @@ class ModifierLatchMachine(
     )
 
     private val slots: EnumMap<ModifierKey, SlotState> = EnumMap(ModifierKey::class.java)
+    private val _statesFlow: MutableStateFlow<Map<ModifierKey, ModifierLatchState>>
+
+    val statesFlow: StateFlow<Map<ModifierKey, ModifierLatchState>>
 
     init {
         for (mod in ModifierKey.entries) {
             slots[mod] = SlotState()
         }
+        _statesFlow = MutableStateFlow(snapshotStatesLocked())
+        statesFlow = _statesFlow.asStateFlow()
+    }
+
+    private fun snapshotStatesLocked(): Map<ModifierKey, ModifierLatchState> =
+        ModifierKey.entries.associateWith { slots.getValue(it).state }
+
+    private fun publishStatesLocked() {
+        _statesFlow.value = snapshotStatesLocked()
     }
 
     @Synchronized
@@ -61,6 +76,7 @@ class ModifierLatchMachine(
         if (slot.state == ModifierLatchState.RELEASED) {
             slot.state = ModifierLatchState.HELD
         }
+        publishStatesLocked()
     }
 
     @Synchronized
@@ -74,6 +90,7 @@ class ModifierLatchMachine(
         ) {
             slot.state = ModifierLatchState.LOCKED
             slot.lockedByHoldDuringPress = true
+            publishStatesLocked()
         }
     }
 
@@ -87,6 +104,7 @@ class ModifierLatchMachine(
         if (slot.lockedByHoldDuringPress) {
             slot.lockedByHoldDuringPress = false
             slot.pressDownTimeMs = -1L
+            publishStatesLocked()
             return
         }
 
@@ -123,6 +141,7 @@ class ModifierLatchMachine(
             }
         }
         slot.pressDownTimeMs = -1L
+        publishStatesLocked()
     }
 
     @Synchronized
@@ -138,6 +157,7 @@ class ModifierLatchMachine(
                 ModifierLatchState.LOCKED, ModifierLatchState.RELEASED -> Unit
             }
         }
+        publishStatesLocked()
     }
 
     @Synchronized
@@ -151,6 +171,11 @@ class ModifierLatchMachine(
             slot.chordedWhileHeld = false
             slot.lockedByHoldDuringPress = false
         }
+        publishStatesLocked()
+    }
+
+    fun resetAll() {
+        clearAll()
     }
 
     private fun toMaskBit(mod: ModifierKey): Int = when (mod) {

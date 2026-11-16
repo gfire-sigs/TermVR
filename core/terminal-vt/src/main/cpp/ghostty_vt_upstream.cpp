@@ -41,6 +41,7 @@ struct TvGhosttyRenderStateCellIteratorImpl {
 struct TvGhosttyKeyEncoderImpl {
     GhosttyKeyEncoder encoder = nullptr;
     GhosttyKeyEvent event = nullptr;
+    uint8_t kitty_flags = 0;
 };
 
 struct TvGhosttyMouseEncoderImpl {
@@ -119,7 +120,41 @@ GhosttyKey MapKeyCode(TvGhosttyKey k, uint32_t cp) noexcept {
                 return static_cast<GhosttyKey>(GHOSTTY_KEY_DIGIT_0 + (cp - '0'));
             }
             if (cp == ' ') return GHOSTTY_KEY_SPACE;
-            return GHOSTTY_KEY_UNIDENTIFIED;
+            switch (cp) {
+                case '[':
+                case '{': return GHOSTTY_KEY_BRACKET_LEFT;
+                case ']':
+                case '}': return GHOSTTY_KEY_BRACKET_RIGHT;
+                case '\\':
+                case '|': return GHOSTTY_KEY_BACKSLASH;
+                case '/':
+                case '?': return GHOSTTY_KEY_SLASH;
+                case '-':
+                case '_': return GHOSTTY_KEY_MINUS;
+                case '=':
+                case '+': return GHOSTTY_KEY_EQUAL;
+                case ';':
+                case ':': return GHOSTTY_KEY_SEMICOLON;
+                case '\'':
+                case '"': return GHOSTTY_KEY_QUOTE;
+                case ',':
+                case '<': return GHOSTTY_KEY_COMMA;
+                case '.':
+                case '>': return GHOSTTY_KEY_PERIOD;
+                case '`':
+                case '~': return GHOSTTY_KEY_BACKQUOTE;
+                case '!': return GHOSTTY_KEY_DIGIT_1;
+                case '@': return GHOSTTY_KEY_DIGIT_2;
+                case '#': return GHOSTTY_KEY_DIGIT_3;
+                case '$': return GHOSTTY_KEY_DIGIT_4;
+                case '%': return GHOSTTY_KEY_DIGIT_5;
+                case '^': return GHOSTTY_KEY_DIGIT_6;
+                case '&': return GHOSTTY_KEY_DIGIT_7;
+                case '*': return GHOSTTY_KEY_DIGIT_8;
+                case '(': return GHOSTTY_KEY_DIGIT_9;
+                case ')': return GHOSTTY_KEY_DIGIT_0;
+                default: return GHOSTTY_KEY_UNIDENTIFIED;
+            }
         }
         default:
             return GHOSTTY_KEY_UNIDENTIFIED;
@@ -709,7 +744,66 @@ void tv_ghostty_key_encoder_set_opts_from_terminal(
         return;
     }
     ghostty_key_encoder_set_from_terminal(encoder->encoder, terminal->term);
+    uint8_t kflags = 0;
+    if (ghostty_terminal_get(terminal->term, GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS, &kflags) == GHOSTTY_SUCCESS) {
+        encoder->kitty_flags = kflags;
+    } else {
+        encoder->kitty_flags = 0;
+    }
 }
+
+namespace {
+
+bool LegacyCtrlByteFor(uint32_t cp, uint32_t mods, uint8_t* out_byte) noexcept {
+    if ((mods & TV_GHOSTTY_MOD_CTRL) == 0 || (mods & TV_GHOSTTY_MOD_SUPER) != 0) {
+        return false;
+    }
+    if (cp >= 'a' && cp <= 'z') {
+        if ((mods & TV_GHOSTTY_MOD_SHIFT) != 0) return false;
+        *out_byte = static_cast<uint8_t>(cp - 'a' + 1u);
+        return true;
+    }
+    if (cp >= 'A' && cp <= 'Z') {
+        if ((mods & TV_GHOSTTY_MOD_SHIFT) != 0) return false;
+        *out_byte = static_cast<uint8_t>(cp - 'A' + 1u);
+        return true;
+    }
+    switch (cp) {
+        case '@':
+        case ' ':
+            *out_byte = 0x00u;
+            return true;
+        case '[':
+            *out_byte = 0x1Bu;
+            return true;
+        case '\\':
+            *out_byte = 0x1Cu;
+            return true;
+        case ']':
+            *out_byte = 0x1Du;
+            return true;
+        case '^':
+        case '6':
+            *out_byte = 0x1Eu;
+            return true;
+        case '_':
+        case '/':
+        case '-':
+            *out_byte = 0x1Fu;
+            return true;
+        case '?':
+            *out_byte = 0x7Fu;
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsFixtermsCsiU(const uint8_t* buf, size_t len) noexcept {
+    return buf != nullptr && len >= 4u && buf[0] == 0x1Bu && buf[1] == '[' && buf[len - 1u] == 'u';
+}
+
+}  // namespace
 
 TvGhosttyResult tv_ghostty_key_encoder_encode(
     TvGhosttyKeyEncoder encoder,
@@ -721,26 +815,68 @@ TvGhosttyResult tv_ghostty_key_encoder_encode(
         return TV_GHOSTTY_INVALID_VALUE;
     }
 
+    uint32_t cp = event.unicode_codepoint;
+    uint32_t unshifted_cp = (cp >= 'A' && cp <= 'Z') ? (cp + 32u) : cp;
+    const bool ctrl_without_shift =
+        (event.mods & TV_GHOSTTY_MOD_CTRL) != 0 && (event.mods & TV_GHOSTTY_MOD_SHIFT) == 0;
+
+    uint32_t effective_cp = cp;
+    if (ctrl_without_shift && cp >= 'A' && cp <= 'Z') {
+        effective_cp = cp + 32u;
+    }
+
     ghostty_key_event_set_action(encoder->event, MapKeyAction(event.action));
-    ghostty_key_event_set_key(encoder->event, MapKeyCode(event.key, event.unicode_codepoint));
+    ghostty_key_event_set_key(encoder->event, MapKeyCode(event.key, effective_cp));
     ghostty_key_event_set_mods(encoder->event, MapKeyMods(event.mods));
     ghostty_key_event_set_consumed_mods(encoder->event, 0);
     ghostty_key_event_set_composing(encoder->event, false);
-    ghostty_key_event_set_unshifted_codepoint(encoder->event, event.unicode_codepoint);
+    ghostty_key_event_set_unshifted_codepoint(encoder->event, unshifted_cp);
 
     std::string fallback_utf8;
     GhosttyString gstr{};
-    if (event.utf8_text != nullptr && event.utf8_len > 0) {
-        gstr.ptr = reinterpret_cast<const uint8_t*>(event.utf8_text);
-        gstr.len = event.utf8_len;
-    } else if (event.key == TV_GHOSTTY_KEY_UNICODE && event.unicode_codepoint >= 0x20u && event.unicode_codepoint != 0x7Fu) {
-        AppendCodepointUtf8(event.unicode_codepoint, &fallback_utf8);
+    if (ctrl_without_shift && cp >= 'A' && cp <= 'Z') {
+        fallback_utf8.push_back(static_cast<char>(effective_cp));
+        gstr.ptr = reinterpret_cast<const uint8_t*>(fallback_utf8.data());
+        gstr.len = fallback_utf8.size();
+    } else if (event.utf8_text != nullptr && event.utf8_len > 0) {
+        if (ctrl_without_shift && event.utf8_len == 1 &&
+            event.utf8_text[0] >= 'A' && event.utf8_text[0] <= 'Z') {
+            fallback_utf8.push_back(static_cast<char>(event.utf8_text[0] + 32));
+            gstr.ptr = reinterpret_cast<const uint8_t*>(fallback_utf8.data());
+            gstr.len = fallback_utf8.size();
+        } else {
+            gstr.ptr = reinterpret_cast<const uint8_t*>(event.utf8_text);
+            gstr.len = event.utf8_len;
+        }
+    } else if (event.key == TV_GHOSTTY_KEY_UNICODE && effective_cp >= 0x20u && effective_cp != 0x7Fu) {
+        AppendCodepointUtf8(effective_cp, &fallback_utf8);
         gstr.ptr = reinterpret_cast<const uint8_t*>(fallback_utf8.data());
         gstr.len = fallback_utf8.size();
     }
     ghostty_key_event_set_utf8(encoder->event, gstr);
 
     GhosttyResult res = ghostty_key_encoder_encode(encoder->encoder, encoder->event, out_buf, buf_cap, out_written);
+    if (res == GHOSTTY_SUCCESS &&
+        encoder->kitty_flags == 0 &&
+        event.action != TV_GHOSTTY_KEY_ACTION_RELEASE &&
+        event.key == TV_GHOSTTY_KEY_UNICODE &&
+        (*out_written == 0 || IsFixtermsCsiU(out_buf, *out_written))) {
+        uint8_t c0 = 0;
+        if (LegacyCtrlByteFor(effective_cp, event.mods, &c0)) {
+            uint8_t seq[2];
+            size_t seq_len = 0;
+            if (event.mods & TV_GHOSTTY_MOD_ALT) {
+                seq[seq_len++] = 0x1Bu;
+            }
+            seq[seq_len++] = c0;
+            *out_written = seq_len;
+            if (out_buf == nullptr || buf_cap < seq_len) {
+                return TV_GHOSTTY_OUT_OF_SPACE;
+            }
+            std::memcpy(out_buf, seq, seq_len);
+            return TV_GHOSTTY_SUCCESS;
+        }
+    }
     return MapResult(res);
 }
 

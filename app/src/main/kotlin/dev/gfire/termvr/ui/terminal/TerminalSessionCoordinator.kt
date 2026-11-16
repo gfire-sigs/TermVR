@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,7 @@ data class TerminalTabState(
     val splitRoot: TerminalSplitNode,
     val focusedPaneId: String,
     val exitedPanes: Set<String> = emptySet(),
+    val sessionTitle: String? = null,
 ) {
     fun allPaneIds(): List<String> = collectPaneIds(splitRoot)
 
@@ -57,11 +59,13 @@ private data class PaneRuntime(
     @Volatile var streamId: Long = -1L,
     @Volatile var muxPtyHandle: MuxPtyHandle? = null,
     @Volatile var rawPtyHandle: HostPtyHandle? = null,
+    @Volatile var boundMuxRef: MuxSessionClient? = null,
     var rawReaderThread: Thread? = null,
     @Volatile var desiredCols: Int = 0,
     @Volatile var desiredRows: Int = 0,
     @Volatile var desiredWidthPx: Int = 0,
     @Volatile var desiredHeightPx: Int = 0,
+    val streamBindingInFlight: AtomicBoolean = AtomicBoolean(false),
     val pendingPtyReplies: ConcurrentLinkedQueue<ByteArray> = ConcurrentLinkedQueue(),
     val replySendLock: Any = Any(),
     @Volatile var closed: Boolean = false,
@@ -85,7 +89,9 @@ class TerminalSessionCoordinator(
 ) {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val paneRuntimes = ConcurrentHashMap<String, PaneRuntime>()
+    private val tabControllers = ConcurrentHashMap<String, TerminalSurfaceController>()
     private val boundMuxByProfile = ConcurrentHashMap<String, MuxSessionClient>()
+    private val profileReattachLocks = ConcurrentHashMap<String, Any>()
     private val lastKnownGridByProfile = ConcurrentHashMap<String, GridDims>()
 
     private val _tabs = MutableStateFlow<List<TerminalTabState>>(emptyList())
@@ -129,14 +135,24 @@ class TerminalSessionCoordinator(
     }
 
     fun activeController(): TerminalSurfaceController? {
-        val activeTab = _tabs.value.firstOrNull { it.tabId == _activeTabId.value } ?: return null
-        return paneRuntimes[activeTab.focusedPaneId]?.controller
+        val activeTab = _tabs.value.firstOrNull { it.tabId == _activeTabId.value }
+            ?: _tabs.value.firstOrNull()
+            ?: return null
+        return tabControllers[activeTab.tabId] ?: paneRuntimes[activeTab.focusedPaneId]?.controller
     }
 
     fun activeSession(): NativeVtSession? {
-        val activeTab = _tabs.value.firstOrNull { it.tabId == _activeTabId.value } ?: return null
+        val activeTab = _tabs.value.firstOrNull { it.tabId == _activeTabId.value }
+            ?: _tabs.value.firstOrNull()
+            ?: return null
         return paneRuntimes[activeTab.focusedPaneId]?.session
     }
+
+    private fun controllerForTab(tabId: String): TerminalSurfaceController =
+        tabControllers.computeIfAbsent(tabId) { TerminalSurfaceController() }
+
+    private fun reattachLockFor(profileId: String): Any =
+        profileReattachLocks.computeIfAbsent(profileId) { Any() }
 
     fun applyPaletteToAll(palette: ColorPalette) {
         for (runtime in paneRuntimes.values) {
@@ -214,7 +230,7 @@ class TerminalSessionCoordinator(
         val session = sessionFactory(maxScrollbackLines).apply {
             setPalette(palette)
         }
-        val controller = TerminalSurfaceController()
+        val controller = controllerForTab(tabId)
         val runtime = PaneRuntime(
             paneId = paneId,
             tabId = tabId,
@@ -229,7 +245,7 @@ class TerminalSessionCoordinator(
         val tab = TerminalTabState(
             tabId = tabId,
             profileId = profile.id,
-            title = "${profile.displayName} #$shellIndex",
+            title = "Shell $shellIndex",
             isDaemonLogs = false,
             splitRoot = TerminalSplitNode.Leaf(paneId, session),
             focusedPaneId = paneId,
@@ -264,13 +280,13 @@ class TerminalSessionCoordinator(
         val newSession = sessionFactory(maxScrollbackLines).apply {
             setPalette(palette)
         }
-        val newController = TerminalSurfaceController()
+        val sharedController = controllerForTab(tabId)
         val newRuntime = PaneRuntime(
             paneId = newPaneId,
             tabId = tabId,
             profileId = profile.id,
             session = newSession,
-            controller = newController,
+            controller = sharedController,
             isStreamZero = false,
         )
         paneRuntimes[newPaneId] = newRuntime
@@ -299,9 +315,9 @@ class TerminalSessionCoordinator(
     fun closePane(tabId: String, paneId: String) {
         val tab = _tabs.value.firstOrNull { it.tabId == tabId } ?: return
         val remaining = removeLeafFromTree(tab.splitRoot, paneId)
-        disposePaneRuntime(paneId)
         if (remaining == null) {
             closeTabInternal(tabId)
+            disposePaneRuntime(paneId)
             return
         }
         val remainingIds = collectIds(remaining)
@@ -323,6 +339,7 @@ class TerminalSessionCoordinator(
                 }
             }
         }
+        disposePaneRuntime(paneId)
     }
 
     /**
@@ -330,10 +347,11 @@ class TerminalSessionCoordinator(
      */
     fun closeTab(tabId: String) {
         val tab = _tabs.value.firstOrNull { it.tabId == tabId } ?: return
-        for (paneId in tab.allPaneIds()) {
+        val paneIds = tab.allPaneIds()
+        closeTabInternal(tabId)
+        for (paneId in paneIds) {
             disposePaneRuntime(paneId)
         }
-        closeTabInternal(tabId)
     }
 
     /**
@@ -449,7 +467,7 @@ class TerminalSessionCoordinator(
         val session = sessionFactory(maxScrollbackLines).apply {
             setPalette(palette)
         }
-        val controller = TerminalSurfaceController()
+        val controller = controllerForTab(tabId)
         val runtime = PaneRuntime(
             paneId = paneId,
             tabId = tabId,
@@ -476,8 +494,9 @@ class TerminalSessionCoordinator(
 
     private fun bindStreamZero(profileId: String, runtime: PaneRuntime) {
         val mux = runtimeGateway.getMuxClient(profileId) ?: return
-        if (mux.isClosed) return
+        if (mux.isClosed || runtime.closed) return
         boundMuxByProfile[profileId] = mux
+        runtime.boundMuxRef = mux
         mux.setStreamListener(0L, createStreamListener(runtime))
     }
 
@@ -620,10 +639,14 @@ class TerminalSessionCoordinator(
     }
 
     private fun bindInteractivePaneStream(profile: SandboxProfile, runtime: PaneRuntime) {
+        if (runtime.closed) return
         if (profile.muxMode == MuxMode.RAW_PTY) {
             val rawPty = runtimeGateway.getRawPtyHandle(profile.id)
             if (rawPty == null) {
                 appendTerminalNotice(runtime, "\r\n[RAW PTY handle unavailable]\r\n")
+                return
+            }
+            if (runtime.rawPtyHandle === rawPty && runtime.rawReaderThread?.isAlive == true) {
                 return
             }
             attachRawPtyReader(runtime, rawPty)
@@ -635,9 +658,14 @@ class TerminalSessionCoordinator(
             appendTerminalNotice(runtime, "\r\n[Sandbox mux stream is unavailable]\r\n")
             return
         }
+        if (!runtime.streamBindingInFlight.compareAndSet(false, true)) {
+            return
+        }
         boundMuxByProfile[profile.id] = mux
+        runtime.boundMuxRef = mux
         ioScope.launch {
-            runCatching {
+            try {
+                if (runtime.closed || mux.isClosed) return@launch
                 val listener = createStreamListener(runtime)
                 val openDims = resolveInitialGridDims(runtime)
                 val pty = mux.openPty(
@@ -650,6 +678,10 @@ class TerminalSessionCoordinator(
                     ypixel = openDims.heightPx,
                     listener = listener,
                 )
+                if (runtime.closed) {
+                    runCatching { pty.close() }
+                    return@launch
+                }
                 runtime.streamId = pty.streamId
                 runtime.muxPtyHandle = pty
                 val latestCols = runtime.desiredCols
@@ -672,9 +704,16 @@ class TerminalSessionCoordinator(
                     }
                 }
                 flushPendingPtyReplies(runtime)
-            }.onFailure { err ->
-                _lastError.value = err.message ?: "Failed to open PTY session"
-                appendTerminalNotice(runtime, "\r\n[Failed to open PTY: ${err.message}]\r\n")
+            } catch (err: Throwable) {
+                if (runtime.boundMuxRef === mux) {
+                    runtime.boundMuxRef = null
+                }
+                if (!runtime.closed) {
+                    _lastError.value = err.message ?: "Failed to open PTY session"
+                    appendTerminalNotice(runtime, "\r\n[Failed to open PTY: ${err.message}]\r\n")
+                }
+            } finally {
+                runtime.streamBindingInFlight.set(false)
             }
         }
     }
@@ -683,51 +722,56 @@ class TerminalSessionCoordinator(
         profile: SandboxProfile,
         existingTabs: List<TerminalTabState>,
     ) {
-        if (profile.muxMode == MuxMode.RAW_PTY) {
-            val rawPty = runtimeGateway.getRawPtyHandle(profile.id) ?: return
+        synchronized(reattachLockFor(profile.id)) {
+            if (profile.muxMode == MuxMode.RAW_PTY) {
+                val rawPty = runtimeGateway.getRawPtyHandle(profile.id) ?: return
+                for (tab in existingTabs) {
+                    for (paneId in tab.allPaneIds()) {
+                        val runtime = paneRuntimes[paneId] ?: continue
+                        if (runtime.closed || runtime.isStreamZero) continue
+                        if (runtime.rawPtyHandle === rawPty && runtime.rawReaderThread?.isAlive == true) continue
+                        attachRawPtyReader(runtime, rawPty)
+                    }
+                }
+                return
+            }
+
+            val mux = runtimeGateway.getMuxClient(profile.id) ?: return
+            if (mux.isClosed) return
+            boundMuxByProfile[profile.id] = mux
             for (tab in existingTabs) {
                 for (paneId in tab.allPaneIds()) {
                     val runtime = paneRuntimes[paneId] ?: continue
-                    if (runtime.closed || runtime.isStreamZero) continue
-                    attachRawPtyReader(runtime, rawPty)
-                }
-            }
-            return
-        }
-
-        val mux = runtimeGateway.getMuxClient(profile.id) ?: return
-        if (mux.isClosed) return
-        boundMuxByProfile[profile.id] = mux
-        for (tab in existingTabs) {
-            for (paneId in tab.allPaneIds()) {
-                val runtime = paneRuntimes[paneId] ?: continue
-                if (runtime.closed) continue
-                if (runtime.isStreamZero) {
-                    bindStreamZero(profile.id, runtime)
-                } else if (runtime.streamId >= 1L && mux.isStreamOpen(runtime.streamId)) {
-                    val handle = mux.attachPtyHandle(
-                        streamId = runtime.streamId,
-                        listener = createStreamListener(runtime),
-                    )
-                    runtime.muxPtyHandle = handle
-                    val dims = resolveInitialGridDims(runtime)
-                    if (dims.cols >= 2 && dims.rows >= 2) {
-                        runCatching {
-                            handle.resize(
-                                rows = dims.rows,
-                                cols = dims.cols,
-                                xpixel = dims.widthPx,
-                                ypixel = dims.heightPx,
-                            )
+                    if (runtime.closed) continue
+                    if (runtime.boundMuxRef === mux && !mux.isClosed) continue
+                    if (runtime.isStreamZero) {
+                        bindStreamZero(profile.id, runtime)
+                    } else if (runtime.streamId >= 1L && mux.isStreamOpen(runtime.streamId)) {
+                        val handle = mux.attachPtyHandle(
+                            streamId = runtime.streamId,
+                            listener = createStreamListener(runtime),
+                        )
+                        runtime.muxPtyHandle = handle
+                        runtime.boundMuxRef = mux
+                        val dims = resolveInitialGridDims(runtime)
+                        if (dims.cols >= 2 && dims.rows >= 2) {
+                            runCatching {
+                                handle.resize(
+                                    rows = dims.rows,
+                                    cols = dims.cols,
+                                    xpixel = dims.widthPx,
+                                    ypixel = dims.heightPx,
+                                )
+                            }
                         }
+                        ioScope.launch {
+                            flushPendingPtyReplies(runtime)
+                        }
+                    } else {
+                        runtime.muxPtyHandle = null
+                        runtime.streamId = -1L
+                        bindInteractivePaneStream(profile, runtime)
                     }
-                    ioScope.launch {
-                        flushPendingPtyReplies(runtime)
-                    }
-                } else {
-                    runtime.muxPtyHandle = null
-                    runtime.streamId = -1L
-                    bindInteractivePaneStream(profile, runtime)
                 }
             }
         }
@@ -741,13 +785,32 @@ class TerminalSessionCoordinator(
             if (replies.isNotEmpty()) {
                 enqueuePtyReplies(runtime, replies)
             }
+            if (!runtime.isStreamZero) {
+                val oscTitle = runtime.session.getWindowTitle().trim().takeIf { it.isNotEmpty() }
+                if (oscTitle != null) {
+                    _tabs.update { list ->
+                        var changed = false
+                        val updated = list.map { tab ->
+                            if (tab.tabId == runtime.tabId &&
+                                tab.focusedPaneId == runtime.paneId &&
+                                tab.sessionTitle != oscTitle
+                            ) {
+                                changed = true
+                                tab.copy(sessionTitle = oscTitle)
+                            } else {
+                                tab
+                            }
+                        }
+                        if (changed) updated else list
+                    }
+                }
+            }
             runtime.controller.notifyPtyOutput()
         }
 
         override fun onExit(streamId: Long, exitCode: Int) {
             if (runtime.closed) return
             appendTerminalNotice(runtime, "\r\n[Process exited with status $exitCode]\r\n")
-            runtime.controller.notifySessionClosed(runtime.session.nativeHandle)
             _tabs.update { list ->
                 list.map { tab ->
                     if (tab.tabId == runtime.tabId) {
@@ -761,7 +824,7 @@ class TerminalSessionCoordinator(
     }
 
     private fun appendTerminalNotice(runtime: PaneRuntime, text: String) {
-        if (runtime.session.isClosed) return
+        if (runtime.closed || runtime.session.isClosed) return
         val bytes = text.toByteArray(StandardCharsets.UTF_8)
         runtime.session.writePtyBytes(bytes)
         runtime.controller.notifyPtyOutput()
@@ -770,6 +833,10 @@ class TerminalSessionCoordinator(
     private fun disposePaneRuntime(paneId: String) {
         val runtime = paneRuntimes.remove(paneId) ?: return
         runtime.closed = true
+        val handle = runtime.session.nativeHandle
+        if (handle != 0L) {
+            runtime.controller.notifySessionClosed(handle)
+        }
         ioScope.launch {
             runCatching {
                 val muxClient = runtimeGateway.getMuxClient(runtime.profileId)
@@ -780,6 +847,9 @@ class TerminalSessionCoordinator(
                 }
             }
             runtime.rawReaderThread?.interrupt()
+            if (handle != 0L) {
+                runtime.controller.detachSessionBlocking(handle, timeoutMs = 150L)
+            }
             if (!runtime.session.isClosed) {
                 runtime.session.close()
             }
@@ -787,6 +857,7 @@ class TerminalSessionCoordinator(
     }
 
     private fun closeTabInternal(tabId: String) {
+        tabControllers.remove(tabId)
         val remainingTabs = _tabs.value.filterNot { it.tabId == tabId }
         _tabs.value = remainingTabs
         if (_activeTabId.value == tabId) {

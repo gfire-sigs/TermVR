@@ -20,9 +20,11 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -40,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -49,8 +52,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.gfire.termvr.core.model.SandboxProfile
@@ -261,6 +266,13 @@ fun TerminalScreen(
     }
 }
 
+private sealed interface PendingCloseTarget {
+    val label: String
+
+    data class Tab(val tabId: String, override val label: String) : PendingCloseTarget
+    data class SplitPane(val tabId: String, val paneId: String, override val label: String) : PendingCloseTarget
+}
+
 @Composable
 private fun TerminalTopBar(
     state: TerminalUiState,
@@ -276,12 +288,15 @@ private fun TerminalTopBar(
 ) {
     val mono = LocalTermVrMonoFontFamily.current
     val tokens = LocalTermVrPaletteTokens.current
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
     val activeTab = state.activeTab
     val activeProfile = activeTab?.let { tab -> state.profiles.firstOrNull { it.id == tab.profileId } }
     val activeRunState = activeProfile?.let { state.runStates[it.id] } ?: SandboxRunState.STOPPED
     val runningCount = state.runStates.values.count { it == SandboxRunState.RUNNING }
     val openContainerCount = state.tabs.map { it.profileId }.distinct().size
     val hasMultiplePanes = activeTab?.splitRoot is TerminalSplitNode.Split
+    var pendingClose by remember { mutableStateOf<PendingCloseTarget?>(null) }
 
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column {
@@ -349,6 +364,7 @@ private fun TerminalTopBar(
                 // Middle: Scrollable Session Tabs + compact '+' button
                 val tabScrollState = rememberScrollState()
                 var tabRowViewportWidthPx by remember { mutableIntStateOf(0) }
+                val tabRowViewportWidthDp = with(density) { tabRowViewportWidthPx.toDp() }
                 val tabBoundsPx = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
                 val activeTabId = activeTab?.tabId
                 LaunchedEffect(activeTabId, state.tabs.size, hasMultiplePanes, tabRowViewportWidthPx) {
@@ -377,6 +393,13 @@ private fun TerminalTopBar(
                     for (tab in state.tabs) {
                         val selected = tab.tabId == activeTab?.tabId
                         val tabLabel = formatTabLabel(tab, state.profiles, openContainerCount)
+                        val showInlineClose = shouldShowInlineTabClose(
+                            tab = tab,
+                            selected = selected,
+                            tabCount = state.tabs.size,
+                            screenWidthDp = configuration.screenWidthDp,
+                            tabRowViewportWidthDp = tabRowViewportWidthDp,
+                        )
                         Surface(
                             modifier = Modifier
                                 .onGloballyPositioned { coords ->
@@ -396,9 +419,14 @@ private fun TerminalTopBar(
                             ),
                         ) {
                             Row(
-                                modifier = Modifier.padding(start = 8.dp, end = if (tab.isDaemonLogs) 8.dp else 4.dp, top = 5.dp, bottom = 5.dp),
+                                modifier = Modifier.padding(
+                                    start = 10.dp,
+                                    end = if (showInlineClose) 4.dp else 10.dp,
+                                    top = 4.dp,
+                                    bottom = 4.dp,
+                                ),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Text(
                                     text = tabLabel,
@@ -412,16 +440,45 @@ private fun TerminalTopBar(
                                     },
                                     maxLines = 1,
                                     softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 160.dp),
                                 )
-                                if (!tab.isDaemonLogs) {
-                                    Icon(
-                                        imageVector = TermVrIcons.Close,
-                                        contentDescription = "Close tab",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .clickable { onCloseTab(tab.tabId) },
-                                    )
+                                if (showInlineClose) {
+                                    Surface(
+                                        onClick = {
+                                            if (shouldConfirmTabClose(
+                                                    tab = tab,
+                                                    screenWidthDp = configuration.screenWidthDp,
+                                                    tabRowViewportWidthDp = tabRowViewportWidthDp,
+                                                    tabCount = state.tabs.size,
+                                                )
+                                            ) {
+                                                pendingClose = PendingCloseTarget.Tab(tab.tabId, tabLabel)
+                                            } else {
+                                                onCloseTab(tab.tabId)
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (selected) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.12f)
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.10f)
+                                        },
+                                        modifier = Modifier.size(24.dp),
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = TermVrIcons.Close,
+                                                contentDescription = "Close tab",
+                                                tint = if (selected) {
+                                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
+                                                modifier = Modifier.size(13.dp),
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -468,7 +525,25 @@ private fun TerminalTopBar(
                     }
                     if (hasMultiplePanes) {
                         IconButton(
-                            onClick = onClosePane,
+                            onClick = {
+                                if (shouldConfirmPaneClose(
+                                        tab = activeTab,
+                                        paneId = activeTab.focusedPaneId,
+                                        screenWidthDp = configuration.screenWidthDp,
+                                        tabRowViewportWidthDp = tabRowViewportWidthDp,
+                                        tabCount = state.tabs.size,
+                                    )
+                                ) {
+                                    val label = formatTabLabel(activeTab, state.profiles, openContainerCount)
+                                    pendingClose = PendingCloseTarget.SplitPane(
+                                        tabId = activeTab.tabId,
+                                        paneId = activeTab.focusedPaneId,
+                                        label = label,
+                                    )
+                                } else {
+                                    onClosePane()
+                                }
+                            },
                             modifier = Modifier.size(30.dp),
                         ) {
                             Icon(
@@ -514,23 +589,116 @@ private fun TerminalTopBar(
             HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
         }
     }
+
+    val confirmTarget = pendingClose
+    if (confirmTarget != null) {
+        AlertDialog(
+            onDismissRequest = { pendingClose = null },
+            shape = TermVrControlShape,
+            title = {
+                Text(
+                    if (confirmTarget is PendingCloseTarget.SplitPane) "Close split pane?" else "Close tab?",
+                )
+            },
+            text = {
+                Text("Close \"${confirmTarget.label}\"? Running processes in this shell will terminate.")
+            },
+            confirmButton = {
+                TermVrButton(
+                    onClick = {
+                        pendingClose = null
+                        when (confirmTarget) {
+                            is PendingCloseTarget.Tab -> onCloseTab(confirmTarget.tabId)
+                            is PendingCloseTarget.SplitPane -> onClosePane()
+                        }
+                    },
+                ) {
+                    Text("Close")
+                }
+            },
+            dismissButton = {
+                TermVrTextButton(onClick = { pendingClose = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 }
 
-private fun formatTabLabel(
+internal fun formatTabLabel(
     tab: TerminalTabState,
     profiles: List<SandboxProfile>,
     openContainerCount: Int,
 ): String {
-    if (openContainerCount >= 2) {
-        if (tab.isDaemonLogs) {
-            val containerName = profiles.firstOrNull { it.id == tab.profileId }?.displayName ?: tab.profileId
-            return "$containerName Logs"
-        }
-        return tab.title
+    val containerName = profiles.firstOrNull { it.id == tab.profileId }?.displayName ?: tab.profileId
+    if (tab.isDaemonLogs) {
+        return if (openContainerCount >= 2) "$containerName Logs" else "Logs"
     }
-    if (tab.isDaemonLogs) return "Logs"
-    val hashIdx = tab.title.lastIndexOf('#')
-    return if (hashIdx >= 0) tab.title.substring(hashIdx) else tab.title
+    val oscTitle = tab.sessionTitle?.trim()?.takeIf { it.isNotEmpty() }
+    val baseTitle = oscTitle ?: normalizeShellTabTitle(tab.title)
+    if (openContainerCount >= 2) {
+        return if (baseTitle.startsWith(containerName)) baseTitle else "$containerName · $baseTitle"
+    }
+    return baseTitle
+}
+
+private fun normalizeShellTabTitle(rawTitle: String): String {
+    val hashIdx = rawTitle.lastIndexOf('#')
+    if (hashIdx >= 0) {
+        val suffix = rawTitle.substring(hashIdx + 1).trim()
+        if (suffix.isNotEmpty() && suffix.all { it.isDigit() }) {
+            return "Shell $suffix"
+        }
+    }
+    return rawTitle
+}
+
+internal fun shouldShowInlineTabClose(
+    tab: TerminalTabState,
+    selected: Boolean,
+    tabCount: Int,
+    screenWidthDp: Int,
+    tabRowViewportWidthDp: Dp,
+): Boolean {
+    if (tab.isDaemonLogs) return false
+    val isCompactStrip = screenWidthDp < 600 || (tabRowViewportWidthDp > 0.dp && tabRowViewportWidthDp < 420.dp)
+    if (isCompactStrip && tabCount >= 2) {
+        return selected
+    }
+    return true
+}
+
+internal fun shouldConfirmTabClose(
+    tab: TerminalTabState,
+    screenWidthDp: Int,
+    tabRowViewportWidthDp: Dp,
+    tabCount: Int,
+): Boolean {
+    val allExited = tab.allPaneIds().all { it in tab.exitedPanes }
+    if (allExited) return false
+    return isNarrowOrCompactTabBar(screenWidthDp, tabRowViewportWidthDp, tabCount)
+}
+
+internal fun shouldConfirmPaneClose(
+    tab: TerminalTabState,
+    paneId: String,
+    screenWidthDp: Int,
+    tabRowViewportWidthDp: Dp,
+    tabCount: Int,
+): Boolean {
+    if (paneId in tab.exitedPanes) return false
+    return isNarrowOrCompactTabBar(screenWidthDp, tabRowViewportWidthDp, tabCount)
+}
+
+private fun isNarrowOrCompactTabBar(
+    screenWidthDp: Int,
+    tabRowViewportWidthDp: Dp,
+    tabCount: Int,
+): Boolean {
+    if (screenWidthDp < 600) return true
+    if (tabRowViewportWidthDp <= 0.dp) return false
+    val avgTabWidthDp = tabRowViewportWidthDp / tabCount.coerceAtLeast(1)
+    return tabRowViewportWidthDp < 420.dp || avgTabWidthDp < 140.dp
 }
 
 @OptIn(ExperimentalLayoutApi::class)

@@ -300,7 +300,7 @@ object HardwareKeyMapper {
             return HardwareKeyResult.Ignored
         }
 
-        val resolvedCodepoint = resolveCodepoint(keyCode, unicodeChar, combinedMods)
+        val resolvedCodepoint = resolveCodepoint(keyCode, unicodeChar, combinedMods, hardwareMetaState)
         if (resolvedCodepoint <= 0) {
             return HardwareKeyResult.Ignored
         }
@@ -374,16 +374,73 @@ object HardwareKeyMapper {
         else -> VtKey.NONE
     }
 
-    private fun resolveCodepoint(keyCode: Int, unicodeChar: Int, combinedMods: Int): Int {
-        if (unicodeChar > 0) return unicodeChar
+    private fun resolveCodepoint(
+        keyCode: Int,
+        unicodeChar: Int,
+        combinedMods: Int,
+        hardwareMetaState: Int,
+    ): Int {
+        val shiftActive = (combinedMods and VtModifierMask.SHIFT) != 0
+        if (unicodeChar > 0) {
+            if ((combinedMods and VtModifierMask.CTRL) == 0 &&
+                shiftActive &&
+                (hardwareMetaState and KeyEvent.META_SHIFT_ON) == 0 &&
+                unicodeChar in 'a'.code..'z'.code
+            ) {
+                return unicodeChar - 32
+            }
+            return unicodeChar
+        }
         if (keyCode == KeyEvent.KEYCODE_SPACE) return ' '.code
         if (keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) {
-            val base = if ((combinedMods and VtModifierMask.SHIFT) != 0) 'A'.code else 'a'.code
+            val base = if (shiftActive) 'A'.code else 'a'.code
             return base + (keyCode - KeyEvent.KEYCODE_A)
         }
         if (keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9) {
-            return '0'.code + (keyCode - KeyEvent.KEYCODE_0)
+            if (!shiftActive) {
+                return '0'.code + (keyCode - KeyEvent.KEYCODE_0)
+            }
+            return when (keyCode) {
+                KeyEvent.KEYCODE_0 -> ')'.code
+                KeyEvent.KEYCODE_1 -> '!'.code
+                KeyEvent.KEYCODE_2 -> '@'.code
+                KeyEvent.KEYCODE_3 -> '#'.code
+                KeyEvent.KEYCODE_4 -> '$'.code
+                KeyEvent.KEYCODE_5 -> '%'.code
+                KeyEvent.KEYCODE_6 -> '^'.code
+                KeyEvent.KEYCODE_7 -> '&'.code
+                KeyEvent.KEYCODE_8 -> '*'.code
+                KeyEvent.KEYCODE_9 -> '('.code
+                else -> 0
+            }
         }
-        return 0
+        if (keyCode in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9) {
+            return '0'.code + (keyCode - KeyEvent.KEYCODE_NUMPAD_0)
+        }
+        return when (keyCode) {
+            KeyEvent.KEYCODE_LEFT_BRACKET -> if (shiftActive) '{'.code else '['.code
+            KeyEvent.KEYCODE_RIGHT_BRACKET -> if (shiftActive) '}'.code else ']'.code
+            KeyEvent.KEYCODE_BACKSLASH -> if (shiftActive) '|'.code else '\\'.code
+            KeyEvent.KEYCODE_SLASH -> if (shiftActive) '?'.code else '/'.code
+            KeyEvent.KEYCODE_MINUS -> if (shiftActive) '_'.code else '-'.code
+            KeyEvent.KEYCODE_EQUALS -> if (shiftActive) '+'.code else '='.code
+            KeyEvent.KEYCODE_SEMICOLON -> if (shiftActive) ':'.code else ';'.code
+            KeyEvent.KEYCODE_APOSTROPHE -> if (shiftActive) '"'.code else '\''.code
+            KeyEvent.KEYCODE_COMMA -> if (shiftActive) '<'.code else ','.code
+            KeyEvent.KEYCODE_PERIOD -> if (shiftActive) '>'.code else '.'.code
+            KeyEvent.KEYCODE_GRAVE -> if (shiftActive) '~'.code else '`'.code
+            KeyEvent.KEYCODE_AT -> '@'.code
+            KeyEvent.KEYCODE_PLUS -> '+'.code
+            KeyEvent.KEYCODE_POUND -> '#'.code
+            KeyEvent.KEYCODE_STAR -> '*'.code
+            KeyEvent.KEYCODE_NUMPAD_DIVIDE -> '/'.code
+            KeyEvent.KEYCODE_NUMPAD_MULTIPLY -> '*'.code
+            KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> '-'.code
+            KeyEvent.KEYCODE_NUMPAD_ADD -> '+'.code
+            KeyEvent.KEYCODE_NUMPAD_DOT -> '.'.code
+            KeyEvent.KEYCODE_NUMPAD_COMMA -> ','.code
+            KeyEvent.KEYCODE_NUMPAD_EQUALS -> '='.code
+            else -> 0
+        }
     }
 }

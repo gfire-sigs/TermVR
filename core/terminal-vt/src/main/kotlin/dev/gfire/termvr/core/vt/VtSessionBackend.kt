@@ -67,6 +67,7 @@ internal class JniVtSessionBackend(
     rows: Int,
     maxScrollback: Int,
 ) : VtSessionBackend {
+    @Volatile
     private var handle: Long = JniVtBindings.nativeCreateSession(cols, rows, maxScrollback)
 
     init {
@@ -730,11 +731,15 @@ internal class JvmFallbackVtSessionBackend(
             (if ((event.modifierMask and VtModifierMask.ALT) != 0) 2 else 0) +
             (if ((event.modifierMask and VtModifierMask.CTRL) != 0) 4 else 0) +
             (if ((event.modifierMask and VtModifierMask.SUPER) != 0) 8 else 0)
+        val altPrefix = if ((event.modifierMask and VtModifierMask.ALT) != 0) "\u001b" else ""
         val seq = when (event.key) {
             VtKey.ESCAPE -> "\u001b"
-            VtKey.ENTER -> if ((event.modifierMask and VtModifierMask.ALT) != 0) "\u001b\r" else "\r"
-            VtKey.TAB -> if ((event.modifierMask and VtModifierMask.SHIFT) != 0) "\u001b[Z" else "\t"
-            VtKey.BACKSPACE -> if ((event.modifierMask and VtModifierMask.CTRL) != 0) "\u0008" else "\u007f"
+            VtKey.ENTER -> "$altPrefix\r"
+            VtKey.TAB -> if ((event.modifierMask and VtModifierMask.SHIFT) != 0) "\u001b[Z" else "$altPrefix\t"
+            VtKey.BACKSPACE -> {
+                val bs = if ((event.modifierMask and VtModifierMask.CTRL) != 0) "\u0008" else "\u007f"
+                "$altPrefix$bs"
+            }
             VtKey.UP -> if (xmod > 1) "\u001b[1;${xmod}A" else if (decckm) "\u001bOA" else "\u001b[A"
             VtKey.DOWN -> if (xmod > 1) "\u001b[1;${xmod}B" else if (decckm) "\u001bOB" else "\u001b[B"
             VtKey.RIGHT -> if (xmod > 1) "\u001b[1;${xmod}C" else if (decckm) "\u001bOC" else "\u001b[C"
@@ -745,21 +750,33 @@ internal class JvmFallbackVtSessionBackend(
             VtKey.DELETE -> if (xmod > 1) "\u001b[3;${xmod}~" else "\u001b[3~"
             VtKey.PAGE_UP -> if (xmod > 1) "\u001b[5;${xmod}~" else "\u001b[5~"
             VtKey.PAGE_DOWN -> if (xmod > 1) "\u001b[6;${xmod}~" else "\u001b[6~"
+            VtKey.F1, VtKey.F2, VtKey.F3, VtKey.F4 -> {
+                val letter = ('P'.code + (event.key.nativeCode - VtKey.F1.nativeCode)).toChar()
+                if (xmod > 1) "\u001b[1;${xmod}$letter" else "\u001bO$letter"
+            }
+            VtKey.F5 -> if (xmod > 1) "\u001b[15;${xmod}~" else "\u001b[15~"
+            VtKey.F6 -> if (xmod > 1) "\u001b[17;${xmod}~" else "\u001b[17~"
+            VtKey.F7 -> if (xmod > 1) "\u001b[18;${xmod}~" else "\u001b[18~"
+            VtKey.F8 -> if (xmod > 1) "\u001b[19;${xmod}~" else "\u001b[19~"
+            VtKey.F9 -> if (xmod > 1) "\u001b[20;${xmod}~" else "\u001b[20~"
+            VtKey.F10 -> if (xmod > 1) "\u001b[21;${xmod}~" else "\u001b[21~"
+            VtKey.F11 -> if (xmod > 1) "\u001b[23;${xmod}~" else "\u001b[23~"
+            VtKey.F12 -> if (xmod > 1) "\u001b[24;${xmod}~" else "\u001b[24~"
             VtKey.UNICODE -> {
                 val cp = event.unicodeCodepoint
-                val prefix = if ((event.modifierMask and VtModifierMask.ALT) != 0) "\u001b" else ""
                 if ((event.modifierMask and VtModifierMask.CTRL) != 0 && cp in 32..126) {
                     val upper = cp.toChar().uppercaseChar().code
                     val ctrlByte = when (upper) {
                         ' '.code, '@'.code -> 0
                         in 'A'.code..'_'.code -> upper - 0x40
                         '?'.code -> 0x7f
-                        '/'.code -> 0x1f
+                        '/'.code, '-'.code -> 0x1f
+                        '6'.code -> 0x1e
                         else -> cp
                     }
-                    prefix + ctrlByte.toChar()
+                    altPrefix + ctrlByte.toChar()
                 } else {
-                    prefix + (event.utf8Text ?: String(Character.toChars(max(1, cp))))
+                    altPrefix + (event.utf8Text ?: String(Character.toChars(max(1, cp))))
                 }
             }
             else -> ""

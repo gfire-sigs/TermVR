@@ -1,5 +1,7 @@
 package dev.gfire.termvr.core.ui
 
+import android.text.InputType
+import android.view.inputmethod.EditorInfo
 import dev.gfire.termvr.core.model.ModifierKey
 import dev.gfire.termvr.core.model.ModifierLatchState
 import dev.gfire.termvr.core.vt.NativeVtSession
@@ -240,5 +242,78 @@ class TerminalInputSessionTest {
             assertArrayEquals(byteArrayOf(0x03), h.allSentBytes())
             assertEquals(ModifierLatchState.LOCKED, h.latch.stateOf(ModifierKey.CTRL))
         }
+    }
+
+    @Test
+    fun `setComposingText immediately dispatches CTRL and ALT single ASCII chords and clears preedit`() {
+        var nowMs = 0L
+        val h = createHarness(clock = { nowMs })
+        h.vtSession.use {
+            // Ctrl+c via setComposingText (Gboard/Samsung/SwiftKey behavior)
+            h.latch.onFingerDown(ModifierKey.CTRL)
+            nowMs += 40L
+            h.latch.onFingerUp(ModifierKey.CTRL)
+            assertEquals(ModifierLatchState.ONE_SHOT, h.latch.stateOf(ModifierKey.CTRL))
+
+            h.input.setComposingText("c", 1)
+            assertArrayEquals(byteArrayOf(0x03), h.allSentBytes())
+            assertEquals("", h.input.activePreedit)
+            assertEquals(ModifierLatchState.RELEASED, h.latch.stateOf(ModifierKey.CTRL))
+            assertEquals(1, h.restartCountProvider())
+
+            // Uppercase 'C' with Ctrl latched also emits 0x03
+            h.sentBytes.clear()
+            h.latch.onFingerDown(ModifierKey.CTRL)
+            nowMs += 40L
+            h.latch.onFingerUp(ModifierKey.CTRL)
+            h.input.setComposingText("C", 1)
+            assertArrayEquals(byteArrayOf(0x03), h.allSentBytes())
+            assertEquals("", h.input.activePreedit)
+            assertEquals(2, h.restartCountProvider())
+
+            // Alt+b via setComposingText emits ESC + b
+            h.sentBytes.clear()
+            h.latch.onFingerDown(ModifierKey.ALT)
+            nowMs += 40L
+            h.latch.onFingerUp(ModifierKey.ALT)
+            h.input.setComposingText("b", 1)
+            assertArrayEquals("\u001bb".toByteArray(), h.allSentBytes())
+            assertEquals(ModifierLatchState.RELEASED, h.latch.stateOf(ModifierKey.ALT))
+            assertEquals(3, h.restartCountProvider())
+        }
+    }
+
+    @Test
+    fun `dynamic modifierLatchProvider sees updated latch machine and configureEditorInfo omits cap flags`() {
+        val session = NativeVtSession(initialCols = 80, initialRows = 24)
+        var currentLatch = ModifierLatchMachine(clockMs = { 0L })
+        val sent = mutableListOf<ByteArray>()
+        val input = TerminalInputSession(
+            sessionProvider = { session },
+            modifierLatchProvider = { currentLatch },
+            onSendPtyBytes = { sent += it },
+        )
+        session.use {
+            val swappedLatch = ModifierLatchMachine(clockMs = { 0L })
+            currentLatch = swappedLatch
+            swappedLatch.onFingerDown(ModifierKey.CTRL)
+            swappedLatch.onFingerUp(ModifierKey.CTRL)
+            input.commitText("d", 1)
+            assertArrayEquals(byteArrayOf(0x04), sent.single())
+            assertEquals(ModifierLatchState.RELEASED, swappedLatch.stateOf(ModifierKey.CTRL))
+        }
+
+        val attrs = EditorInfo()
+        TerminalInputConnection.configureEditorInfo(attrs)
+        assertEquals(
+            InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            attrs.inputType,
+        )
+        val capFlags = InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or
+            InputType.TYPE_TEXT_FLAG_CAP_WORDS or
+            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        assertEquals(0, attrs.inputType and capFlags)
     }
 }

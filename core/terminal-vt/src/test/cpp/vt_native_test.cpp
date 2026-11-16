@@ -320,6 +320,73 @@ void TestClearDecawmAndCursorBlinkRedraw() {
     renderer.DetachSession(pane.session_handle);
 }
 
+void TestLegacyKeyEncodingParity() {
+    VtSessionNative session(80, 24);
+    assert(session.IsValid());
+
+    auto encode = [&](TvGhosttyKey key, uint32_t mods, uint32_t cp, const char* utf8) -> std::string {
+        TvGhosttyKeyEvent ev{};
+        ev.key = key;
+        ev.action = TV_GHOSTTY_KEY_ACTION_PRESS;
+        ev.mods = mods;
+        ev.unicode_codepoint = cp;
+        ev.utf8_text = utf8;
+        ev.utf8_len = utf8 != nullptr ? std::strlen(utf8) : 0;
+        auto bytes = session.EncodeKey(ev);
+        return std::string(bytes.begin(), bytes.end());
+    };
+
+    // Ctrl+a..z -> 0x01..0x1A
+    for (char ch = 'a'; ch <= 'z'; ++ch) {
+        char text[2] = {ch, '\0'};
+        std::string out = encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, static_cast<uint32_t>(ch), text);
+        assert(out.size() == 1u && static_cast<uint8_t>(out[0]) == static_cast<uint8_t>(ch - 'a' + 1));
+    }
+
+    // Soft-IME uppercase 'C' with Ctrl (without Shift) -> 0x03
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, 'C', "C") == std::string(1, '\x03'));
+
+    // Punctuation Ctrl chords and Alt prefixes
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '[', "[") == std::string(1, '\x1b'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '\\', "\\") == std::string(1, '\x1c'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, ']', "]") == std::string(1, '\x1d'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '^', "^") == std::string(1, '\x1e'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '6', "6") == std::string(1, '\x1e'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '_', "_") == std::string(1, '\x1f'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '/', "/") == std::string(1, '\x1f'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '-', "-") == std::string(1, '\x1f'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, ' ', " ") == std::string(1, '\x00'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '@', "@") == std::string(1, '\x00'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_CTRL, '?', "?") == std::string(1, '\x7f'));
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_ALT | TV_GHOSTTY_MOD_CTRL, 'c', "c") == "\x1b\x03");
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_ALT, 'b', "b") == "\x1b" "b");
+    assert(encode(TV_GHOSTTY_KEY_UNICODE, TV_GHOSTTY_MOD_ALT, 'f', "f") == "\x1b" "f");
+
+    // Special keys & DECCKM arrow parity
+    assert(encode(TV_GHOSTTY_KEY_TAB, TV_GHOSTTY_MOD_SHIFT, 0, nullptr) == "\x1b[Z");
+    assert(encode(TV_GHOSTTY_KEY_ESCAPE, 0, 0, nullptr) == "\x1b");
+    assert(encode(TV_GHOSTTY_KEY_TAB, 0, 0, nullptr) == "\t");
+    assert(encode(TV_GHOSTTY_KEY_ENTER, 0, 0, nullptr) == "\r");
+    assert(encode(TV_GHOSTTY_KEY_BACKSPACE, 0, 0, nullptr) == "\x7f");
+    assert(encode(TV_GHOSTTY_KEY_BACKSPACE, TV_GHOSTTY_MOD_CTRL, 0, nullptr) == "\x08");
+    assert(encode(TV_GHOSTTY_KEY_DELETE, 0, 0, nullptr) == "\x1b[3~");
+    assert(encode(TV_GHOSTTY_KEY_HOME, 0, 0, nullptr) == "\x1b[H");
+    assert(encode(TV_GHOSTTY_KEY_END, 0, 0, nullptr) == "\x1b[F");
+    assert(encode(TV_GHOSTTY_KEY_PAGE_UP, 0, 0, nullptr) == "\x1b[5~");
+    assert(encode(TV_GHOSTTY_KEY_PAGE_DOWN, 0, 0, nullptr) == "\x1b[6~");
+    assert(encode(TV_GHOSTTY_KEY_UP, 0, 0, nullptr) == "\x1b[A");
+    assert(encode(TV_GHOSTTY_KEY_DOWN, 0, 0, nullptr) == "\x1b[B");
+    assert(encode(TV_GHOSTTY_KEY_RIGHT, 0, 0, nullptr) == "\x1b[C");
+    assert(encode(TV_GHOSTTY_KEY_LEFT, 0, 0, nullptr) == "\x1b[D");
+
+    const char* enable_decckm = "\x1b[?1h";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(enable_decckm), std::strlen(enable_decckm));
+    assert(encode(TV_GHOSTTY_KEY_UP, 0, 0, nullptr) == "\x1bOA");
+    assert(encode(TV_GHOSTTY_KEY_DOWN, 0, 0, nullptr) == "\x1bOB");
+    assert(encode(TV_GHOSTTY_KEY_RIGHT, 0, 0, nullptr) == "\x1bOC");
+    assert(encode(TV_GHOSTTY_KEY_LEFT, 0, 0, nullptr) == "\x1bOD");
+}
+
 }  // namespace
 
 int main() {
@@ -330,6 +397,7 @@ int main() {
     TestRendererCpuPath();
     TestQueryRepliesAndDrain();
     TestClearDecawmAndCursorBlinkRedraw();
+    TestLegacyKeyEncodingParity();
     std::cout << "All native TermVR VT C++ tests passed!" << std::endl;
     return 0;
 }

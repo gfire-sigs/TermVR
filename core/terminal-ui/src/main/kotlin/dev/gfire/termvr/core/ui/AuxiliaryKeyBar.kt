@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -120,8 +121,7 @@ fun AuxiliaryKeyBar(
     val currentOnCursorScrub by rememberUpdatedState(onCursorScrub)
     val currentOnHalfScreenScrollUp by rememberUpdatedState(onHalfScreenScrollUp)
 
-    var latchRevision by remember { mutableIntStateOf(0) }
-    val modStates = remember(latchRevision) { latchMachine.allStates() }
+    val modStates by latchMachine.statesFlow.collectAsState()
     var barWidthPx by remember { mutableIntStateOf(0) }
 
     val scrubStepPx = with(density) { AuxiliaryKeyBarMath.SCRUB_STEP_DP.dp.toPx() }
@@ -138,7 +138,6 @@ fun AuxiliaryKeyBar(
         currentOnBeforeControlKey()
         currentOnEmitKeySlot(slot)
         latchMachine.onNonModifierKeyEmitted()
-        latchRevision++
         triggerHaptic()
     }
 
@@ -216,12 +215,10 @@ fun AuxiliaryKeyBar(
                             onModifierPressDown = { mod ->
                                 currentOnBeforeControlKey()
                                 latchMachine.onFingerDown(mod)
-                                latchRevision++
                                 triggerHaptic()
                                 scope.launch {
                                     delay(ModifierLatchMachine.LONG_PRESS_MS)
                                     latchMachine.onHoldTimeout(mod)
-                                    latchRevision++
                                     if (latchMachine.stateOf(mod) == ModifierLatchState.LOCKED) {
                                         triggerHaptic()
                                     }
@@ -230,7 +227,6 @@ fun AuxiliaryKeyBar(
                             onModifierPressUp = { mod, holdJob ->
                                 holdJob?.cancel()
                                 latchMachine.onFingerUp(mod)
-                                latchRevision++
                             },
                             onSlotPointerInteraction = { interactionSlot ->
                                 awaitEachGesture {

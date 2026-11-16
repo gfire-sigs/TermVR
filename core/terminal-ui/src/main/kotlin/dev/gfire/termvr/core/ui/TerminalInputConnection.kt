@@ -32,6 +32,9 @@ class TerminalInputConnection(
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val ok = super.setComposingText(text ?: "", newCursorPosition)
         inputSession.setComposingText(text, newCursorPosition)
+        if (inputSession.activePreedit.isEmpty()) {
+            recenterEditableAndImm()
+        }
         return ok
     }
 

@@ -178,4 +178,31 @@ class ModifierLatchMachineTest {
         assertEquals(ModifierLatchState.LOCKED, machine.stateOf(ModifierKey.ALT))
         assertEquals(VtModifierMask.ALT, machine.activeModifierMask())
     }
+
+    @Test
+    fun `statesFlow emits reactive updates across all state mutations including external clear`() {
+        var now = 1_000L
+        val machine = ModifierLatchMachine(clockMs = { now })
+
+        assertEquals(ModifierLatchState.RELEASED, machine.statesFlow.value[ModifierKey.CTRL])
+
+        machine.onFingerDown(ModifierKey.CTRL)
+        assertEquals(ModifierLatchState.HELD, machine.statesFlow.value[ModifierKey.CTRL])
+
+        now += 50L
+        machine.onFingerUp(ModifierKey.CTRL)
+        assertEquals(ModifierLatchState.ONE_SHOT, machine.statesFlow.value[ModifierKey.CTRL])
+
+        // Simulates soft/hardware key press clearing ONE_SHOT outside AuxiliaryKeyBar.
+        machine.onNonModifierKeyEmitted()
+        assertEquals(ModifierLatchState.RELEASED, machine.statesFlow.value[ModifierKey.CTRL])
+
+        machine.onFingerDown(ModifierKey.ALT)
+        now += 450L
+        machine.onHoldTimeout(ModifierKey.ALT)
+        assertEquals(ModifierLatchState.LOCKED, machine.statesFlow.value[ModifierKey.ALT])
+
+        machine.resetAll()
+        assertEquals(ModifierLatchState.RELEASED, machine.statesFlow.value[ModifierKey.ALT])
+    }
 }

@@ -176,6 +176,13 @@ class HostReadinessAndSupervisorTest {
             "TermVR (prof-a)",
             SandboxForegroundService.formatActiveNotificationTitle(1, listOf("prof-a")),
         )
+        assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.STARTING))
+        assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.RUNNING))
+        assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.RESTORING))
+        assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.FREEZING))
+        assertFalse(SandboxForegroundService.isForegroundActiveState(SandboxRunState.STOPPED))
+        assertFalse(SandboxForegroundService.isForegroundActiveState(SandboxRunState.FROZEN))
+        assertFalse(SandboxForegroundService.isForegroundActiveState(SandboxRunState.FAILED))
     }
 
     @Test

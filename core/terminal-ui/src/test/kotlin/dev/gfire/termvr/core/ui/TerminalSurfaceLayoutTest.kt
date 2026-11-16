@@ -250,4 +250,45 @@ class TerminalSurfaceLayoutTest {
             assertEquals(VtModifierMask.CTRL or VtModifierMask.ALT, mapped.event.modifierMask)
         }
     }
+
+    @Test
+    fun `hardware punctuation keys resolve codepoints even when unicodeChar is zero and emit exact Ctrl bytes`() {
+        NativeVtSession(80, 24).use { session ->
+            val cases = listOf(
+                KeyEvent.KEYCODE_LEFT_BRACKET to byteArrayOf(0x1B),
+                KeyEvent.KEYCODE_BACKSLASH to byteArrayOf(0x1C),
+                KeyEvent.KEYCODE_RIGHT_BRACKET to byteArrayOf(0x1D),
+                KeyEvent.KEYCODE_SLASH to byteArrayOf(0x1F),
+                KeyEvent.KEYCODE_MINUS to byteArrayOf(0x1F),
+                KeyEvent.KEYCODE_SPACE to byteArrayOf(0x00),
+            )
+            for ((keyCode, expectedBytes) in cases) {
+                val mapped = HardwareKeyMapper.mapKeyEvent(
+                    keyCode = keyCode,
+                    isRepeat = false,
+                    isUp = false,
+                    hardwareMetaState = KeyEvent.META_CTRL_ON,
+                    unicodeChar = 0,
+                    softModifierMask = 0,
+                    passAllShortcutsToTerminal = true,
+                ) as? HardwareKeyResult.TerminalKey
+                assertNotNull(mapped, "Expected TerminalKey for keyCode=$keyCode")
+                val encoded = session.encodeKey(mapped!!.event)
+                assertTrue(encoded.contentEquals(expectedBytes), "Mismatch for keyCode=$keyCode")
+            }
+
+            // Soft SHIFT + hardware lowercase letter produces uppercase character
+            val shifted = HardwareKeyMapper.mapKeyEvent(
+                keyCode = KeyEvent.KEYCODE_A,
+                isRepeat = false,
+                isUp = false,
+                hardwareMetaState = 0,
+                unicodeChar = 'a'.code,
+                softModifierMask = VtModifierMask.SHIFT,
+                passAllShortcutsToTerminal = false,
+            ) as? HardwareKeyResult.TerminalKey
+            assertNotNull(shifted)
+            assertEquals('A'.code, shifted!!.event.unicodeCodepoint)
+        }
+    }
 }

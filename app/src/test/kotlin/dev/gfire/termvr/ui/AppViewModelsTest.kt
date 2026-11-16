@@ -48,7 +48,13 @@ import dev.gfire.termvr.ui.network.NetworkViewModel
 import dev.gfire.termvr.ui.network.resolveEffectiveHostPort
 import dev.gfire.termvr.ui.settings.SettingsTab
 import dev.gfire.termvr.ui.settings.SettingsViewModel
+import androidx.compose.ui.unit.dp
 import dev.gfire.termvr.ui.terminal.TerminalSessionCoordinator
+import dev.gfire.termvr.ui.terminal.TerminalTabState
+import dev.gfire.termvr.ui.terminal.formatTabLabel
+import dev.gfire.termvr.ui.terminal.shouldConfirmPaneClose
+import dev.gfire.termvr.ui.terminal.shouldConfirmTabClose
+import dev.gfire.termvr.ui.terminal.shouldShowInlineTabClose
 import dev.gfire.termvr.ui.terminal.TerminalViewModel
 import java.io.File
 import java.io.FileInputStream
@@ -687,6 +693,55 @@ class AppViewModelsTest {
         assertEquals(SandboxRunState.RUNNING, gateway.runStates.value[catalogProfile.id])
 
         vmScope.cancel()
+    }
+
+    @Test
+    fun terminalTabBarLabelAndCloseConfirmationRules() {
+        val debian = SandboxProfile(id = "debian", displayName = "Debian", imageRef = "debian:bookworm-slim")
+        val session = NativeVtSession(maxScrollbackLines = 100, backendFactory = { _, _, _ -> FakeVtBackend() })
+        val liveTab = TerminalTabState(
+            tabId = "tab-1",
+            profileId = "debian",
+            title = "Shell #1",
+            isDaemonLogs = false,
+            splitRoot = TerminalSplitNode.Leaf("pane-1", session),
+            focusedPaneId = "pane-1",
+        )
+        val oscTab = liveTab.copy(sessionTitle = "bash")
+        val logsTab = TerminalTabState(
+            tabId = "tab-logs",
+            profileId = "debian",
+            title = "Logs",
+            isDaemonLogs = true,
+            splitRoot = TerminalSplitNode.Leaf("pane-logs", session),
+            focusedPaneId = "pane-logs",
+        )
+        val exitedTab = liveTab.copy(exitedPanes = setOf("pane-1"))
+
+        assertEquals("Shell 1", formatTabLabel(liveTab, listOf(debian), openContainerCount = 1))
+        assertEquals("Debian · Shell 1", formatTabLabel(liveTab, listOf(debian), openContainerCount = 2))
+        assertEquals("bash", formatTabLabel(oscTab, listOf(debian), openContainerCount = 1))
+        assertEquals("Debian · bash", formatTabLabel(oscTab, listOf(debian), openContainerCount = 2))
+        assertEquals("Logs", formatTabLabel(logsTab, listOf(debian), openContainerCount = 1))
+        assertEquals("Debian Logs", formatTabLabel(logsTab, listOf(debian), openContainerCount = 2))
+
+        // Compact phone (< 600dp) hides inline X on unselected background tabs when >= 2 tabs exist.
+        assertFalse(shouldShowInlineTabClose(liveTab, selected = false, tabCount = 2, screenWidthDp = 390, tabRowViewportWidthDp = 280.dp))
+        assertTrue(shouldShowInlineTabClose(liveTab, selected = true, tabCount = 2, screenWidthDp = 390, tabRowViewportWidthDp = 280.dp))
+        assertTrue(shouldShowInlineTabClose(liveTab, selected = false, tabCount = 1, screenWidthDp = 390, tabRowViewportWidthDp = 280.dp))
+        assertTrue(shouldShowInlineTabClose(liveTab, selected = false, tabCount = 2, screenWidthDp = 840, tabRowViewportWidthDp = 640.dp))
+        assertFalse(shouldShowInlineTabClose(logsTab, selected = true, tabCount = 2, screenWidthDp = 840, tabRowViewportWidthDp = 640.dp))
+
+        // Confirmation required on compact/narrow live tabs, skipped on wide tablets or already-exited tabs.
+        assertTrue(shouldConfirmTabClose(liveTab, screenWidthDp = 390, tabRowViewportWidthDp = 280.dp, tabCount = 2))
+        assertTrue(shouldConfirmTabClose(liveTab, screenWidthDp = 840, tabRowViewportWidthDp = 380.dp, tabCount = 2))
+        assertTrue(shouldConfirmTabClose(liveTab, screenWidthDp = 840, tabRowViewportWidthDp = 500.dp, tabCount = 4))
+        assertFalse(shouldConfirmTabClose(liveTab, screenWidthDp = 840, tabRowViewportWidthDp = 640.dp, tabCount = 2))
+        assertFalse(shouldConfirmTabClose(exitedTab, screenWidthDp = 390, tabRowViewportWidthDp = 280.dp, tabCount = 2))
+
+        assertTrue(shouldConfirmPaneClose(liveTab, paneId = "pane-1", screenWidthDp = 390, tabRowViewportWidthDp = 280.dp, tabCount = 1))
+        assertFalse(shouldConfirmPaneClose(exitedTab, paneId = "pane-1", screenWidthDp = 390, tabRowViewportWidthDp = 280.dp, tabCount = 1))
+        assertFalse(shouldConfirmPaneClose(liveTab, paneId = "pane-1", screenWidthDp = 840, tabRowViewportWidthDp = 640.dp, tabCount = 2))
     }
 
     private fun createFixtures(scope: CoroutineScope): Triple<ProfileRepository, CatalogRepository, FakeGateway> {
