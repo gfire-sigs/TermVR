@@ -9,15 +9,46 @@ import (
 )
 
 var (
-	ErrNoShellFound   = errors.New("no guest shell found in /bin/bash, /bin/ash, /bin/sh, or /bin/aux/sh")
+	ErrNoShellFound   = errors.New("no guest shell found in /bin/bash, /usr/bin/bash, /bin/ash, /bin/sh, or /bin/aux/sh")
 	ErrInvalidWorkDir = errors.New("requested working directory does not exist")
 )
 
 var defaultShellCandidates = []string{
 	"/bin/bash",
+	"/usr/bin/bash",
 	"/bin/ash",
 	"/bin/sh",
 	"/bin/aux/sh",
+}
+
+func isKnownShellCandidate(path string) bool {
+	for _, c := range defaultShellCandidates {
+		if path == c {
+			return true
+		}
+	}
+	return false
+}
+
+func isShellExecutable(path string) bool {
+	switch filepath.Base(path) {
+	case "bash", "sh", "ash", "dash", "zsh", "fish", "ksh", "mksh":
+		return true
+	default:
+		return false
+	}
+}
+
+func isExecutableInRoot(rootDir, guestPath string) bool {
+	if rootDir == "" {
+		rootDir = "/"
+	}
+	hostPath := guestPath
+	if rootDir != "/" {
+		hostPath = filepath.Join(rootDir, strings.TrimPrefix(guestPath, "/"))
+	}
+	info, err := os.Stat(hostPath)
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
 // PTYHandle abstracts one allocated guest pseudo-terminal and child process.
@@ -42,23 +73,26 @@ type PTYBackend interface {
 	StartDaemon(argv []string, cwd string, env []string) (DaemonHandle, error)
 }
 
-// ResolveShellArgv returns argv when non-empty, or probes /bin/bash, /bin/ash, and /bin/sh.
+// ResolveShellArgv returns argv when executable (falling back to defaultShellCandidates if a configured
+// shell binary is absent), or probes /bin/bash, /usr/bin/bash, /bin/ash, /bin/sh, and /bin/aux/sh.
 func ResolveShellArgv(argv []string, rootDir string) ([]string, error) {
-	if len(argv) > 0 && asciiTrimSpace(argv[0]) != "" {
-		cp := make([]string, len(argv))
-		copy(cp, argv)
-		return cp, nil
-	}
 	if rootDir == "" {
 		rootDir = "/"
 	}
-	for _, candidate := range defaultShellCandidates {
-		hostPath := candidate
-		if rootDir != "/" {
-			hostPath = filepath.Join(rootDir, strings.TrimPrefix(candidate, "/"))
+	if len(argv) > 0 && asciiTrimSpace(argv[0]) != "" {
+		if !isKnownShellCandidate(argv[0]) || isExecutableInRoot(rootDir, argv[0]) {
+			cp := make([]string, len(argv))
+			copy(cp, argv)
+			return cp, nil
 		}
-		info, err := os.Stat(hostPath)
-		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		if len(argv) > 2 || (len(argv) == 2 && argv[1] != "-l") {
+			cp := make([]string, len(argv))
+			copy(cp, argv)
+			return cp, nil
+		}
+	}
+	for _, candidate := range defaultShellCandidates {
+		if isExecutableInRoot(rootDir, candidate) {
 			return []string{candidate}, nil
 		}
 	}
@@ -119,7 +153,7 @@ func getEnvVal(env []string, k string) string {
 	return ""
 }
 
-// BuildGuestEnv merges base environment, TERM/COLORTERM defaults, overrides, and binDir PATH prefix.
+// BuildGuestEnv merges base environment, overrides, TERM/COLORTERM/LANG defaults, and binDir PATH prefix.
 func BuildGuestEnv(baseEnv []string, overrides map[string]string, binDir string) []string {
 	out := make([]string, 0, len(baseEnv)+len(overrides)+4)
 	for _, entry := range baseEnv {
@@ -127,19 +161,19 @@ func BuildGuestEnv(baseEnv []string, overrides map[string]string, binDir string)
 			out = setEnvKV(out, k, v)
 		}
 	}
-	if getEnvVal(out, "TERM") == "" {
-		out = setEnvKV(out, "TERM", "xterm-256color")
-	}
-	if getEnvVal(out, "COLORTERM") == "" {
-		out = setEnvKV(out, "COLORTERM", "truecolor")
-	}
-	if getEnvVal(out, "TERM_PROGRAM") == "" {
-		out = setEnvKV(out, "TERM_PROGRAM", "TermVR")
-	}
 	for k, v := range overrides {
 		if k != "" && strings.IndexByte(k, 0) < 0 && strings.IndexByte(v, 0) < 0 {
 			out = setEnvKV(out, k, v)
 		}
+	}
+	if asciiTrimSpace(getEnvVal(out, "TERM")) == "" {
+		out = setEnvKV(out, "TERM", "xterm-256color")
+	}
+	if asciiTrimSpace(getEnvVal(out, "COLORTERM")) == "" {
+		out = setEnvKV(out, "COLORTERM", "truecolor")
+	}
+	if asciiTrimSpace(getEnvVal(out, "LANG")) == "" && asciiTrimSpace(getEnvVal(out, "LC_ALL")) == "" {
+		out = setEnvKV(out, "LANG", "C.UTF-8")
 	}
 	if binDir == "" {
 		binDir = "/run/termvr-agent/bin"

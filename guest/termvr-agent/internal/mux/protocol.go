@@ -1440,7 +1440,16 @@ func (s *Session) handleOpenPTY(ctx context.Context, wg *sync.WaitGroup, streamI
 	if err != nil {
 		return s.sendPTYAck(streamID, 3, err.Error())
 	}
-	env := BuildGuestEnv(os.Environ(), req.Spec.Env, s.cfg.BinDir)
+	envOverrides := req.Spec.Env
+	if len(argv) > 0 && isShellExecutable(argv[0]) && asciiTrimSpace(envOverrides["SHELL"]) == "" {
+		copied := make(map[string]string, len(envOverrides)+1)
+		for k, v := range envOverrides {
+			copied[k] = v
+		}
+		copied["SHELL"] = argv[0]
+		envOverrides = copied
+	}
+	env := BuildGuestEnv(os.Environ(), envOverrides, s.cfg.BinDir)
 
 	ptyHandle, err := s.ptyBackend.OpenPTY(argv, cwd, env, req.WinSize)
 	if err != nil {

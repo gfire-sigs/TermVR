@@ -474,3 +474,80 @@ func TestProxyClientHalfClosePreservesUpstreamResponse(t *testing.T) {
 		t.Fatalf("half-close response = %q, want %q", string(got), "PART1-PART2-END")
 	}
 }
+
+// TestGuestLocalAndPrivateIPsDialDirectlyWithoutHostProxy verifies that loopback,
+// RFC1918 (Docker bridge / k3s pod & service CIDRs), link-local, and CGNAT IP
+// literals bypass host PROXY_CONNECT even when NoProxyEntries is empty.
+func TestGuestLocalAndPrivateIPsDialDirectlyWithoutHostProxy(t *testing.T) {
+	t.Parallel()
+
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "direct-guest-ok")
+	}))
+	defer localSrv.Close()
+
+	localHostPort := strings.TrimPrefix(localSrv.URL, "http://")
+	_, localPortStr, err := net.SplitHostPort(localHostPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hostDialed := make(chan string, 8)
+	sess, cleanup := startMockHostMux(t, func(streamID uint32, host string, port uint16) (uint8, string, net.Conn) {
+		hostDialed <- host
+		return 5, "host mux must not be called for guest-local/private targets", nil
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proxySrv, err := mux.StartMixedProxyServer(ctx, mux.ProxyConfig{
+		ListenAddr:     "127.0.0.1:0",
+		Session:        sess,
+		NoProxyEntries: nil, // Empty NO_PROXY must still keep local/private IPs inside guest.
+		DialTimeout:    300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("StartMixedProxyServer: %v", err)
+	}
+	defer proxySrv.Close()
+
+	// Loopback HTTP target must connect directly inside guest without hitting host mux.
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).Dial("tcp", proxySrv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	_, _ = io.WriteString(conn, "GET http://127.0.0.1:"+localPortStr+"/ping HTTP/1.1\r\nHost: 127.0.0.1:"+localPortStr+"\r\nConnection: close\r\n\r\n")
+	respBody, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(respBody), "direct-guest-ok") {
+		t.Fatalf("expected direct-guest-ok via local guest dial, got: %s", string(respBody))
+	}
+
+	// Private/cluster/CGNAT/link-local/IPv6 loopback targets must attempt guest direct dial and never send PROXY_CONNECT.
+	for _, targetHost := range []string{
+		"10.42.0.5",
+		"172.17.0.2",
+		"192.168.1.50",
+		"169.254.169.254",
+		"100.64.0.1",
+		"::1",
+		"localhost",
+	} {
+		// DialTarget to a non-listening port fails locally with ECONNREFUSED/timeout, never hitting host mux.
+		if up, derr := proxySrv.DialTarget(ctx, targetHost, 1); derr == nil {
+			_ = up.Close()
+		}
+	}
+
+	select {
+	case h := <-hostDialed:
+		t.Fatalf("unexpected host PROXY_CONNECT for guest-local/private target %q", h)
+	default:
+	}
+}

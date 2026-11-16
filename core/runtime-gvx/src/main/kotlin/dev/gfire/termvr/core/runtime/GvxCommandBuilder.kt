@@ -4,6 +4,7 @@ import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.MuxMode
 import dev.gfire.termvr.core.model.NetBackend
+import dev.gfire.termvr.core.model.OutboundProxyMode
 import dev.gfire.termvr.core.model.PortForwardRule
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.VolumeKind
@@ -287,6 +288,8 @@ class GvxCommandBuilder(
 
         args.add("--host-dns")
         args.add("127.0.0.1:$dnsPort")
+        args.add("-h")
+        args.add(profile.id)
         args.add("-control-socket")
         args.add(controlSock.absolutePath)
         if (checkpointDir != null) {
@@ -593,8 +596,8 @@ class GvxCommandBuilder(
         if (mergedEnv["COLORTERM"].isNullOrBlank()) {
             mergedEnv["COLORTERM"] = DEFAULT_GUEST_COLORTERM
         }
-        if (mergedEnv["TERM_PROGRAM"].isNullOrBlank()) {
-            mergedEnv["TERM_PROGRAM"] = DEFAULT_GUEST_TERM_PROGRAM
+        if (mergedEnv["LANG"].isNullOrBlank() && mergedEnv["LC_ALL"].isNullOrBlank()) {
+            mergedEnv["LANG"] = DEFAULT_GUEST_LANG
         }
 
         // Work around gvisor arm64 /proc/cpuinfo ("CPU architecture : 0") producing
@@ -606,7 +609,10 @@ class GvxCommandBuilder(
             mergedEnv["DOCKER_DEFAULT_PLATFORM"] = "linux/${guestArch.ociArch}"
         }
 
-        if (profile.muxMode == MuxMode.STDIO_MUX) {
+        val proxyMode = profile.network.outboundProxy.mode
+        val injectGuestProxyEnv = profile.muxMode == MuxMode.STDIO_MUX &&
+            (proxyMode != OutboundProxyMode.DIRECT || profile.initDaemonArgv.isEmpty())
+        if (injectGuestProxyEnv) {
             val noProxyCsv = profile.network.outboundProxy.noProxyEntries.joinToString(",")
             mergedEnv["HTTP_PROXY"] = GUEST_HTTP_PROXY_URL
             mergedEnv["HTTPS_PROXY"] = GUEST_HTTP_PROXY_URL
@@ -628,7 +634,7 @@ class GvxCommandBuilder(
         const val AGENT_ENTRYPOINT_PATH: String = "/run/termvr-agent/termvr-agent"
         const val DEFAULT_GUEST_TERM: String = "xterm-256color"
         const val DEFAULT_GUEST_COLORTERM: String = "truecolor"
-        const val DEFAULT_GUEST_TERM_PROGRAM: String = "TermVR"
+        const val DEFAULT_GUEST_LANG: String = "C.UTF-8"
         const val GUEST_PROXY_LISTEN_ADDR: String = "127.0.0.1:1080"
         const val GUEST_HTTP_PROXY_URL: String = "http://127.0.0.1:1080"
         const val GUEST_ALL_PROXY_URL: String = "socks5h://127.0.0.1:1080"

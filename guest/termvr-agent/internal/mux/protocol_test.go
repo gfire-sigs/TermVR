@@ -636,7 +636,7 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 		t.Fatalf("expected [/bin/aux/sh], got %v (err=%v)", gotAux, err)
 	}
 
-	// Create /bin/sh first, then /bin/ash, then /bin/bash and verify strict precedence.
+	// Create /bin/sh first, then /bin/ash, then /usr/bin/bash, then /bin/bash and verify strict precedence.
 	shPath := filepath.Join(binDir, "sh")
 	if err := os.WriteFile(shPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -646,6 +646,16 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 		t.Fatalf("expected [/bin/sh], got %v (err=%v)", got, err)
 	}
 
+	// Missing /bin/bash in explicit argv falls back to probed shell instead of failing PTY open.
+	gotFallback, err := mux.ResolveShellArgv([]string{"/bin/bash"}, root)
+	if err != nil || len(gotFallback) != 1 || gotFallback[0] != "/bin/sh" {
+		t.Fatalf("expected fallback to [/bin/sh] when /bin/bash missing, got %v (err=%v)", gotFallback, err)
+	}
+	gotFallbackLogin, err := mux.ResolveShellArgv([]string{"/bin/bash", "-l"}, root)
+	if err != nil || len(gotFallbackLogin) != 1 || gotFallbackLogin[0] != "/bin/sh" {
+		t.Fatalf("expected fallback to [/bin/sh] when /bin/bash -l missing, got %v (err=%v)", gotFallbackLogin, err)
+	}
+
 	ashPath := filepath.Join(binDir, "ash")
 	if err := os.WriteFile(ashPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -653,6 +663,19 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 	got, err = mux.ResolveShellArgv(nil, root)
 	if err != nil || got[0] != "/bin/ash" {
 		t.Fatalf("expected [/bin/ash], got %v (err=%v)", got, err)
+	}
+
+	usrBinDir := filepath.Join(root, "usr", "bin")
+	if err := os.MkdirAll(usrBinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	usrBashPath := filepath.Join(usrBinDir, "bash")
+	if err := os.WriteFile(usrBashPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err = mux.ResolveShellArgv(nil, root)
+	if err != nil || got[0] != "/usr/bin/bash" {
+		t.Fatalf("expected [/usr/bin/bash], got %v (err=%v)", got, err)
 	}
 
 	bashPath := filepath.Join(binDir, "bash")
@@ -684,18 +707,27 @@ func TestShellProbeWorkDirAndEnvDefaults(t *testing.T) {
 			envMap[k] = v
 		}
 	}
-	if envMap["TERM"] != "xterm-256color" || envMap["COLORTERM"] != "truecolor" || envMap["TERM_PROGRAM"] != "TermVR" {
-		t.Fatalf("missing default TERM/COLORTERM/TERM_PROGRAM: %v", envMap)
+	if envMap["TERM"] != "xterm-256color" || envMap["COLORTERM"] != "truecolor" || envMap["LANG"] != "C.UTF-8" {
+		t.Fatalf("missing default TERM/COLORTERM/LANG: %v", envMap)
 	}
-	overrideEnv := mux.BuildGuestEnv([]string{"TERM=xterm"}, map[string]string{"TERM": "vt100", "TERM_PROGRAM": "Custom"}, "/run/termvr-agent/bin")
+	if _, hasTermProgram := envMap["TERM_PROGRAM"]; hasTermProgram {
+		t.Fatalf("unexpected default TERM_PROGRAM in env: %v", envMap)
+	}
+	overrideEnv := mux.BuildGuestEnv([]string{"TERM=xterm", "LANG=en_US.UTF-8"}, map[string]string{"TERM": "vt100", "TERM_PROGRAM": "Custom"}, "/run/termvr-agent/bin")
 	overrideMap := make(map[string]string, len(overrideEnv))
 	for _, kv := range overrideEnv {
 		if k, v, ok := strings.Cut(kv, "="); ok {
 			overrideMap[k] = v
 		}
 	}
-	if overrideMap["TERM"] != "vt100" || overrideMap["TERM_PROGRAM"] != "Custom" {
+	if overrideMap["TERM"] != "vt100" || overrideMap["TERM_PROGRAM"] != "Custom" || overrideMap["LANG"] != "en_US.UTF-8" {
 		t.Fatalf("expected overrides to replace defaults, got: %v", overrideMap)
+	}
+	lcAllEnv := mux.BuildGuestEnv(nil, map[string]string{"LC_ALL": "C.UTF-8"}, "/run/termvr-agent/bin")
+	for _, kv := range lcAllEnv {
+		if strings.HasPrefix(kv, "LANG=") {
+			t.Fatalf("did not expect LANG when LC_ALL is explicitly set, got %v", lcAllEnv)
+		}
 	}
 	if !strings.HasPrefix(envMap["PATH"], "/run/termvr-agent/bin:") {
 		t.Fatalf("expected /run/termvr-agent/bin prepended to PATH, got %q", envMap["PATH"])
@@ -839,4 +871,118 @@ func TestCallHostRPCStreamConcurrentShutdown(t *testing.T) {
 			t.Fatalf("iter %d: CallHostRPCStream did not return", iter)
 		}
 	}
+}
+
+type recordedPTYCall struct {
+	argv []string
+	env  []string
+}
+
+type recordingPTYHandle struct{}
+
+func (recordingPTYHandle) Read([]byte) (int, error)  { return 0, io.EOF }
+func (recordingPTYHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (recordingPTYHandle) Close() error                { return nil }
+func (recordingPTYHandle) Resize(mux.WinSize) error    { return nil }
+func (recordingPTYHandle) Signal(uint8) error          { return nil }
+func (recordingPTYHandle) Wait() (uint8, error)        { return 0, nil }
+
+type recordingPTYBackend struct {
+	calls chan recordedPTYCall
+}
+
+func (b *recordingPTYBackend) OpenPTY(argv []string, _ string, env []string, _ mux.WinSize) (mux.PTYHandle, error) {
+	b.calls <- recordedPTYCall{argv: argv, env: env}
+	return recordingPTYHandle{}, nil
+}
+
+func (b *recordingPTYBackend) StartDaemon([]string, string, []string) (mux.DaemonHandle, error) {
+	return nil, io.EOF
+}
+
+// TestOpenPTYSetsResolvedShellEnvUnlessOverridden verifies that handleOpenPTY
+// sets SHELL to the resolved shell path unless explicitly overridden by the user.
+func TestOpenPTYSetsResolvedShellEnvUnlessOverridden(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "bash"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SHELL", "/bin/sh")
+
+	hostToGuestR, hostToGuestW := io.Pipe()
+	guestToHostR, guestToHostW := io.Pipe()
+
+	backend := &recordingPTYBackend{calls: make(chan recordedPTYCall, 4)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sess := mux.NewSession(mux.SessionConfig{
+		Reader:     hostToGuestR,
+		Writer:     guestToHostW,
+		RootDir:    root,
+		BinDir:     "/run/termvr-agent/bin",
+		PTYBackend: backend,
+	})
+	go func() { _ = sess.Run(ctx) }()
+
+	// Drain guest frames so pipe writes never block.
+	go func() {
+		for {
+			if _, err := mux.ReadFrame(guestToHostR); err != nil {
+				return
+			}
+		}
+	}()
+
+	// 1. Empty argv probes /bin/bash and sets SHELL=/bin/bash (overriding base env SHELL=/bin/sh).
+	open1, _ := mux.EncodeOpenPTY(mux.OpenPTYRequest{
+		WinSize: mux.WinSize{Rows: 24, Cols: 80},
+		Spec:    mux.OpenPTYSpec{Cwd: "/"},
+	})
+	if err := mux.WriteFrame(hostToGuestW, mux.Frame{Type: mux.FrameOpenPTY, StreamID: 1, Payload: open1}); err != nil {
+		t.Fatal(err)
+	}
+	call1 := <-backend.calls
+	if len(call1.argv) != 1 || call1.argv[0] != "/bin/bash" {
+		t.Fatalf("expected resolved argv [/bin/bash], got %v", call1.argv)
+	}
+	if got := envValue(call1.env, "SHELL"); got != "/bin/bash" {
+		t.Fatalf("expected SHELL=/bin/bash, got %q (env=%v)", got, call1.env)
+	}
+	if got := envValue(call1.env, "LANG"); got != "C.UTF-8" {
+		t.Fatalf("expected LANG=C.UTF-8, got %q", got)
+	}
+
+	// 2. Explicit SHELL in req.Spec.Env is preserved.
+	open2, _ := mux.EncodeOpenPTY(mux.OpenPTYRequest{
+		WinSize: mux.WinSize{Rows: 24, Cols: 80},
+		Spec: mux.OpenPTYSpec{
+			Cwd: "/",
+			Env: map[string]string{"SHELL": "/usr/bin/zsh"},
+		},
+	})
+	if err := mux.WriteFrame(hostToGuestW, mux.Frame{Type: mux.FrameOpenPTY, StreamID: 2, Payload: open2}); err != nil {
+		t.Fatal(err)
+	}
+	call2 := <-backend.calls
+	if got := envValue(call2.env, "SHELL"); got != "/usr/bin/zsh" {
+		t.Fatalf("expected explicit SHELL=/usr/bin/zsh, got %q", got)
+	}
+
+	_ = hostToGuestW.Close()
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return entry[len(prefix):]
+		}
+	}
+	return ""
 }
