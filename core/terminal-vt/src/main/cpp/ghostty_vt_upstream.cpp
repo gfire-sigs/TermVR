@@ -1053,8 +1053,126 @@ void tv_ghostty_formatter_buffer_free(
     }
 }
 
+}  // extern "C"
+
+namespace {
+
+size_t MatchBracketedPasteTerminatorAt(const std::string& buf, size_t idx) noexcept {
+    size_t prefix_len = 0;
+    if (idx + 2 <= buf.size() && static_cast<unsigned char>(buf[idx]) == 0x1Bu && buf[idx + 1] == '[') {
+        prefix_len = 2;
+    } else if (idx + 2 <= buf.size() &&
+               static_cast<unsigned char>(buf[idx]) == 0xC2u &&
+               static_cast<unsigned char>(buf[idx + 1]) == 0x9Bu) {
+        prefix_len = 2;
+    } else if (idx < buf.size() && static_cast<unsigned char>(buf[idx]) == 0x9Bu) {
+        prefix_len = 1;
+    } else {
+        return 0;
+    }
+
+    size_t p = idx + prefix_len;
+    while (p < buf.size() && buf[p] == '0') {
+        ++p;
+    }
+    if (p + 4 <= buf.size() && buf[p] == '2' && buf[p + 1] == '0' && buf[p + 2] == '1' && buf[p + 3] == '~') {
+        return (p + 4) - idx;
+    }
+    return 0;
+}
+
+std::string SanitizeAndNormalizePasteForGhostty(const char* data, size_t len) {
+    std::string current(data, len);
+    while (true) {
+        std::string next;
+        next.reserve(current.size());
+        bool changed = false;
+        size_t i = 0;
+        while (i < current.size()) {
+            size_t match_len = MatchBracketedPasteTerminatorAt(current, i);
+            if (match_len > 0) {
+                i += match_len;
+                changed = true;
+            } else {
+                next.push_back(current[i]);
+                ++i;
+            }
+        }
+        current = std::move(next);
+        if (!changed) {
+            break;
+        }
+    }
+
+    std::string body;
+    body.reserve(current.size());
+    for (size_t i = 0; i < current.size(); ++i) {
+        unsigned char ch = static_cast<unsigned char>(current[i]);
+        if (ch == '\r') {
+            if (i + 1 < current.size() && static_cast<unsigned char>(current[i + 1]) == '\n') {
+                ++i;
+            }
+            body.push_back('\n');
+        } else if (ch == '\n' || ch == '\t') {
+            body.push_back(static_cast<char>(ch));
+        } else if (ch < 0x20u || ch == 0x7Fu) {
+            continue;
+        } else if (ch == 0xC2u && i + 1 < current.size()) {
+            unsigned char b1 = static_cast<unsigned char>(current[i + 1]);
+            if (b1 >= 0x80u && b1 <= 0x9Fu) {
+                if (b1 == 0x85u) {
+                    body.push_back('\n');
+                }
+                ++i;
+                continue;
+            }
+            body.push_back(current[i]);
+        } else if (ch == 0xE2u && i + 2 < current.size() &&
+                   static_cast<unsigned char>(current[i + 1]) == 0x80u) {
+            unsigned char b2 = static_cast<unsigned char>(current[i + 2]);
+            if (b2 == 0xA8u || b2 == 0xA9u) {
+                body.push_back('\n');
+                i += 2;
+                continue;
+            }
+            body.push_back(current[i]);
+        } else {
+            body.push_back(current[i]);
+        }
+    }
+    return body;
+}
+
+}  // namespace
+
+extern "C" {
+
 bool tv_ghostty_paste_is_safe(const char* data, size_t len) {
-    return ghostty_paste_is_safe(data, len);
+    if (data == nullptr || len == 0) {
+        return true;
+    }
+    if (!ghostty_paste_is_safe(data, len)) {
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char ch = static_cast<unsigned char>(data[i]);
+        if ((ch < 0x20u && ch != '\t') || ch == 0x7Fu) {
+            return false;
+        }
+        if (ch == 0xC2u && i + 1 < len) {
+            unsigned char b1 = static_cast<unsigned char>(data[i + 1]);
+            if (b1 >= 0x80u && b1 <= 0x9Fu) {
+                return false;
+            }
+        }
+        if (ch == 0xE2u && i + 2 < len && static_cast<unsigned char>(data[i + 1]) == 0x80u) {
+            unsigned char b2 = static_cast<unsigned char>(data[i + 2]);
+            if (b2 == 0xA8u || b2 == 0xA9u) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 TvGhosttyResult tv_ghostty_terminal_paste(
@@ -1073,19 +1191,11 @@ TvGhosttyResult tv_ghostty_terminal_paste(
         *out_written = 0;
         return TV_GHOSTTY_SUCCESS;
     }
-    if (!allow_unsafe && !ghostty_paste_is_safe(data, len)) {
+    if (!allow_unsafe && !tv_ghostty_paste_is_safe(data, len)) {
         return TV_GHOSTTY_UNSAFE_PASTE;
     }
     bool bracketed = termvr::vt::TerminalIsBracketedPasteActive(terminal);
-    std::string mutable_copy(data, len);
-    // Strip the bracketed-paste terminator when bracketed paste is unsafe-allowed, matching fallback behavior.
-    if (bracketed) {
-        const std::string end_seq = "\x1b[201~";
-        size_t pos = 0;
-        while ((pos = mutable_copy.find(end_seq, pos)) != std::string::npos) {
-            mutable_copy.erase(pos, end_seq.size());
-        }
-    }
+    std::string mutable_copy = SanitizeAndNormalizePasteForGhostty(data, len);
     GhosttyResult res = ghostty_paste_encode(
         mutable_copy.data(), mutable_copy.size(), bracketed, out_buf, buf_cap, out_written);
     return MapResult(res);

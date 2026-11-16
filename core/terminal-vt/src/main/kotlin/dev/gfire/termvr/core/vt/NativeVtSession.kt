@@ -119,6 +119,15 @@ class NativeVtSession(
     fun encodePaste(text: String, allowUnsafe: Boolean = false): ByteArray? =
         withOpenBackend<ByteArray?>(null) { it.encodePaste(text, allowUnsafe) }
 
+    fun encodePasteChunks(
+        text: String,
+        allowUnsafe: Boolean = false,
+        maxChunkBytes: Int = DEFAULT_PASTE_CHUNK_BYTES,
+    ): List<ByteArray>? {
+        val encoded = encodePaste(text, allowUnsafe) ?: return null
+        return VtPasteChunker.chunkUtf8Safe(encoded, maxChunkBytes)
+    }
+
     fun formatViewportText(
         emitVt: Boolean = false,
         trimTrailingWhitespace: Boolean = true,
@@ -208,7 +217,57 @@ class NativeVtSession(
         const val DEFAULT_MAX_SCROLLBACK_LINES: Int = 10_000
         const val DEFAULT_CELL_WIDTH_PX: Int = 10
         const val DEFAULT_CELL_HEIGHT_PX: Int = 20
+        const val DEFAULT_PASTE_CHUNK_BYTES: Int = 4096
 
         fun isNativeLibraryLoaded(): Boolean = JniVtBindings.isNativeAvailable()
+    }
+}
+
+/**
+ * Splits encoded paste buffers into UTF-8 codepoint boundary-safe chunks without splitting DECSET 2004 markers.
+ */
+object VtPasteChunker {
+    private val BRACKETED_END = byteArrayOf(0x1B, '['.code.toByte(), '2'.code.toByte(), '0'.code.toByte(), '1'.code.toByte(), '~'.code.toByte())
+
+    fun chunkUtf8Safe(
+        encoded: ByteArray,
+        maxChunkBytes: Int = NativeVtSession.DEFAULT_PASTE_CHUNK_BYTES,
+    ): List<ByteArray> {
+        if (encoded.isEmpty()) return emptyList()
+        val limit = maxChunkBytes.coerceAtLeast(16)
+        if (encoded.size <= limit) return listOf(encoded)
+
+        val suffixStart = if (endsWithBracketedEnd(encoded)) encoded.size - BRACKETED_END.size else -1
+        val chunks = ArrayList<ByteArray>((encoded.size + limit - 1) / limit)
+        var offset = 0
+        while (offset < encoded.size) {
+            val remaining = encoded.size - offset
+            if (remaining <= limit) {
+                chunks.add(encoded.copyOfRange(offset, encoded.size))
+                break
+            }
+            var cut = offset + limit
+            if (suffixStart > offset && cut > suffixStart) {
+                cut = suffixStart
+            }
+            while (cut > offset && (encoded[cut].toInt() and 0xC0) == 0x80) {
+                cut--
+            }
+            if (cut <= offset) {
+                cut = offset + limit
+            }
+            chunks.add(encoded.copyOfRange(offset, cut))
+            offset = cut
+        }
+        return chunks
+    }
+
+    private fun endsWithBracketedEnd(bytes: ByteArray): Boolean {
+        if (bytes.size < BRACKETED_END.size) return false
+        val base = bytes.size - BRACKETED_END.size
+        for (i in BRACKETED_END.indices) {
+            if (bytes[base + i] != BRACKETED_END[i]) return false
+        }
+        return true
     }
 }

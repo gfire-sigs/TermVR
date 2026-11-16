@@ -396,6 +396,8 @@ internal class JvmFallbackVtSessionBackend(
     private var bracketedPaste = false
     private var mouseTrackingMode = 0
     private var mouseFormatMode = 0
+    private var lastMotionCol = -1
+    private var lastMotionRow = -1
     private var scrollbackOffset = 0
     private var dirty = true
     private var closed = false
@@ -600,7 +602,17 @@ internal class JvmFallbackVtSessionBackend(
                     7 -> autowrap = enable
                     12 -> cursorBlink = enable
                     25 -> cursorVisible = enable
-                    1000, 1002, 1003 -> if (enable) mouseTrackingMode = m else if (mouseTrackingMode == m) mouseTrackingMode = 0
+                    1000, 1002, 1003 -> {
+                        if (enable) {
+                            mouseTrackingMode = m
+                            lastMotionCol = -1
+                            lastMotionRow = -1
+                        } else if (mouseTrackingMode == m) {
+                            mouseTrackingMode = 0
+                            lastMotionCol = -1
+                            lastMotionRow = -1
+                        }
+                    }
                     1005, 1006 -> if (enable) mouseFormatMode = m else if (mouseFormatMode == m) mouseFormatMode = 0
                     2004 -> bracketedPaste = enable
                 }
@@ -786,6 +798,16 @@ internal class JvmFallbackVtSessionBackend(
 
     override fun encodeMouse(event: VtMouseEvent): ByteArray = lock.withLock {
         if (mouseTrackingMode == 0) return@withLock ByteArray(0)
+        if (event.action == VtMouseAction.MOTION) {
+            if (mouseTrackingMode < 1002) return@withLock ByteArray(0)
+            if (mouseTrackingMode == 1002 && event.button == VtMouseButton.NONE) return@withLock ByteArray(0)
+            if (lastMotionCol == event.col && lastMotionRow == event.row) return@withLock ByteArray(0)
+            lastMotionCol = event.col
+            lastMotionRow = event.row
+        } else if (event.action == VtMouseAction.PRESS || event.action == VtMouseAction.RELEASE) {
+            lastMotionCol = event.col
+            lastMotionRow = event.row
+        }
         var cb = when (event.action) {
             VtMouseAction.WHEEL_UP -> 64
             VtMouseAction.WHEEL_DOWN -> 65
@@ -820,21 +842,60 @@ internal class JvmFallbackVtSessionBackend(
     }
 
     override fun isPasteSafe(text: String): Boolean {
-        return text.none {
-            it == '\n' || it == '\r' || it == '\u001b' || it == '\u0000' ||
-                it == '\u0003' || it == '\u0004' || it == '\u0085' || it == '\u2028' || it == '\u2029'
+        return text.none { ch ->
+            (ch.code < 0x20 && ch != '\t') ||
+                ch == '\u007f' ||
+                ch.code in 0x80..0x9f ||
+                ch == '\u2028' ||
+                ch == '\u2029'
         }
     }
 
     override fun encodePaste(text: String, allowUnsafe: Boolean): ByteArray? = lock.withLock {
         if (!allowUnsafe && !isPasteSafe(text)) return@withLock null
-        val sanitized = text.replace("\u001b[201~", "")
+        if (text.isEmpty()) {
+            return@withLock if (bracketedPaste) {
+                "\u001b[200~\u001b[201~".toByteArray(StandardCharsets.UTF_8)
+            } else {
+                ByteArray(0)
+            }
+        }
+        val strippedTerminators = stripBracketedPasteTerminators(text)
+        val normalized = StringBuilder(strippedTerminators.length)
+        var i = 0
+        while (i < strippedTerminators.length) {
+            val ch = strippedTerminators[i]
+            when {
+                ch == '\r' -> {
+                    if (i + 1 < strippedTerminators.length && strippedTerminators[i + 1] == '\n') {
+                        i++
+                    }
+                    normalized.append('\n')
+                }
+                ch == '\n' || ch == '\u0085' || ch == '\u2028' || ch == '\u2029' -> normalized.append('\n')
+                ch == '\t' -> normalized.append('\t')
+                ch.code < 0x20 || ch == '\u007f' || ch.code in 0x80..0x9f -> Unit
+                else -> normalized.append(ch)
+            }
+            i++
+        }
+        val body = normalized.toString()
         val wrapped = if (bracketedPaste) {
-            "\u001b[200~$sanitized\u001b[201~"
+            "\u001b[200~$body\u001b[201~"
         } else {
-            sanitized.replace('\n', '\r')
+            body.replace('\n', '\r')
         }
         wrapped.toByteArray(StandardCharsets.UTF_8)
+    }
+
+    private fun stripBracketedPasteTerminators(input: String): String {
+        val pattern = Regex("""(?:\u001b\[|\u009b)0*201~""")
+        var current = input
+        while (true) {
+            val next = pattern.replace(current, "")
+            if (next.length == current.length) return next
+            current = next
+        }
     }
 
     private fun getViewportRow(vrow: Int): CharArray {
