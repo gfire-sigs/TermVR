@@ -372,10 +372,11 @@ class CheckpointController(
     }
 
     /**
-     * Marks the saved snapshot superseded after an incompatible engine upgrade without deleting volumes.
+     * Marks the saved snapshot superseded without deleting persistent volumes.
      */
     fun markSuperseded(profileId: String, reason: String) {
         val current = readMetadata(profileId) ?: return
+        if (current.superseded && current.supersededReason == reason) return
         val updated = current.copy(superseded = true, supersededReason = reason)
         writeMetadataAtomically(profileId, updated)
     }

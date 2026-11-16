@@ -490,6 +490,13 @@ class SandboxSupervisor(
                 lastActivityMillis = AtomicLong(now),
             )
             sessions[profile.id] = managed
+            if (isRestore) {
+                // Mark the consumed snapshot superseded once the resumed sandbox begins mutating storage.
+                checkpointController.markSuperseded(
+                    profileId = profile.id,
+                    reason = "Resumed into live session",
+                )
+            }
             setRunState(profile.id, SandboxRunState.RUNNING)
             refreshHostReadiness()
             SandboxRunState.RUNNING
@@ -541,6 +548,10 @@ class SandboxSupervisor(
                 managed.process.destroyGracefully()
                 cleanupSessionResources(profileId, managed)
             }
+            checkpointController.markSuperseded(
+                profileId = profileId,
+                reason = "Sandbox stopped",
+            )
             setRunState(profileId, SandboxRunState.STOPPED)
             releaseWakeLockIfNoRunningSandboxes()
             refreshHostReadiness()

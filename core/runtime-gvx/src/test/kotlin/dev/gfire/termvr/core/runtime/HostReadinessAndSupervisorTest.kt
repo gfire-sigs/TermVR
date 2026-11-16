@@ -724,14 +724,16 @@ class HostReadinessAndSupervisorTest {
             assertEquals(SandboxRunState.FROZEN, supervisor.freezeSandbox(profile.id))
             assertEquals("preopened-inode", File(slotA, "pages.img").readText())
 
-            // Cycle 2: Resume -> Freeze again into pre-opened slot-a
+            // Cycle 2: Resume marks the consumed slot superseded, and Freeze writes a fresh active snapshot.
             assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
             assertEquals("restore", launchedCommands.last().first())
             assertEquals(slotA, preopenedDirs.last())
+            assertTrue(checkpointController.readMetadata(profile.id)!!.superseded)
             val restoredMux = supervisor.getMuxClient(profile.id)!!
             assertTrue(restoredMux.isStreamOpen(1L))
 
             assertEquals(SandboxRunState.FROZEN, supervisor.freezeSandbox(profile.id))
+            assertFalse(checkpointController.readMetadata(profile.id)!!.superseded)
             assertTrue(File(slotA, "state.img").isFile)
 
             // Cycle 3: Resume a second time and applyPortForwards via checkpoint & restore
@@ -745,6 +747,15 @@ class HostReadinessAndSupervisorTest {
             )
             assertEquals("restore", launchedCommands.last().first())
             assertTrue(launchedCommands.last().contains("127.0.0.1:18080:80/tcp"))
+            assertTrue(checkpointController.readMetadata(profile.id)!!.superseded)
+
+            // Stop the restored session and verify the next Start runs a clean cold boot without a notice.
+            supervisor.stopSandbox(profile.id)
+            assertTrue(checkpointController.readMetadata(profile.id)!!.superseded)
+            launchedCommands.clear()
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals("run", launchedCommands.last().first())
+            assertEquals(null, supervisor.activeServiceNotice.value)
         } finally {
             supervisor.close()
             pool.shutdownNow()
