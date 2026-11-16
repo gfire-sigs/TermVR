@@ -243,6 +243,31 @@ class NetworkLifecycleResilienceTest {
                 harness.supervisor.publishedPortsByProfile.value[profile.id].orEmpty().map { it.hostPort },
             )
 
+            // 1b. Cold restart applyPortForwards(checkpointAndRestore = false) failing on port 9090 rolls back cachedProfiles
+            // so a subsequent stopped apply or LAN check does not retain stale failed rules.
+            val coldApplyErr = assertThrows(PortConflictException::class.java) {
+                runBlocking {
+                    harness.supervisor.applyPortForwards(
+                        profileId = profile.id,
+                        updatedRules = listOf(
+                            rule3000,
+                            PortForwardRule("r9090-lan", ForwardProtocol.TCP, ListenHost.LAN_ALL_V4, 9090, 9090, 80, 80),
+                        ),
+                        checkpointAndRestore = false,
+                    )
+                }
+            }
+            assertTrue(coldApplyErr.message.orEmpty().contains("9090"))
+            harness.supervisor.onNetworkHandleChanged(5001L)
+            harness.supervisor.onNetworkHandleChanged(5002L)
+            assertFalse(
+                profile.id in harness.supervisor.lanReconfirmationRequired.value,
+                "Failed cold-restart applyPortForwards must roll back cachedProfiles so stale LAN rules do not leak",
+            )
+            failPort9090.set(false)
+            assertEquals(SandboxRunState.RUNNING, harness.supervisor.startOrResumeSandbox(profile))
+            failPort9090.set(true)
+
             // 2. Direct resume of a FROZEN container hitting EADDRINUSE keeps checkpoint valid (not superseded) and state FROZEN.
             assertEquals(SandboxRunState.FROZEN, harness.supervisor.freezeSandbox(profile.id))
             val err = assertThrows(IOException::class.java) {

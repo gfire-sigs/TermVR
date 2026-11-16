@@ -257,6 +257,14 @@ class NetworkViewModelResilienceTest {
             vm.selectProfile("web-dev")
             advanceUntilIdle()
 
+            // UNIX_STREAM on numeric port form is rejected cleanly with errorMessage instead of throwing IllegalArgumentException.
+            assertFalse(vm.validateCandidatePortRule(ForwardProtocol.UNIX_STREAM, ListenHost.LOOPBACK_V4, 8080, 80))
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.errorMessage.orEmpty().contains("TCP and UDP"))
+            vm.addPortRule(ForwardProtocol.UNIX_STREAM, ListenHost.LOOPBACK_V4, 8082, 82)
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.errorMessage.orEmpty().contains("TCP and UDP"))
+
             // LOOPBACK_V4 8080 conflicts with running Docker Engine's LAN_ALL_V4 8080.
             vm.addPortRule(ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 8080, 3000)
             advanceUntilIdle()

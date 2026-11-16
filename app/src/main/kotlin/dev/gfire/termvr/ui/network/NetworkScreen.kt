@@ -86,6 +86,7 @@ fun NetworkScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val appContext = context.applicationContext
     val monoFont = LocalTermVrMonoFontFamily.current
     val selectedProfile = state.selectedProfile
 
@@ -101,7 +102,7 @@ fun NetworkScreen(
     ) { uri ->
         if (uri != null) {
             runCatching {
-                querySafDocumentMetadata(context.contentResolver, uri)
+                querySafDocumentMetadata(appContext.contentResolver, uri)
             }.fold(
                 onSuccess = { meta ->
                     val rawName = meta.displayName?.takeIf { it.isNotBlank() }
@@ -109,7 +110,7 @@ fun NetworkScreen(
                     viewModel.importWireGuardConfigFromStream(
                         rawDisplayName = rawName,
                         declaredSizeBytes = meta.sizeBytes,
-                        openStream = { context.contentResolver.openInputStream(uri) },
+                        openStream = { appContext.contentResolver.openInputStream(uri) },
                     )
                 },
                 onFailure = { err ->
@@ -275,7 +276,7 @@ fun NetworkScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                ForwardProtocol.entries.forEach { proto ->
+                                listOf(ForwardProtocol.TCP, ForwardProtocol.UDP).forEach { proto ->
                                     TermVrSelectableChip(
                                         label = proto.name,
                                         selected = selectedProto == proto,
@@ -326,8 +327,13 @@ fun NetworkScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
+                                        val ruleSummary = if (rule.protocol == ForwardProtocol.UNIX_STREAM) {
+                                            "UNIX ${rule.unixSocketName ?: "socket"} : ${rule.guestUnixPath ?: "guest"}"
+                                        } else {
+                                            "${rule.protocol.name} ${rule.listenHost.wireLiteral}:$hostPortLabel -> :${rule.guestPortStart}"
+                                        }
                                         Text(
-                                            text = "${rule.protocol.name} ${rule.listenHost.wireLiteral}:$hostPortLabel -> :${rule.guestPortStart}",
+                                            text = ruleSummary,
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontFamily = monoFont,
                                             modifier = Modifier.weight(1f),

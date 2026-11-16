@@ -168,6 +168,13 @@ class NetworkViewModel(
     ): Boolean {
         val currentUi = uiState.value
         val profile = currentUi.selectedProfile ?: return false
+        if (protocol == ForwardProtocol.UNIX_STREAM) {
+            localState.value = localState.value.copy(
+                errorMessage = "Numeric port rules support TCP and UDP only.",
+                statusMessage = null,
+            )
+            return false
+        }
         if (hostPort !in 1..65535 || guestPort !in 1..65535) {
             localState.value = localState.value.copy(
                 errorMessage = "Port numbers must be in 1..65535.",
@@ -318,6 +325,7 @@ class NetworkViewModel(
                 runtimeGateway.startOrResumeSandbox(profile, reconfirmLan = true)
                 localState.value = localState.value.copy(statusMessage = "Confirmed LAN binding on active Wi-Fi.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "LAN confirmation failed")
             }
             localState.value = localState.value.copy(busy = false)
@@ -337,6 +345,7 @@ class NetworkViewModel(
                 runtimeGateway.applyPortForwards(profile.id, safeRules, checkpointAndRestore = false)
                 localState.value = localState.value.copy(statusMessage = "Downgraded all LAN rules to 127.0.0.1.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Downgrade failed")
             }
             localState.value = localState.value.copy(busy = false)
@@ -406,6 +415,7 @@ class NetworkViewModel(
                 }
                 localState.value = localState.value.copy(statusMessage = notice)
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Invalid proxy settings")
             }
         }
@@ -423,6 +433,7 @@ class NetworkViewModel(
                 runtimeGateway.startOrResumeSandbox(profile)
                 localState.value = localState.value.copy(statusMessage = "Restarted sandbox with updated --net-raw mode.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Restart failed")
             }
             localState.value = localState.value.copy(busy = false)
@@ -454,6 +465,7 @@ class NetworkViewModel(
                 profileRepository.upsertProfile(updated)
                 localState.value = localState.value.copy(statusMessage = "Updated network backend to ${backend.name}.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Failed to update backend")
             }
         }

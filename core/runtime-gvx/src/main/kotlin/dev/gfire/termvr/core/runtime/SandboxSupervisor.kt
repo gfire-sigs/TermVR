@@ -773,8 +773,13 @@ class SandboxSupervisor(
                 throw restoreErr
             }
         } else {
-            stopSandbox(profileId)
-            startOrResumeSandbox(updatedProfile, hostRpcDelegate = hostRpcDelegate, reconfirmLan = true)
+            try {
+                stopSandbox(profileId)
+                startOrResumeSandbox(updatedProfile, hostRpcDelegate = hostRpcDelegate, reconfirmLan = true)
+            } catch (err: Throwable) {
+                cachedProfiles[profileId] = previousProfile
+                throw err
+            }
         }
     }
 
