@@ -2609,6 +2609,58 @@ void tv_ghostty_formatter_buffer_free(
 
 namespace {
 
+size_t ValidUtf8SeqLen(const char* ptr, size_t remaining) noexcept {
+    if (remaining == 0 || ptr == nullptr) {
+        return 0;
+    }
+    const unsigned char b0 = static_cast<unsigned char>(ptr[0]);
+    if (b0 < 0x80u) {
+        return 1;
+    }
+    if (b0 >= 0xC2u && b0 <= 0xDFu) {
+        if (remaining >= 2 && (static_cast<unsigned char>(ptr[1]) & 0xC0u) == 0x80u) {
+            return 2;
+        }
+        return 0;
+    }
+    if (b0 >= 0xE0u && b0 <= 0xEFu) {
+        if (remaining < 3) {
+            return 0;
+        }
+        const unsigned char b1 = static_cast<unsigned char>(ptr[1]);
+        const unsigned char b2 = static_cast<unsigned char>(ptr[2]);
+        if ((b1 & 0xC0u) != 0x80u || (b2 & 0xC0u) != 0x80u) {
+            return 0;
+        }
+        if (b0 == 0xE0u && b1 < 0xA0u) {
+            return 0;
+        }
+        if (b0 == 0xEDu && b1 > 0x9Fu) {
+            return 0;
+        }
+        return 3;
+    }
+    if (b0 >= 0xF0u && b0 <= 0xF4u) {
+        if (remaining < 4) {
+            return 0;
+        }
+        const unsigned char b1 = static_cast<unsigned char>(ptr[1]);
+        const unsigned char b2 = static_cast<unsigned char>(ptr[2]);
+        const unsigned char b3 = static_cast<unsigned char>(ptr[3]);
+        if ((b1 & 0xC0u) != 0x80u || (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) {
+            return 0;
+        }
+        if (b0 == 0xF0u && b1 < 0x90u) {
+            return 0;
+        }
+        if (b0 == 0xF4u && b1 > 0x8Fu) {
+            return 0;
+        }
+        return 4;
+    }
+    return 0;
+}
+
 size_t MatchBracketedPasteTerminatorAt(const std::string& buf, size_t idx) noexcept {
     size_t prefix_len = 0;
     if (idx + 2 <= buf.size() && static_cast<unsigned char>(buf[idx]) == 0x1Bu && buf[idx + 1] == '[') {
@@ -2617,7 +2669,9 @@ size_t MatchBracketedPasteTerminatorAt(const std::string& buf, size_t idx) noexc
                static_cast<unsigned char>(buf[idx]) == 0xC2u &&
                static_cast<unsigned char>(buf[idx + 1]) == 0x9Bu) {
         prefix_len = 2;
-    } else if (idx < buf.size() && static_cast<unsigned char>(buf[idx]) == 0x9Bu) {
+    } else if (idx < buf.size() &&
+               static_cast<unsigned char>(buf[idx]) == 0x9Bu &&
+               ValidUtf8SeqLen(buf.data() + idx, buf.size() - idx) == 0) {
         prefix_len = 1;
     } else {
         return 0;
@@ -2646,8 +2700,10 @@ std::string SanitizeAndNormalizePastePayload(const char* data, size_t len, bool 
                 i += match_len;
                 changed = true;
             } else {
-                next.push_back(current[i]);
-                ++i;
+                size_t cp_len = ValidUtf8SeqLen(current.data() + i, current.size() - i);
+                size_t step = cp_len > 0 ? cp_len : 1u;
+                next.append(current, i, step);
+                i += step;
             }
         }
         current = std::move(next);
@@ -2658,40 +2714,55 @@ std::string SanitizeAndNormalizePastePayload(const char* data, size_t len, bool 
 
     std::string body;
     body.reserve(current.size());
-    for (size_t i = 0; i < current.size(); ++i) {
+    size_t i = 0;
+    while (i < current.size()) {
+        size_t cp_len = ValidUtf8SeqLen(current.data() + i, current.size() - i);
         unsigned char ch = static_cast<unsigned char>(current[i]);
-        if (ch == '\r') {
-            if (i + 1 < current.size() && static_cast<unsigned char>(current[i + 1]) == '\n') {
-                ++i;
+        if (cp_len == 0) {
+            if (ch == 0x85u) {
+                body.push_back(bracketed ? '\n' : '\r');
+            } else if (ch >= 0x80u && ch <= 0x9Fu) {
+                // Drop standalone raw 8-bit C1 control bytes.
+            } else {
+                body.push_back(current[i]);
             }
-            body.push_back(bracketed ? '\n' : '\r');
-        } else if (ch == '\n') {
-            body.push_back(bracketed ? '\n' : '\r');
-        } else if (ch == '\t') {
-            body.push_back('\t');
-        } else if (ch < 0x20u || ch == 0x7Fu) {
-            continue;
-        } else if (ch == 0xC2u && i + 1 < current.size()) {
+            ++i;
+        } else if (cp_len == 1) {
+            if (ch == '\r') {
+                if (i + 1 < current.size() && static_cast<unsigned char>(current[i + 1]) == '\n') {
+                    ++i;
+                }
+                body.push_back(bracketed ? '\n' : '\r');
+            } else if (ch == '\n') {
+                body.push_back(bracketed ? '\n' : '\r');
+            } else if (ch == '\t') {
+                body.push_back('\t');
+            } else if (ch >= 0x20u && ch != 0x7Fu) {
+                body.push_back(current[i]);
+            }
+            ++i;
+        } else if (cp_len == 2) {
             unsigned char b1 = static_cast<unsigned char>(current[i + 1]);
-            if (b1 >= 0x80u && b1 <= 0x9Fu) {
+            if (ch == 0xC2u && b1 >= 0x80u && b1 <= 0x9Fu) {
                 if (b1 == 0x85u) {
                     body.push_back(bracketed ? '\n' : '\r');
                 }
-                ++i;
-                continue;
+            } else {
+                body.append(current, i, 2);
             }
-            body.push_back(current[i]);
-        } else if (ch == 0xE2u && i + 2 < current.size() &&
-                   static_cast<unsigned char>(current[i + 1]) == 0x80u) {
+            i += 2;
+        } else if (cp_len == 3) {
+            unsigned char b1 = static_cast<unsigned char>(current[i + 1]);
             unsigned char b2 = static_cast<unsigned char>(current[i + 2]);
-            if (b2 == 0xA8u || b2 == 0xA9u) {
+            if (ch == 0xE2u && b1 == 0x80u && (b2 == 0xA8u || b2 == 0xA9u)) {
                 body.push_back(bracketed ? '\n' : '\r');
-                i += 2;
-                continue;
+            } else {
+                body.append(current, i, 3);
             }
-            body.push_back(current[i]);
+            i += 3;
         } else {
-            body.push_back(current[i]);
+            body.append(current, i, cp_len);
+            i += cp_len;
         }
     }
     return body;
@@ -2705,24 +2776,35 @@ bool tv_ghostty_paste_is_safe(const char* data, size_t len) {
     if (data == nullptr || len == 0) {
         return true;
     }
-    for (size_t i = 0; i < len; ++i) {
+    size_t i = 0;
+    while (i < len) {
+        size_t cp_len = ValidUtf8SeqLen(data + i, len - i);
         unsigned char ch = static_cast<unsigned char>(data[i]);
-        if ((ch < 0x20u && ch != '\t') || ch == 0x7Fu) {
-            return false;
-        }
-        // Detect UTF-8 C1 controls U+0080..U+009F (0xC2 0x80..0x9F, including NEL and CSI).
-        if (ch == 0xC2u && i + 1 < len) {
+        if (cp_len == 0) {
+            if (ch >= 0x80u && ch <= 0x9Fu) {
+                return false;
+            }
+            ++i;
+        } else if (cp_len == 1) {
+            if ((ch < 0x20u && ch != '\t') || ch == 0x7Fu) {
+                return false;
+            }
+            ++i;
+        } else if (cp_len == 2) {
             unsigned char b1 = static_cast<unsigned char>(data[i + 1]);
-            if (b1 >= 0x80u && b1 <= 0x9Fu) {
+            if (ch == 0xC2u && b1 >= 0x80u && b1 <= 0x9Fu) {
                 return false;
             }
-        }
-        // Detect UTF-8 Line/Paragraph Separator (U+2028/U+2029: E2 80 A8/A9).
-        if (ch == 0xE2u && i + 2 < len && static_cast<unsigned char>(data[i + 1]) == 0x80u) {
+            i += 2;
+        } else if (cp_len == 3) {
+            unsigned char b1 = static_cast<unsigned char>(data[i + 1]);
             unsigned char b2 = static_cast<unsigned char>(data[i + 2]);
-            if (b2 == 0xA8u || b2 == 0xA9u) {
+            if (ch == 0xE2u && b1 == 0x80u && (b2 == 0xA8u || b2 == 0xA9u)) {
                 return false;
             }
+            i += 3;
+        } else {
+            i += cp_len;
         }
     }
     return true;

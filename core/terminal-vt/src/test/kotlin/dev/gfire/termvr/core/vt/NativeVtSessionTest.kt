@@ -387,6 +387,14 @@ class NativeVtSessionTest {
                 StandardCharsets.UTF_8,
             )
             assertEquals("\u001b[200~ab\u001b[201~", nested)
+
+            val cjkWith0x9bContinuation = "갛201~丛201~"
+            assertTrue(session.isPasteSafe(cjkWith0x9bContinuation))
+            val encodedCjk = String(
+                session.encodePaste(cjkWith0x9bContinuation, allowUnsafe = false)!!,
+                StandardCharsets.UTF_8,
+            )
+            assertEquals("\u001b[200~갛201~丛201~\u001b[201~", encodedCjk)
         }
     }
 

@@ -127,6 +127,18 @@ void TestEncodersPasteAndKittyGraphics() {
     std::string nested_out(pasted.begin(), pasted.end());
     assert(nested_out == "\x1b[200~ab\ncde]52;c;x\x1b[201~");
 
+    // Hangul '갛' (EA B0 9B) and Han '丛' (E4 B8 9B) end in continuation byte 0x9B before "201~" and must remain intact.
+    const std::string hangul_9b = "\xEA\xB0\x9B" "201~\xE4\xB8\x9B" "201~";
+    assert(VtSessionNative::IsPasteSafe(hangul_9b.data(), hangul_9b.size()));
+    assert(session.EncodePaste(hangul_9b.data(), hangul_9b.size(), false, &pasted));
+    assert(std::string(pasted.begin(), pasted.end()) == "\x1b[200~\xEA\xB0\x9B" "201~\xE4\xB8\x9B" "201~\x1b[201~");
+
+    // Standalone raw 8-bit 0x9B CSI (invalid UTF-8 lead) followed by "201~" must be rejected as unsafe and stripped.
+    const std::string raw_c1_attack = "x\x9b" "201~y";
+    assert(!VtSessionNative::IsPasteSafe(raw_c1_attack.data(), raw_c1_attack.size()));
+    assert(session.EncodePaste(raw_c1_attack.data(), raw_c1_attack.size(), true, &pasted));
+    assert(std::string(pasted.begin(), pasted.end()) == "\x1b[200~xy\x1b[201~");
+
     // Disable bracketed paste and verify CRLF normalizes to single CR (never \r\r).
     const char* disable_bp = "\x1b[?2004l";
     session.WritePtyBytes(reinterpret_cast<const uint8_t*>(disable_bp), std::strlen(disable_bp));
