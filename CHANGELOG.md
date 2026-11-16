@@ -6,7 +6,22 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.15.10002026110900.1`.
+This section tracks changes staged on `main` after `0.16.10002026110900`.
+
+---
+
+## [0.16.10002026110900]
+
+This release (`versionCode` `301600000`) upgrades the bundled `gvx` runtime to `v0.16.10002026110900` (`a9bfd06c2c07`) and switches persistent rootfs containers to native `gvx` `-rootfs-volume` overlays.
+
+### Native persistent rootfs and version parity
+
+`TermVR` now delegates root filesystem persistence directly to `gvx` instead of copying files inside the guest at boot.
+
+- Switched `GvxCommandBuilder` (`buildRunArgs` and `buildRestoreArgs`) to pass `-rootfs-volume rootfs-<id>` when `persistentRootfs` is enabled, removing `/.termvr-rootfs` bind mounts and the `RAW_PTY` `termvr-agent --exec` wrapper.
+- Removed `pivot_root` staging, `--persist-root-dir`, and `--exec` code from `guest/termvr-agent` while keeping `/` confinement in `VOLUME_FS_OP` for live and stopped rootfs browsing.
+- Updated `Files > Volumes` stopped-container inspection to mount persistent `rootfs-<id>` volumes with `-rootfs-volume` so users browse the merged `/` tree rather than raw `upper` and `work` directories.
+- Updated `scripts/sync-gvx-version.sh` to compute monotonic 9-digit `versionCode` values (`301600000` for `v0.16.10002026110900`) above legacy `261109001`.
 
 ---
 

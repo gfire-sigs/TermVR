@@ -416,7 +416,7 @@ class GvxCommandBuilderTest {
     }
 
     @Test
-    fun `persistentRootfs mounts rootfs ext4lite volume in run and restore for STDIO_MUX and RAW_PTY`() {
+    fun `persistentRootfs emits -rootfs-volume in run and restore for STDIO_MUX and RAW_PTY`() {
         val builder = newBuilder()
         val agentDir = File(File(tempDir, "files"), "agent/arm64").apply { mkdirs() }
         File(agentDir, "termvr-agent").apply { writeText("agent") }
@@ -429,13 +429,13 @@ class GvxCommandBuilderTest {
             persistentRootfs = true,
         )
         val stdioRun = builder.buildRunArgs(stdioProfile, 5353, builder.controlSocketFile(stdioProfile.id))
-        val expectedRootMount = "rootfs-deb-persist:${GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR}:rw"
         val expectedAgentMount = "${agentDir.absolutePath}:/run/termvr-agent:ro"
-        assertTrue(stdioRun.contains(expectedRootMount))
         assertTrue(stdioRun.contains(expectedAgentMount))
-        val persistFlagIdx = stdioRun.indexOf("--persist-root-dir")
-        assertTrue(persistFlagIdx >= 0)
-        assertEquals(GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR, stdioRun[persistFlagIdx + 1])
+        val stdioRootVolIdx = stdioRun.indexOf("-rootfs-volume")
+        assertTrue(stdioRootVolIdx >= 0)
+        assertEquals("rootfs-deb-persist", stdioRun[stdioRootVolIdx + 1])
+        assertFalse(stdioRun.contains("--persist-root-dir"))
+        assertFalse(stdioRun.any { it.contains("rootfs-deb-persist:") })
 
         val stdioRestore = builder.buildRestoreArgs(
             profile = stdioProfile,
@@ -443,8 +443,10 @@ class GvxCommandBuilderTest {
             dnsPort = 5353,
             controlSock = builder.controlSocketFile(stdioProfile.id),
         )
-        assertTrue(stdioRestore.contains(expectedRootMount))
         assertTrue(stdioRestore.contains(expectedAgentMount))
+        val stdioRestoreIdx = stdioRestore.indexOf("-rootfs-volume")
+        assertTrue(stdioRestoreIdx >= 0)
+        assertEquals("rootfs-deb-persist", stdioRestore[stdioRestoreIdx + 1])
 
         val rawProfile = SandboxProfile(
             id = "raw-persist",
@@ -455,21 +457,19 @@ class GvxCommandBuilderTest {
             persistentRootfs = true,
         )
         val rawRun = builder.buildRunArgs(rawProfile, 5353, builder.controlSocketFile(rawProfile.id))
-        val expectedRawRootMount = "rootfs-raw-persist:${GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR}:rw"
-        assertTrue(rawRun.contains(expectedRawRootMount))
-        assertTrue(rawRun.contains(expectedAgentMount))
-        val entryIdx = rawRun.indexOf("--entrypoint")
-        assertTrue(entryIdx >= 0)
-        assertEquals(GvxCommandBuilder.AGENT_ENTRYPOINT_PATH, rawRun[entryIdx + 1])
+        val rawRootVolIdx = rawRun.indexOf("-rootfs-volume")
+        assertTrue(rawRootVolIdx >= 0)
+        assertEquals("rootfs-raw-persist", rawRun[rawRootVolIdx + 1])
+        assertFalse(rawRun.contains(expectedAgentMount))
+        assertFalse(rawRun.contains("--entrypoint"))
+        assertFalse(rawRun.contains("--persist-root-dir"))
+        assertFalse(rawRun.contains("--exec"))
+        val rawImageIdx = rawRun.indexOf("-image")
+        assertTrue(rawImageIdx >= 0)
+        assertEquals("docker.io/library/alpine:3.21", rawRun[rawImageIdx + 1])
         val ddIdx = rawRun.indexOf("--")
-        assertTrue(ddIdx >= 0)
-        val containerCmd = rawRun.subList(ddIdx + 1, rawRun.size)
-        assertTrue(containerCmd.contains("--persist-root-dir"))
-        assertTrue(containerCmd.contains(GvxCommandBuilder.PERSIST_ROOT_GUEST_DIR))
-        assertTrue(containerCmd.contains("--exec"))
-        val execDd = containerCmd.lastIndexOf("--")
-        assertTrue(execDd > containerCmd.indexOf("--exec"))
-        assertEquals(listOf("/bin/sh", "-l"), containerCmd.subList(execDd + 1, containerCmd.size))
+        assertTrue(ddIdx > rawImageIdx)
+        assertEquals(listOf("/bin/sh", "-l"), rawRun.subList(ddIdx + 1, rawRun.size))
 
         val rawRestore = builder.buildRestoreArgs(
             profile = rawProfile,
@@ -477,7 +477,43 @@ class GvxCommandBuilderTest {
             dnsPort = 5353,
             controlSock = builder.controlSocketFile(rawProfile.id),
         )
-        assertTrue(rawRestore.contains(expectedRawRootMount))
-        assertTrue(rawRestore.contains(expectedAgentMount))
+        val rawRestoreIdx = rawRestore.indexOf("-rootfs-volume")
+        assertTrue(rawRestoreIdx >= 0)
+        assertEquals("rootfs-raw-persist", rawRestore[rawRestoreIdx + 1])
+        assertFalse(rawRestore.contains(expectedAgentMount))
+    }
+
+    @Test
+    fun `buildStoppedVolumeHelperArgs uses -rootfs-volume for persistent rootfs and -v for regular volumes`() {
+        val builder = newBuilder()
+        val ctl = builder.controlSocketFile("volhelp-1")
+
+        val normalArgs = builder.buildStoppedVolumeHelperArgs(
+            volumeName = "proj-vol",
+            helperProfileId = "volhelp-1",
+            imageRef = "busybox:latest",
+            dnsPort = 5353,
+            controlSock = ctl,
+            readOnly = true,
+            isRootfsVolume = false,
+        )
+        assertTrue(normalArgs.contains("proj-vol:/mnt/volume:ro"))
+        assertFalse(normalArgs.contains("-rootfs-volume"))
+
+        val rootfsArgs = builder.buildStoppedVolumeHelperArgs(
+            volumeName = "rootfs-deb",
+            helperProfileId = "volhelp-2",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            dnsPort = 5353,
+            controlSock = ctl,
+            readOnly = true,
+            isRootfsVolume = true,
+        )
+        val rootVolIdx = rootfsArgs.indexOf("-rootfs-volume")
+        assertTrue(rootVolIdx >= 0)
+        assertEquals("rootfs-deb", rootfsArgs[rootVolIdx + 1])
+        assertFalse(rootfsArgs.any { it.contains(":/mnt/volume") })
+        val imgIdx = rootfsArgs.indexOf("-image")
+        assertEquals("docker.io/library/debian:trixie-slim", rootfsArgs[imgIdx + 1])
     }
 }

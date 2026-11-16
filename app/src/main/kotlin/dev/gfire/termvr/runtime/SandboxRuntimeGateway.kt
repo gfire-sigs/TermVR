@@ -90,6 +90,7 @@ interface SandboxRuntimeGateway {
         profile: SandboxProfile,
         volumeName: String,
         readOnly: Boolean,
+        isRootfsVolume: Boolean = profile.persistentRootfs && profile.rootfsVolumeName == volumeName,
         block: suspend (MuxSessionClient, String) -> T,
     ): T
 
@@ -361,6 +362,7 @@ class AndroidSandboxRuntimeGateway(
         profile: SandboxProfile,
         volumeName: String,
         readOnly: Boolean,
+        isRootfsVolume: Boolean,
         block: suspend (MuxSessionClient, String) -> T,
     ): T {
         val sup = awaitSupervisor()
@@ -368,6 +370,7 @@ class AndroidSandboxRuntimeGateway(
             volumeName = volumeName,
             helperImageRef = profile.imageRef,
             readOnly = readOnly,
+            isRootfsVolume = isRootfsVolume,
             block = block,
         )
     }

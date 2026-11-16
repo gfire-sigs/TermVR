@@ -387,3 +387,28 @@ func TestGuestRPCSocketAndCLIWrappers(t *testing.T) {
 	cancel()
 	_ = hostToGuestW.Close()
 }
+
+func TestVolumeRPCHandlerSupportsSlashRootForPersistentRootfs(t *testing.T) {
+	t.Parallel()
+
+	// VolumeRPCHandler confines "/" when explicitly listed in roots via isWithinRoot("/", ...).
+	h := mux.NewVolumeRPCHandler([]string{"/"})
+	var gotStatus uint8
+	var gotBody bytes.Buffer
+	tmpDir := t.TempDir()
+	reqJSON := `{"op":"stat","root":"/","path":"` + strings.TrimPrefix(tmpDir, "/") + `"}`
+	h.HandleHostRPC(
+		context.Background(),
+		1,
+		mux.RPCOpVolumeFSOp,
+		strings.NewReader(reqJSON),
+		func(status uint8, chunk []byte, fin bool) error {
+			gotStatus = status
+			gotBody.Write(chunk)
+			return nil
+		},
+	)
+	if gotStatus != mux.RPCStatusOK {
+		t.Fatalf("stat under root=/ returned status %d: %s", gotStatus, gotBody.String())
+	}
+}

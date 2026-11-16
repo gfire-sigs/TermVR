@@ -1,0 +1,5 @@
+TermVR 0.16.10002026110900 (gvx v0.16.10002026110900):
+- Upgraded gvx runtime to v0.16.10002026110900 (a9bfd06c2c07).
+- Switched persistent ext4lite root mode to native gvx -rootfs-volume overlays, removing first-boot copying and guest pivot_root staging for instant cold starts.
+- Kept Freeze and Resume checkpoint support and merged / browsing for stopped rootfs-<id> volumes.
+- Switched to monotonic 9-digit versionCode (301600000) above 261109001.

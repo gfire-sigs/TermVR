@@ -316,10 +316,6 @@ class GvxCommandBuilder(
                     args.add("--transparent-proxy-port")
                     args.add(GUEST_TRANSPARENT_PROXY_PORT.toString())
                 }
-                if (profile.persistentRootfs) {
-                    args.add("--persist-root-dir")
-                    args.add(PERSIST_ROOT_GUEST_DIR)
-                }
                 if (profile.makeRootRshared) {
                     args.add("--make-root-rshared")
                 }
@@ -336,29 +332,11 @@ class GvxCommandBuilder(
                 } else {
                     profile.defaultShellArgv
                 }
-                if (profile.persistentRootfs) {
-                    args.add("--entrypoint")
-                    args.add(AGENT_ENTRYPOINT_PATH)
-                    args.add("-image")
-                    args.add(profile.imageRef)
+                args.add("-image")
+                args.add(profile.imageRef)
+                if (rawCommand.isNotEmpty()) {
                     args.add("--")
-                    args.add("--persist-root-dir")
-                    args.add(PERSIST_ROOT_GUEST_DIR)
-                    if (profile.makeRootRshared) {
-                        args.add("--make-root-rshared")
-                    }
-                    args.add("--exec")
-                    if (rawCommand.isNotEmpty()) {
-                        args.add("--")
-                        args.addAll(rawCommand)
-                    }
-                } else {
-                    args.add("-image")
-                    args.add(profile.imageRef)
-                    if (rawCommand.isNotEmpty()) {
-                        args.add("--")
-                        args.addAll(rawCommand)
-                    }
+                    args.addAll(rawCommand)
                 }
             }
         }
@@ -415,6 +393,7 @@ class GvxCommandBuilder(
         controlSock: File,
         guestArch: GuestLinuxArch = GuestLinuxArch.ARM64,
         readOnly: Boolean = false,
+        isRootfsVolume: Boolean = false,
     ): List<String> {
         require(SandboxProfile.isValidProfileId(helperProfileId)) {
             "helperProfileId must match [a-z0-9-]{3,32}"
@@ -424,6 +403,8 @@ class GvxCommandBuilder(
         }
         require(dnsPort in 1..65535) { "dnsPort must be within 1..65535" }
         val mode = if (readOnly) "ro" else "rw"
+        val volumeFlagName = if (isRootfsVolume) "-rootfs-volume" else "-v"
+        val volumeFlagArg = if (isRootfsVolume) volumeName else "$volumeName:/mnt/volume:$mode"
         return listOf(
             "run",
             "-m",
@@ -438,8 +419,8 @@ class GvxCommandBuilder(
             "-net=none",
             "-v",
             "${agentDir(guestArch).absolutePath}:/run/termvr-agent:ro",
-            "-v",
-            "$volumeName:/mnt/volume:$mode",
+            volumeFlagName,
+            volumeFlagArg,
             "--tmpfs",
             "/tmp",
             "--tmpfs",
@@ -572,14 +553,14 @@ class GvxCommandBuilder(
             args.add("${workspaceDir(profile.id).absolutePath}:/workspace:rw")
         }
 
-        if (profile.muxMode == MuxMode.STDIO_MUX || profile.persistentRootfs) {
+        if (profile.muxMode == MuxMode.STDIO_MUX) {
             args.add("-v")
             args.add("${agentDir(guestArch).absolutePath}:/run/termvr-agent:ro")
         }
 
         if (profile.persistentRootfs) {
-            args.add("-v")
-            args.add("${profile.rootfsVolumeName}:$PERSIST_ROOT_GUEST_DIR:rw")
+            args.add("-rootfs-volume")
+            args.add(profile.rootfsVolumeName)
         }
 
         for (volume in profile.volumes) {
@@ -645,7 +626,6 @@ class GvxCommandBuilder(
 
     companion object {
         const val AGENT_ENTRYPOINT_PATH: String = "/run/termvr-agent/termvr-agent"
-        const val PERSIST_ROOT_GUEST_DIR: String = "/.termvr-rootfs"
         const val DEFAULT_GUEST_TERM: String = "xterm-256color"
         const val DEFAULT_GUEST_COLORTERM: String = "truecolor"
         const val DEFAULT_GUEST_TERM_PROGRAM: String = "TermVR"

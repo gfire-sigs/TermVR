@@ -660,6 +660,15 @@ class AppViewModelsTest {
         val listedRootVol = filesVm.uiState.value.volumes.first { it.name == homeProfile.rootfsVolumeName }
         assertTrue(listedRootVol.mounts.any { it.profileId == homeProfile.id && it.guestMountPath == "/" })
 
+        // Browsing stopped persistent rootfs volume passes ownerProfile and isRootfsVolume = true
+        filesVm.browseVolume(homeProfile.rootfsVolumeName)
+        advanceUntilIdle()
+        val volCall = gateway.lastVolumeClientCall
+        assertEquals(homeProfile.id, volCall?.profile?.id)
+        assertEquals(homeProfile.rootfsVolumeName, volCall?.volumeName)
+        assertEquals(true, volCall?.readOnly)
+        assertEquals(true, volCall?.isRootfsVolume)
+
         // Deleting profile cleans up its rootfs-<id> volume
         homeVm.deleteProfile(homeProfile.id)
         advanceUntilIdle()
@@ -754,11 +763,19 @@ private class FakeGateway(private val rootDir: File) : SandboxRuntimeGateway {
     override val clipboardReadPrompt = MutableStateFlow<ClipboardReadPrompt?>(null)
     override val dnsProxyPort: Int = 1053
 
+    data class VolumeClientCall(
+        val profile: SandboxProfile,
+        val volumeName: String,
+        val readOnly: Boolean,
+        val isRootfsVolume: Boolean,
+    )
+
     val activeCheckpoints = mutableSetOf<String>()
     val appliedPortCalls = mutableListOf<Triple<String, Int, Boolean>>()
     val sharedFiles = mutableMapOf<String, ByteArray>()
     val namedVolumes = mutableListOf<RungvVolumeLsEntry>()
     var lastLiveProxyUpdate: OutboundProxyConfig? = null
+    var lastVolumeClientCall: VolumeClientCall? = null
 
     override fun refreshHostReadiness() = Unit
     override fun setNotificationsPermissionGranted(granted: Boolean) {
@@ -834,8 +851,12 @@ private class FakeGateway(private val rootDir: File) : SandboxRuntimeGateway {
         profile: SandboxProfile,
         volumeName: String,
         readOnly: Boolean,
+        isRootfsVolume: Boolean,
         block: suspend (MuxSessionClient, String) -> T,
-    ): T = throw UnsupportedOperationException("No volume mux in unit fake")
+    ): T {
+        lastVolumeClientCall = VolumeClientCall(profile, volumeName, readOnly, isRootfsVolume)
+        throw UnsupportedOperationException("No volume mux in unit fake")
+    }
 
     override fun getMuxClient(profileId: String): MuxSessionClient? = null
     override fun getRawPtyHandle(profileId: String): HostPtyHandle? = null

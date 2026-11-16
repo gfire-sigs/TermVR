@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,8 +17,6 @@ import (
 
 type agentConfig struct {
 	muxStdio             bool
-	execMode             bool
-	persistRootDir       string
 	proxyListen          string
 	transparentProxyPort int
 	makeRootRShared      bool
@@ -52,23 +51,15 @@ func main() {
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, errHelpRequested) {
-			logStderr("usage: termvr-agent --mux-stdio [--persist-root-dir /.termvr-rootfs] [--proxy-listen 127.0.0.1:1080] [--transparent-proxy-port 1081] [--make-root-rshared] [-- <initDaemonArgv...>]")
+			logStderr("usage: termvr-agent --mux-stdio [--proxy-listen 127.0.0.1:1080] [--transparent-proxy-port 1081] [--make-root-rshared] [-- <initDaemonArgv...>]")
 			os.Exit(0)
 		}
 		logStderr("termvr-agent: " + err.Error())
 		os.Exit(2)
 	}
 
-	if cfg.execMode {
-		if err := runExec(cfg); err != nil {
-			logStderr("termvr-agent: " + err.Error())
-			os.Exit(1)
-		}
-		return
-	}
-
 	if !cfg.muxStdio {
-		logStderr("termvr-agent: --mux-stdio or --exec is required")
+		logStderr("termvr-agent: --mux-stdio is required when running as guest PID 1")
 		os.Exit(2)
 	}
 
@@ -126,7 +117,7 @@ func parseFlags(args []string) (agentConfig, error) {
 		switch name {
 		case "h", "help":
 			return agentConfig{}, errHelpRequested
-		case "mux-stdio", "make-root-rshared", "exec":
+		case "mux-stdio", "make-root-rshared":
 			b := true
 			if hasEq {
 				var err error
@@ -134,15 +125,12 @@ func parseFlags(args []string) (agentConfig, error) {
 					return agentConfig{}, err
 				}
 			}
-			switch name {
-			case "mux-stdio":
+			if name == "mux-stdio" {
 				cfg.muxStdio = b
-			case "make-root-rshared":
+			} else {
 				cfg.makeRootRShared = b
-			case "exec":
-				cfg.execMode = b
 			}
-		case "proxy-listen", "transparent-proxy-port", "persist-root-dir":
+		case "proxy-listen", "transparent-proxy-port":
 			if !hasEq {
 				if i+1 >= len(args) {
 					return agentConfig{}, errors.New("flag -" + name + " requires an argument")
@@ -150,12 +138,9 @@ func parseFlags(args []string) (agentConfig, error) {
 				i++
 				val = args[i]
 			}
-			switch name {
-			case "proxy-listen":
+			if name == "proxy-listen" {
 				cfg.proxyListen = val
-			case "persist-root-dir":
-				cfg.persistRootDir = val
-			default:
+			} else {
 				port, err := strconv.Atoi(val)
 				if err != nil {
 					return agentConfig{}, errors.New("invalid --transparent-proxy-port value: " + val)
@@ -172,40 +157,10 @@ func parseFlags(args []string) (agentConfig, error) {
 	return cfg, nil
 }
 
-func runExec(cfg agentConfig) error {
-	if cfg.persistRootDir != "" {
-		if err := mux.SetupPersistentRoot(cfg.persistRootDir); err != nil {
-			return err
-		}
-	}
-	if cfg.makeRootRShared {
-		if err := mux.EnsureRootRShared(); err != nil {
-			logStderr("termvr-agent: warning: make-root-rshared failed: " + err.Error())
-		}
-	}
-	if err := mux.EnsureArm64CPUInfoPatched(); err != nil {
-		logStderr("termvr-agent: warning: patch cpuinfo failed: " + err.Error())
-	}
-	argv, err := mux.ResolveShellArgv(cfg.initDaemonArgv, "/")
-	if err != nil {
-		return err
-	}
-	exePath, err := mux.ResolveExecutable(argv[0], os.Environ())
-	if err != nil {
-		return err
-	}
-	return syscall.Exec(exePath, argv, os.Environ())
-}
-
 func runAgent(cfg agentConfig) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	if cfg.persistRootDir != "" {
-		if err := mux.SetupPersistentRoot(cfg.persistRootDir); err != nil {
-			return err
-		}
-	}
 	if cfg.makeRootRShared {
 		if err := mux.EnsureRootRShared(); err != nil {
 			logStderr("termvr-agent: warning: make-root-rshared failed: " + err.Error())
@@ -223,7 +178,7 @@ func runAgent(cfg agentConfig) error {
 		logStderr("termvr-agent: warning: setup bin wrappers in " + binDir + ": " + err.Error())
 	}
 
-	volumeRoots := discoverVolumeRootsWithOptions("/proc/mounts", cfg.persistRootDir != "")
+	volumeRoots := discoverVolumeRoots("/proc/mounts")
 	sess := mux.NewSession(mux.SessionConfig{
 		Reader:         os.Stdin,
 		Writer:         os.Stdout,
@@ -300,40 +255,85 @@ func runAgent(cfg agentConfig) error {
 }
 
 func discoverVolumeRoots(mountsPath string) []string {
-	return discoverVolumeRootsWithOptions(mountsPath, false)
-}
-
-func discoverVolumeRootsWithOptions(mountsPath string, includeRoot bool) []string {
-	roots := []string{"/workspace"}
+	// Include "/" so VOLUME_FS_OP can browse native -rootfs-volume overlays when enabled.
+	roots := []string{"/", "/workspace"}
 	raw, err := os.ReadFile(mountsPath)
 	if err != nil {
 		return roots
 	}
-	for _, entry := range mux.ParseProcMounts(string(raw)) {
-		mp := entry.MountPoint
-		allowRoot := includeRoot && mp == "/" && (entry.FSType == "ext4" || entry.FSType == "ext4lite")
-		if (allowRoot || mp != "/") &&
-			mp != "/proc" && !strings.HasPrefix(mp, "/proc/") &&
-			mp != "/sys" && !strings.HasPrefix(mp, "/sys/") &&
-			mp != "/dev" && !strings.HasPrefix(mp, "/dev/") &&
-			mp != "/tmp" && !strings.HasPrefix(mp, "/tmp/") &&
-			mp != "/run" && !strings.HasPrefix(mp, "/run/") {
-			switch entry.FSType {
-			case "ext4", "ext4lite", "hostfs", "9p", "virtiofs", "fuse":
-				found := false
-				for _, r := range roots {
-					if r == mp {
-						found = true
-						break
+	for rest := string(raw); rest != ""; {
+		var line string
+		line, rest, _ = strings.Cut(rest, "\n")
+		line = trimASCII(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		col := 0
+		var mountPointField string
+		for i := 0; i < len(line); {
+			for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+				i++
+			}
+			if i >= len(line) {
+				break
+			}
+			start := i
+			for i < len(line) && line[i] != ' ' && line[i] != '\t' {
+				i++
+			}
+			if col == 1 {
+				mountPointField = unescapeMountField(line[start:i])
+			} else if col == 2 {
+				fsType := line[start:i]
+				mp := filepath.Clean(mountPointField)
+				if mp != "/" &&
+					mp != "/proc" && !strings.HasPrefix(mp, "/proc/") &&
+					mp != "/sys" && !strings.HasPrefix(mp, "/sys/") &&
+					mp != "/dev" && !strings.HasPrefix(mp, "/dev/") &&
+					mp != "/tmp" && !strings.HasPrefix(mp, "/tmp/") &&
+					mp != "/run" && !strings.HasPrefix(mp, "/run/") {
+					switch fsType {
+					case "ext4", "ext4lite", "hostfs", "9p", "virtiofs", "fuse":
+						if !slices.Contains(roots, mp) {
+							roots = append(roots, mp)
+						}
 					}
 				}
-				if !found {
-					roots = append(roots, mp)
-				}
+				break
 			}
+			col++
 		}
 	}
 	return roots
+}
+
+func unescapeMountField(s string) string {
+	if strings.IndexByte(s, '\\') < 0 {
+		return s
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			var b byte
+			switch s[i+1 : i+4] {
+			case "040":
+				b = ' '
+			case "011":
+				b = '\t'
+			case "012":
+				b = '\n'
+			case "134":
+				b = '\\'
+			}
+			if b != 0 {
+				out = append(out, b)
+				i += 3
+				continue
+			}
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
 }
 
 func trimASCII(s string) string {

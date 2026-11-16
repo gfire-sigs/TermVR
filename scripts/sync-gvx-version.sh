@@ -21,6 +21,7 @@ EXPECTED_UPDATE_CHECK_MODE = r"Tags ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$"
 TAG_RE = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
 EXPECT_TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$")
 SHA40_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+GVX_STAMP_RE = re.compile(r"^1([0-9]{3})(20[0-9]{2})(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})$")
 STAMP_RE = re.compile(r"^[0-9]*(20[0-9]{2})(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})$")
 VERSION_CODE_RE = re.compile(r"^([2-9][0-9])(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})([0-9])$")
 
@@ -56,6 +57,36 @@ def parse_gvx_tag(tag: str) -> tuple[int, int, int, str]:
         raise SyncError(f"Invalid gvx tag '{tag}' (expected v<major>.<minor>.<patch>)")
     major_s, minor_s, patch_s = match.groups()
     return int(major_s), int(minor_s), int(patch_s), patch_s
+
+
+def extract_gvx_stamp(patch_str: str) -> int | None:
+    match = GVX_STAMP_RE.match(patch_str)
+    if not match:
+        return None
+    ccc_s, year_s, month_s, day_s, _ss_s = match.groups()
+    year, month, day = int(year_s), int(month_s), int(day_s)
+    try:
+        datetime.date(year, month, day)
+    except ValueError:
+        return None
+    if year < 2020 or year > 2099:
+        return None
+    return int(ccc_s)
+
+
+def compute_gvx_stamp_version_code(major: int, minor: int, ccc: int, app_rev: int) -> int:
+    if not (0 <= major <= 18):
+        raise SyncError(f"gvx major {major} out of supported 0..18 range")
+    if not (0 <= minor <= 999):
+        raise SyncError(f"gvx minor {minor} out of supported 0..999 range")
+    if not (0 <= ccc <= 999):
+        raise SyncError(f"gvx counter {ccc} out of supported 0..999 range")
+    if not (0 <= app_rev <= 9):
+        raise SyncError(f"app_revision must be in 0..9, got {app_rev}")
+    version_code = (major + 3) * 100_000_000 + minor * 100_000 + ccc * 10 + app_rev
+    if version_code <= 261_109_001 or version_code > 2_147_483_647:
+        raise SyncError(f"Computed versionCode {version_code} violates monotonic 32-bit Android Int bounds")
+    return version_code
 
 
 def extract_embedded_stamp(patch_str: str) -> tuple[int, int, int, int] | None:
@@ -134,19 +165,23 @@ def compute_versions(
     base_name = f"{major}.{minor}.{patch_str}"
     version_name = base_name if app_rev == 0 else f"{base_name}.{app_rev}"
 
-    stamp = extract_embedded_stamp(patch_str)
-    if stamp is not None:
-        yy, mm, dd, gg = stamp
+    ccc = extract_gvx_stamp(patch_str)
+    if ccc is not None:
+        version_code = compute_gvx_stamp_version_code(major, minor, ccc, app_rev)
     else:
-        commit_date = resolve_commit_utc_date(repo, commit_sha.lower(), explicit_commit_date)
-        if commit_date.year < 2020 or commit_date.year > 2099:
-            raise SyncError(f"Commit UTC year {commit_date.year} out of supported 2020..2099 range")
-        yy = commit_date.year % 100
-        mm = commit_date.month
-        dd = commit_date.day
-        gg = patch % 100
+        stamp = extract_embedded_stamp(patch_str)
+        if stamp is not None:
+            yy, mm, dd, gg = stamp
+        else:
+            commit_date = resolve_commit_utc_date(repo, commit_sha.lower(), explicit_commit_date)
+            if commit_date.year < 2020 or commit_date.year > 2099:
+                raise SyncError(f"Commit UTC year {commit_date.year} out of supported 2020..2099 range")
+            yy = commit_date.year % 100
+            mm = commit_date.month
+            dd = commit_date.day
+            gg = patch % 100
 
-    version_code = int(f"{yy:02d}{mm:02d}{dd:02d}{gg:02d}{app_rev}")
+        version_code = int(f"{yy:02d}{mm:02d}{dd:02d}{gg:02d}{app_rev}")
     if version_code <= 0 or version_code > 2_147_483_647:
         raise SyncError(f"Computed versionCode {version_code} overflows signed 32-bit Android Int")
     return version_name, version_code
@@ -319,25 +354,31 @@ def run_check(repo_root: Path, expect_tag: str | None) -> None:
     if version_name != expected_name:
         raise SyncError(f"source-lock.json termvr.version_name '{version_name}' != expected '{expected_name}'")
 
-    stamp = extract_embedded_stamp(patch_str)
-    if stamp is not None:
-        yy, mm, dd, gg = stamp
-        expected_code = int(f"{yy:02d}{mm:02d}{dd:02d}{gg:02d}{app_rev}")
+    ccc = extract_gvx_stamp(patch_str)
+    if ccc is not None:
+        expected_code = compute_gvx_stamp_version_code(major, minor, ccc, app_rev)
         if version_code != expected_code:
             raise SyncError(f"source-lock.json termvr.version_code {version_code} != expected {expected_code}")
     else:
-        code_match = VERSION_CODE_RE.match(str(version_code))
-        if not code_match:
-            raise SyncError(f"version_code {version_code} does not match YYMMDDGGR format")
-        yy_s, mm_s, dd_s, gg_s, rev_s = code_match.groups()
-        try:
-            datetime.date(2000 + int(yy_s), int(mm_s), int(dd_s))
-        except ValueError as exc:
-            raise SyncError(f"version_code {version_code} embeds invalid calendar date") from exc
-        if int(gg_s) != patch % 100 or int(rev_s) != app_rev:
-            raise SyncError(
-                f"version_code {version_code} GG/R ({gg_s}/{rev_s}) != expected ({patch % 100:02d}/{app_rev})"
-            )
+        stamp = extract_embedded_stamp(patch_str)
+        if stamp is not None:
+            yy, mm, dd, gg = stamp
+            expected_code = int(f"{yy:02d}{mm:02d}{dd:02d}{gg:02d}{app_rev}")
+            if version_code != expected_code:
+                raise SyncError(f"source-lock.json termvr.version_code {version_code} != expected {expected_code}")
+        else:
+            code_match = VERSION_CODE_RE.match(str(version_code))
+            if not code_match:
+                raise SyncError(f"version_code {version_code} does not match YYMMDDGGR format")
+            yy_s, mm_s, dd_s, gg_s, rev_s = code_match.groups()
+            try:
+                datetime.date(2000 + int(yy_s), int(mm_s), int(dd_s))
+            except ValueError as exc:
+                raise SyncError(f"version_code {version_code} embeds invalid calendar date") from exc
+            if int(gg_s) != patch % 100 or int(rev_s) != app_rev:
+                raise SyncError(
+                    f"version_code {version_code} GG/R ({gg_s}/{rev_s}) != expected ({patch % 100:02d}/{app_rev})"
+                )
 
     versions = parse_toml_versions(toml_path.read_text(encoding="utf-8"))
     checks = {

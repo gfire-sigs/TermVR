@@ -331,7 +331,7 @@ class HostReadinessAndSupervisorTest {
             assertFalse("devbox" in supervisor.lanReconfirmationRequired.value)
             assertTrue(launchedCommands.last().any { it.startsWith("0.0.0.0:") })
 
-            // 4. Stopped volume helper launches with named volume mounted at /mnt/volume.
+            // 4. Stopped volume helper launches with named volume mounted at /mnt/volume or -rootfs-volume at /.
             supervisor.stopSandbox("devbox")
             launchedCommands.clear()
             val helperMount = supervisor.withStoppedVolumeHelper(
@@ -343,6 +343,22 @@ class HostReadinessAndSupervisorTest {
             }
             assertEquals("/mnt/volume", helperMount)
             assertTrue(launchedCommands.last().contains("proj-vol:/mnt/volume:ro"))
+
+            launchedCommands.clear()
+            val rootfsMount = supervisor.withStoppedVolumeHelper(
+                volumeName = "rootfs-devbox",
+                helperImageRef = "debian:trixie-slim",
+                readOnly = true,
+                isRootfsVolume = true,
+            ) { _, mountPath ->
+                mountPath
+            }
+            assertEquals("/", rootfsMount)
+            val rootHelperCmd = launchedCommands.last()
+            val rootVolIdx = rootHelperCmd.indexOf("-rootfs-volume")
+            assertTrue(rootVolIdx >= 0)
+            assertEquals("rootfs-devbox", rootHelperCmd[rootVolIdx + 1])
+            assertFalse(rootHelperCmd.any { it.contains(":/mnt/volume") })
 
             // 5. Superseded checkpoint notice + cold boot fallback.
             checkpointController.markSuperseded("devbox", "Upgraded gvx")

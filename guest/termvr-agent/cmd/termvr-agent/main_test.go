@@ -51,7 +51,21 @@ func TestParseAgentFlagsRejectsInvalidTransparentPort(t *testing.T) {
 	}
 }
 
-// TestDiscoverVolumeRootsFromProcMounts verifies mounted ext4/hostfs/9p volume roots
+// TestParseAgentFlagsRejectsRemovedPersistAndExecFlags verifies obsolete flags are rejected.
+func TestParseAgentFlagsRejectsRemovedPersistAndExecFlags(t *testing.T) {
+	t.Parallel()
+
+	for _, bad := range [][]string{
+		{"--mux-stdio", "--persist-root-dir", "/.termvr-rootfs"},
+		{"--exec", "--", "/bin/sh"},
+	} {
+		if _, err := parseFlags(bad); err == nil {
+			t.Fatalf("expected parseFlags to reject removed flag in %v", bad)
+		}
+	}
+}
+
+// TestDiscoverVolumeRootsFromProcMounts verifies "/" and mounted ext4/hostfs/9p volume roots
 // are extracted while pseudo-filesystems (/proc, /sys, /dev, /tmp, /run) are excluded.
 func TestDiscoverVolumeRootsFromProcMounts(t *testing.T) {
 	t.Parallel()
@@ -66,71 +80,22 @@ func TestDiscoverVolumeRootsFromProcMounts(t *testing.T) {
 		"none /run/termvr-agent hostfs ro 0 0\n" +
 		"none /workspace hostfs rw 0 0\n" +
 		"/dev/loop0 /var/lib/docker ext4 rw 0 0\n" +
-		"/dev/loop1 /var/lib/rancher/k3s ext4 rw 0 0\n"
+		"/dev/loop1 /var/lib/rancher/k3s ext4 rw 0 0\n" +
+		"/dev/loop2 /var/lib/my\\040data ext4lite rw 0 0\n"
 	if err := os.WriteFile(mountsFile, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	roots := discoverVolumeRoots(mountsFile)
-	if !slices.Contains(roots, "/workspace") {
-		t.Fatalf("expected /workspace in roots: %v", roots)
+	for _, expected := range []string{"/", "/workspace", "/var/lib/docker", "/var/lib/rancher/k3s", "/var/lib/my data"} {
+		if !slices.Contains(roots, expected) {
+			t.Fatalf("expected %q in roots: %v", expected, roots)
+		}
 	}
-	if !slices.Contains(roots, "/var/lib/docker") {
-		t.Fatalf("expected /var/lib/docker in roots: %v", roots)
-	}
-	if !slices.Contains(roots, "/var/lib/rancher/k3s") {
-		t.Fatalf("expected /var/lib/rancher/k3s in roots: %v", roots)
-	}
-	for _, forbidden := range []string{"/", "/proc", "/sys", "/tmp", "/run", "/run/termvr-agent"} {
+	for _, forbidden := range []string{"/proc", "/sys", "/tmp", "/run", "/run/termvr-agent"} {
 		if slices.Contains(roots, forbidden) {
 			t.Fatalf("forbidden root %q leaked into %v", forbidden, roots)
 		}
-	}
-
-	persistMountsFile := filepath.Join(t.TempDir(), "persist-mounts")
-	persistContent := "" +
-		"none / ext4 rw 0 0\n" +
-		"proc /proc proc rw 0 0\n" +
-		"none /workspace hostfs rw 0 0\n"
-	if err := os.WriteFile(persistMountsFile, []byte(persistContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	persistRoots := discoverVolumeRootsWithOptions(persistMountsFile, true)
-	if !slices.Contains(persistRoots, "/") {
-		t.Fatalf("expected / in persistent roots when includeRoot=true: %v", persistRoots)
-	}
-}
-
-// TestParsePersistentRootAndExecFlags verifies --persist-root-dir and --exec flag parsing.
-func TestParsePersistentRootAndExecFlags(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := parseFlags([]string{
-		"--persist-root-dir", "/.termvr-rootfs",
-		"--make-root-rshared",
-		"--exec",
-		"--",
-		"/bin/bash", "-l",
-	})
-	if err != nil {
-		t.Fatalf("parseFlags --exec failed: %v", err)
-	}
-	if !cfg.execMode || cfg.muxStdio {
-		t.Fatalf("unexpected mode flags: exec=%v muxStdio=%v", cfg.execMode, cfg.muxStdio)
-	}
-	if cfg.persistRootDir != "/.termvr-rootfs" {
-		t.Fatalf("persistRootDir = %q, want /.termvr-rootfs", cfg.persistRootDir)
-	}
-	if !cfg.makeRootRShared {
-		t.Fatal("expected makeRootRShared=true")
-	}
-	wantArgv := []string{"/bin/bash", "-l"}
-	if !slices.Equal(cfg.initDaemonArgv, wantArgv) {
-		t.Fatalf("initDaemonArgv = %v, want %v", cfg.initDaemonArgv, wantArgv)
-	}
-
-	if _, err := parseFlags([]string{"--persist-root-dir"}); err == nil {
-		t.Fatal("expected parseFlags to reject missing --persist-root-dir value")
 	}
 }
 

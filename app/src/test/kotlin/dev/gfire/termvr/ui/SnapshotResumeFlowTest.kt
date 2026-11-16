@@ -336,6 +336,7 @@ private class PipedMuxGateway(
         profile: SandboxProfile,
         volumeName: String,
         readOnly: Boolean,
+        isRootfsVolume: Boolean,
         block: suspend (MuxSessionClient, String) -> T,
     ): T = throw UnsupportedOperationException()
 

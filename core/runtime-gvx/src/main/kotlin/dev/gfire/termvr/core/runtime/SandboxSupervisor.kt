@@ -318,7 +318,7 @@ class SandboxSupervisor(
             ensureBridgesRunning()
             proxyBridge.updatePolicy(profile.network.outboundProxy, profile.network.isolateLanEgress)
             commandBuilder.ensureHostDirectories(profile, clearScratchTmp = sessions.isEmpty())
-            if (profile.muxMode == MuxMode.STDIO_MUX || profile.persistentRootfs) {
+            if (profile.muxMode == MuxMode.STDIO_MUX) {
                 agentExtractor.ensureExtracted(guestArch)
             }
 
@@ -767,6 +767,7 @@ class SandboxSupervisor(
         volumeName: String,
         helperImageRef: String,
         readOnly: Boolean = false,
+        isRootfsVolume: Boolean = false,
         block: suspend (MuxSessionClient, String) -> T,
     ): T = withContext(Dispatchers.IO) {
         ensureBridgesRunning()
@@ -784,6 +785,7 @@ class SandboxSupervisor(
             controlSock = controlSock,
             guestArch = guestArch,
             readOnly = readOnly,
+            isRootfsVolume = isRootfsVolume,
         )
         val env = commandBuilder.buildHostEnvironment(trustHostCaCerts = false)
         val proc = processLauncher.launch(args, env, null)
@@ -796,7 +798,7 @@ class SandboxSupervisor(
         try {
             mux.start(sendHostHello = true)
             mux.awaitHello()
-            block(mux, "/mnt/volume")
+            block(mux, if (isRootfsVolume) "/" else "/mnt/volume")
         } finally {
             mux.close()
             proc.destroyGracefully()

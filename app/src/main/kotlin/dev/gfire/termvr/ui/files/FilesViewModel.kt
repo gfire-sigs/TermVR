@@ -581,8 +581,11 @@ class FilesViewModel(
 
     fun refreshVolume() {
         val state = uiState.value
-        val volumeName = state.selectedVolumeName ?: return
-        val profile = state.selectedProfile ?: return
+        val local = localState.value
+        val volumeName = local.selectedVolumeName ?: state.selectedVolumeName ?: return
+        val profile = state.profiles.firstOrNull {
+            it.id == (local.selectedProfileId ?: state.selectedProfileId)
+        } ?: state.selectedProfile ?: return
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null)
             runCatching {
@@ -679,19 +682,29 @@ class FilesViewModel(
         readOnly: Boolean,
         block: suspend (dev.gfire.termvr.core.runtime.MuxSessionClient, String) -> T,
     ): T {
-        val liveMux = runtimeGateway.getMuxClient(profile.id)
+        val ownerProfile = uiState.value.profiles.firstOrNull {
+            it.persistentRootfs && it.rootfsVolumeName == volumeName
+        }
+        val effectiveProfile = ownerProfile ?: profile
+        val liveMux = runtimeGateway.getMuxClient(effectiveProfile.id)
         if (liveMux != null) {
-            val mountPoint = if (profile.persistentRootfs && profile.rootfsVolumeName == volumeName) {
+            val mountPoint = if (ownerProfile != null) {
                 "/"
             } else {
-                profile.volumes
+                effectiveProfile.volumes
                     .firstOrNull { it.sourceName == volumeName && it.kind == VolumeKind.NAMED_EXT4LITE }
                     ?.guestMountPath
                     ?: "/data"
             }
             return block(liveMux, mountPoint)
         }
-        return runtimeGateway.withVolumeClient(profile, volumeName, readOnly, block)
+        return runtimeGateway.withVolumeClient(
+            profile = effectiveProfile,
+            volumeName = volumeName,
+            readOnly = readOnly,
+            isRootfsVolume = ownerProfile != null,
+            block = block,
+        )
     }
 
     private fun joinGuestPath(base: String, name: String): String {
