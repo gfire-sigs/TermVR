@@ -11,10 +11,16 @@ import dev.gfire.termvr.core.model.ProxyEndpointSpec
 import dev.gfire.termvr.core.model.ProxyProtocol
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
+import dev.gfire.termvr.core.runtime.PortConflictDetector
 import dev.gfire.termvr.core.runtime.ProxyTestResult
 import dev.gfire.termvr.core.runtime.PublishedPortMapping
 import dev.gfire.termvr.runtime.SandboxRuntimeGateway
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +32,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Represents a staged port-forward update awaiting Checkpoint-and-Restore or Cold Restart.
@@ -33,6 +40,7 @@ import kotlinx.coroutines.launch
 data class StagedPortApplyRequest(
     val profileId: String,
     val updatedRules: List<PortForwardRule>,
+    val previousRules: List<PortForwardRule> = emptyList(),
 )
 
 /**
@@ -77,6 +85,7 @@ class NetworkViewModel(
     private val profileRepository: ProfileRepository,
     private val runtimeGateway: SandboxRuntimeGateway,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val localState = MutableStateFlow(NetworkLocalState())
 
@@ -95,7 +104,6 @@ class NetworkViewModel(
         val isRunning = selected != null && rt.states[selected.id] == SandboxRunState.RUNNING
         val baselineNetRaw = selected?.let { local.runningTransparentTcpBaseline[it.id] }
         val needsNetRawRestart = isRunning &&
-            selected != null &&
             baselineNetRaw != null &&
             selected.network.outboundProxy.transparentTcp != baselineNetRaw
 
@@ -150,6 +158,71 @@ class NetworkViewModel(
     }
 
     /**
+     * Validates a candidate port forward rule before LAN confirmation or persistence.
+     */
+    fun validateCandidatePortRule(
+        protocol: ForwardProtocol,
+        listenHost: ListenHost,
+        hostPort: Int,
+        guestPort: Int,
+    ): Boolean {
+        val currentUi = uiState.value
+        val profile = currentUi.selectedProfile ?: return false
+        if (protocol == ForwardProtocol.UNIX_STREAM) {
+            localState.value = localState.value.copy(
+                errorMessage = "Numeric port rules support TCP and UDP only.",
+                statusMessage = null,
+            )
+            return false
+        }
+        if (hostPort !in 1..65535 || guestPort !in 1..65535) {
+            localState.value = localState.value.copy(
+                errorMessage = "Port numbers must be in 1..65535.",
+                statusMessage = null,
+            )
+            return false
+        }
+        if (PortForwardRule.isLanDockerPortBlocked(listenHost, hostPort, hostPort, guestPort, guestPort)) {
+            localState.value = localState.value.copy(
+                errorMessage = "Port 2375 Docker daemon exposure on LAN is blocked for security. Bind to 127.0.0.1 instead.",
+                statusMessage = null,
+            )
+            return false
+        }
+        val probeRule = PortForwardRule(
+            id = "probe",
+            protocol = protocol,
+            listenHost = listenHost,
+            hostPortStart = hostPort,
+            hostPortEnd = hostPort,
+            guestPortStart = guestPort,
+            guestPortEnd = guestPort,
+        )
+        val candidateRules = profile.portForwards + probeRule
+        PortConflictDetector.detectSelfRuleConflict(candidateRules, profile.displayName)?.let { match ->
+            localState.value = localState.value.copy(
+                errorMessage = PortConflictDetector.formatConflictMessage(match),
+                statusMessage = null,
+            )
+            return false
+        }
+        PortConflictDetector.detectCrossProfileConflict(
+            targetProfileId = profile.id,
+            candidateRules = candidateRules,
+            profiles = currentUi.profiles,
+            runStates = currentUi.runStates,
+            publishedPortsByProfile = currentUi.publishedPorts,
+        )?.let { match ->
+            localState.value = localState.value.copy(
+                errorMessage = PortConflictDetector.formatConflictMessage(match),
+                statusMessage = null,
+            )
+            return false
+        }
+        return true
+    }
+
+    /**
      * Validates and adds a port forward rule, blocking port 2375 LAN exposure and staging live restarts.
      */
     fun addPortRule(
@@ -159,14 +232,7 @@ class NetworkViewModel(
         guestPort: Int,
     ) {
         val profile = uiState.value.selectedProfile ?: return
-        if (hostPort !in 1..65535 || guestPort !in 1..65535) {
-            localState.value = localState.value.copy(errorMessage = "Port numbers must be in 1..65535.")
-            return
-        }
-        if (PortForwardRule.isLanDockerPortBlocked(listenHost, hostPort, hostPort, guestPort, guestPort)) {
-            localState.value = localState.value.copy(
-                errorMessage = "Port 2375 Docker daemon exposure on LAN is blocked for security. Bind to 127.0.0.1 instead.",
-            )
+        if (!validateCandidatePortRule(protocol, listenHost, hostPort, guestPort)) {
             return
         }
         val newRule = PortForwardRule(
@@ -203,8 +269,23 @@ class NetworkViewModel(
     fun confirmStagedPortApply(checkpointAndRestore: Boolean) {
         val staged = localState.value.stagedPortApply ?: return
         scope.launch {
-            localState.value = localState.value.copy(busy = true, stagedPortApply = null, errorMessage = null)
+            localState.value = localState.value.copy(
+                busy = true,
+                stagedPortApply = null,
+                errorMessage = null,
+                statusMessage = null,
+            )
             runCatching {
+                val currentUi = uiState.value
+                PortConflictDetector.detectCrossProfileConflict(
+                    targetProfileId = staged.profileId,
+                    candidateRules = staged.updatedRules,
+                    profiles = currentUi.profiles,
+                    runStates = currentUi.runStates,
+                    publishedPortsByProfile = currentUi.publishedPorts,
+                )?.let { match ->
+                    throw PortConflictDetector.toException(match)
+                }
                 runtimeGateway.applyPortForwards(
                     profileId = staged.profileId,
                     updatedRules = staged.updatedRules,
@@ -218,8 +299,15 @@ class NetworkViewModel(
                     },
                 )
             }.onFailure { err ->
+                if (err is CancellationException) throw err
+                runCatching {
+                    profileRepository.getProfile(staged.profileId)?.let { existing ->
+                        profileRepository.upsertProfile(existing.copy(portForwards = staged.previousRules))
+                    }
+                }
                 localState.value = localState.value.copy(
                     errorMessage = err.message ?: "Failed to apply port forward changes",
+                    statusMessage = null,
                 )
             }
             localState.value = localState.value.copy(busy = false)
@@ -237,6 +325,7 @@ class NetworkViewModel(
                 runtimeGateway.startOrResumeSandbox(profile, reconfirmLan = true)
                 localState.value = localState.value.copy(statusMessage = "Confirmed LAN binding on active Wi-Fi.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "LAN confirmation failed")
             }
             localState.value = localState.value.copy(busy = false)
@@ -256,6 +345,7 @@ class NetworkViewModel(
                 runtimeGateway.applyPortForwards(profile.id, safeRules, checkpointAndRestore = false)
                 localState.value = localState.value.copy(statusMessage = "Downgraded all LAN rules to 127.0.0.1.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Downgrade failed")
             }
             localState.value = localState.value.copy(busy = false)
@@ -325,6 +415,7 @@ class NetworkViewModel(
                 }
                 localState.value = localState.value.copy(statusMessage = notice)
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Invalid proxy settings")
             }
         }
@@ -342,6 +433,7 @@ class NetworkViewModel(
                 runtimeGateway.startOrResumeSandbox(profile)
                 localState.value = localState.value.copy(statusMessage = "Restarted sandbox with updated --net-raw mode.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Restart failed")
             }
             localState.value = localState.value.copy(busy = false)
@@ -373,34 +465,98 @@ class NetworkViewModel(
                 profileRepository.upsertProfile(updated)
                 localState.value = localState.value.copy(statusMessage = "Updated network backend to ${backend.name}.")
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Failed to update backend")
+            }
+        }
+    }
+
+    fun reportWireGuardImportError(message: String) {
+        localState.value = localState.value.copy(
+            errorMessage = message.trim().ifEmpty { "WireGuard import failed." },
+            statusMessage = null,
+        )
+    }
+
+    /**
+     * Reads a SAF WireGuard document stream up to 64 KiB, sanitizes its filename, and persists it.
+     */
+    fun importWireGuardConfigFromStream(
+        rawDisplayName: String?,
+        declaredSizeBytes: Long? = null,
+        fallbackName: String = "wg-${System.currentTimeMillis()}",
+        openStream: () -> InputStream?,
+    ) {
+        scope.launch {
+            localState.value = localState.value.copy(errorMessage = null, statusMessage = null)
+            runCatching {
+                if (declaredSizeBytes != null && declaredSizeBytes > MAX_WIREGUARD_CONFIG_BYTES.toLong()) {
+                    throw IllegalArgumentException(WIREGUARD_SIZE_LIMIT_ERROR)
+                }
+                val configText = withContext(ioDispatcher) {
+                    val stream = openStream() ?: throw IOException("Unable to read selected WireGuard config file.")
+                    stream.use { input ->
+                        readBoundedWireGuardConfig(
+                            input = input,
+                            maxBytes = MAX_WIREGUARD_CONFIG_BYTES,
+                            declaredSizeBytes = declaredSizeBytes,
+                        )
+                    }
+                }
+                val cleanName = sanitizeWireGuardConfigName(rawDisplayName, fallbackName)
+                persistImportedWireGuardConfig(cleanName, configText)
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "WireGuard import failed.",
+                    statusMessage = null,
+                )
             }
         }
     }
 
     fun importWireGuardConfig(name: String, configText: String) {
         scope.launch {
+            localState.value = localState.value.copy(errorMessage = null, statusMessage = null)
             runCatching {
-                profileRepository.saveWireGuardConfig(name, configText)
-                refreshWireGuardConfigs()
-                val profile = uiState.value.selectedProfile
-                if (profile != null) {
-                    val updated = profile.copy(
-                        network = profile.network.copy(
-                            backend = NetBackend.WIREGUARD,
-                            wireGuardConfigName = name,
-                        ),
-                    )
-                    profileRepository.upsertProfile(updated)
+                val utf8Bytes = configText.toByteArray(Charsets.UTF_8).size
+                require(utf8Bytes <= MAX_WIREGUARD_CONFIG_BYTES) {
+                    WIREGUARD_SIZE_LIMIT_ERROR
                 }
-                localState.value = localState.value.copy(
-                    statusMessage = "Imported WireGuard profile \"$name\".",
-                    errorMessage = null,
-                )
+                val cleanName = sanitizeWireGuardConfigName(name, "wg-${System.currentTimeMillis()}")
+                persistImportedWireGuardConfig(cleanName, configText)
             }.onFailure { err ->
-                localState.value = localState.value.copy(errorMessage = err.message ?: "WireGuard import failed")
+                if (err is CancellationException) throw err
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "WireGuard import failed.",
+                    statusMessage = null,
+                )
             }
         }
+    }
+
+    private suspend fun persistImportedWireGuardConfig(cleanName: String, configText: String) {
+        profileRepository.saveWireGuardConfig(cleanName, configText)
+        val names = runCatching { profileRepository.listWireGuardConfigNames() }.getOrDefault(emptyList())
+        val selectedId = localState.value.selectedProfileId
+        val latestProfiles = profileRepository.observeProfiles().first()
+        val profile = uiState.value.selectedProfile
+            ?: latestProfiles.firstOrNull { it.id == selectedId }
+            ?: latestProfiles.firstOrNull()
+        if (profile != null) {
+            val updated = profile.copy(
+                network = profile.network.copy(
+                    backend = NetBackend.WIREGUARD,
+                    wireGuardConfigName = cleanName,
+                ),
+            )
+            profileRepository.upsertProfile(updated)
+        }
+        localState.value = localState.value.copy(
+            wireGuardConfigs = names,
+            statusMessage = "Imported WireGuard profile \"$cleanName\".",
+            errorMessage = null,
+        )
     }
 
     fun openUrlInCustomTab(url: String) {
@@ -408,6 +564,10 @@ class NetworkViewModel(
     }
 
     private fun applyUpdatedPortRules(profile: SandboxProfile, nextRules: List<PortForwardRule>) {
+        val previousRules = localState.value.stagedPortApply
+            ?.takeIf { it.profileId == profile.id }
+            ?.previousRules
+            ?: profile.portForwards
         localState.value = localState.value.copy(errorMessage = null)
         scope.launch {
             runCatching {
@@ -416,7 +576,11 @@ class NetworkViewModel(
                 val isRunning = uiState.value.runStates[profile.id] == SandboxRunState.RUNNING
                 if (isRunning) {
                     localState.value = localState.value.copy(
-                        stagedPortApply = StagedPortApplyRequest(profile.id, nextRules),
+                        stagedPortApply = StagedPortApplyRequest(
+                            profileId = profile.id,
+                            updatedRules = nextRules,
+                            previousRules = previousRules,
+                        ),
                         errorMessage = null,
                     )
                 } else {
@@ -426,7 +590,11 @@ class NetworkViewModel(
                     )
                 }
             }.onFailure { err ->
-                localState.value = localState.value.copy(errorMessage = err.message ?: "Invalid port rule")
+                if (err is CancellationException) throw err
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "Invalid port rule",
+                    statusMessage = null,
+                )
             }
         }
     }
@@ -448,6 +616,75 @@ class NetworkViewModel(
         val ports: Map<String, List<PublishedPortMapping>>,
         val reconfirm: Set<String>,
     )
+
+    companion object {
+        const val MAX_WIREGUARD_CONFIG_BYTES: Int = 64 * 1024
+        private const val WIREGUARD_SIZE_LIMIT_ERROR =
+            "WireGuard configuration exceeds the 64 KiB size limit."
+        private val UNSAFE_WG_NAME_CHARS = Regex("[^a-zA-Z0-9._-]+")
+        private val REPEATED_DASHES = Regex("-+")
+
+        /**
+         * Sanitizes a SAF display name into a valid WireGuard profile name without `.conf`.
+         */
+        fun sanitizeWireGuardConfigName(
+            rawDisplayName: String?,
+            fallbackName: String = "wg-imported",
+        ): String {
+            if (rawDisplayName.isNullOrBlank()) return fallbackName
+            val baseName = rawDisplayName
+                .substringAfterLast('/')
+                .substringAfterLast('\\')
+                .trim()
+            val withoutExt = if (baseName.endsWith(".conf", ignoreCase = true)) {
+                baseName.dropLast(5)
+            } else {
+                baseName
+            }
+            val cleaned = withoutExt
+                .replace(UNSAFE_WG_NAME_CHARS, "-")
+                .replace(REPEATED_DASHES, "-")
+                .trim('.', '-')
+                .take(64)
+                .trimEnd('.', '-')
+            return if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") {
+                fallbackName
+            } else {
+                cleaned
+            }
+        }
+
+        /**
+         * Reads UTF-8 WireGuard configuration text while enforcing a strict [maxBytes] cap.
+         */
+        fun readBoundedWireGuardConfig(
+            input: InputStream,
+            maxBytes: Int = MAX_WIREGUARD_CONFIG_BYTES,
+            declaredSizeBytes: Long? = null,
+        ): String {
+            require(declaredSizeBytes == null || declaredSizeBytes <= maxBytes.toLong()) {
+                WIREGUARD_SIZE_LIMIT_ERROR
+            }
+            val buffer = ByteArray(8192)
+            val out = ByteArrayOutputStream(minOf(maxBytes, 4096))
+            var totalBytes = 0
+            while (true) {
+                val readCount = input.read(buffer)
+                if (readCount < 0) break
+                if (readCount == 0) continue
+                totalBytes += readCount
+                require(totalBytes <= maxBytes) {
+                    WIREGUARD_SIZE_LIMIT_ERROR
+                }
+                out.write(buffer, 0, readCount)
+            }
+            val decoded = out.toByteArray().toString(Charsets.UTF_8).removePrefix("\uFEFF")
+            require(decoded.isNotBlank()) {
+                "Selected WireGuard configuration file is empty."
+            }
+            return decoded
+        }
+    }
 }
 
 /**

@@ -2,7 +2,11 @@ package dev.gfire.termvr.ui.network
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentResolver
 import android.content.Context
+import android.database.Cursor
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -82,6 +86,7 @@ fun NetworkScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val appContext = context.applicationContext
     val monoFont = LocalTermVrMonoFontFamily.current
     val selectedProfile = state.selectedProfile
 
@@ -97,11 +102,24 @@ fun NetworkScreen(
     ) { uri ->
         if (uri != null) {
             runCatching {
-                val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    ?: return@rememberLauncherForActivityResult
-                val name = "wg-${System.currentTimeMillis()}"
-                viewModel.importWireGuardConfig(name, content)
-            }
+                querySafDocumentMetadata(appContext.contentResolver, uri)
+            }.fold(
+                onSuccess = { meta ->
+                    val rawName = meta.displayName?.takeIf { it.isNotBlank() }
+                        ?: uri.lastPathSegment?.takeIf { uri.scheme == "file" }
+                    viewModel.importWireGuardConfigFromStream(
+                        rawDisplayName = rawName,
+                        declaredSizeBytes = meta.sizeBytes,
+                        openStream = { appContext.contentResolver.openInputStream(uri) },
+                    )
+                },
+                onFailure = { err ->
+                    viewModel.reportWireGuardImportError(
+                        err.message?.takeIf { it.isNotBlank() }
+                            ?: "Unable to inspect selected WireGuard config file.",
+                    )
+                },
+            )
         }
     }
 
@@ -258,7 +276,7 @@ fun NetworkScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                ForwardProtocol.entries.forEach { proto ->
+                                listOf(ForwardProtocol.TCP, ForwardProtocol.UDP).forEach { proto ->
                                     TermVrSelectableChip(
                                         label = proto.name,
                                         selected = selectedProto == proto,
@@ -272,7 +290,7 @@ fun NetworkScreen(
                                     val hp = hostPortText.toIntOrNull() ?: 0
                                     val gp = guestPortText.toIntOrNull() ?: 0
                                     if (selectedHost.exposesLan &&
-                                        !PortForwardRule.isLanDockerPortBlocked(selectedHost, hp, hp, gp, gp)
+                                        viewModel.validateCandidatePortRule(selectedProto, selectedHost, hp, gp)
                                     ) {
                                         pendingLanRule = PendingLanRule(selectedProto, selectedHost, hp, gp)
                                     } else {
@@ -309,8 +327,13 @@ fun NetworkScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
+                                        val ruleSummary = if (rule.protocol == ForwardProtocol.UNIX_STREAM) {
+                                            "UNIX ${rule.unixSocketName ?: "socket"} : ${rule.guestUnixPath ?: "guest"}"
+                                        } else {
+                                            "${rule.protocol.name} ${rule.listenHost.wireLiteral}:$hostPortLabel -> :${rule.guestPortStart}"
+                                        }
                                         Text(
-                                            text = "${rule.protocol.name} ${rule.listenHost.wireLiteral}:$hostPortLabel -> :${rule.guestPortStart}",
+                                            text = ruleSummary,
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontFamily = monoFont,
                                             modifier = Modifier.weight(1f),
@@ -495,18 +518,18 @@ fun NetworkScreen(
             onDismissRequest = viewModel::dismissStagedPortApply,
             title = { Text("Apply Port Changes?") },
             text = {
-                Text("Host port bindings apply on restore or cold restart.")
+                Text("Choose Checkpoint & Restore to keep open shells active, or Cold Restart to reboot cleanly.")
             },
             confirmButton = {
                 TermVrButton(onClick = { viewModel.confirmStagedPortApply(checkpointAndRestore = true) }) {
-                    Text("Restore")
+                    Text("Checkpoint & Restore")
                 }
             },
             dismissButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TermVrTextButton(onClick = viewModel::dismissStagedPortApply) { Text("Later") }
                     TermVrOutlinedButton(onClick = { viewModel.confirmStagedPortApply(checkpointAndRestore = false) }) {
-                        Text("Restart")
+                        Text("Cold Restart")
                     }
                 }
             },
@@ -767,3 +790,37 @@ private data class PendingLanRule(
     val hostPort: Int,
     val guestPort: Int,
 )
+
+internal data class SafDocumentMetadata(
+    val displayName: String?,
+    val sizeBytes: Long?,
+)
+
+internal fun querySafDocumentMetadata(
+    contentResolver: ContentResolver,
+    uri: Uri,
+): SafDocumentMetadata {
+    val projection = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+    return contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+        extractSafDocumentMetadata(cursor)
+    } ?: SafDocumentMetadata(displayName = null, sizeBytes = null)
+}
+
+internal fun extractSafDocumentMetadata(cursor: Cursor): SafDocumentMetadata {
+    if (!cursor.moveToFirst()) {
+        return SafDocumentMetadata(displayName = null, sizeBytes = null)
+    }
+    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+    val displayName = if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
+        cursor.getString(nameIdx)
+    } else {
+        null
+    }
+    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+    val sizeBytes = if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+        cursor.getLong(sizeIdx).takeIf { it >= 0L }
+    } else {
+        null
+    }
+    return SafDocumentMetadata(displayName = displayName, sizeBytes = sizeBytes)
+}

@@ -103,15 +103,11 @@ fun HomeScreen(
             }
         }
 
-        if (state.hasReadinessWarning) {
+        val readinessWarning = state.readinessWarningMessage
+        if (readinessWarning != null) {
             item {
-                val warningText = if (state.hostReadiness.phantomKillerDetected) {
-                    "Background process restriction detected."
-                } else {
-                    "Child process count is near the OS limit."
-                }
                 TermVrNoticeBanner(
-                    message = warningText,
+                    message = readinessWarning,
                     isError = true,
                     actionLabel = "System",
                     onAction = onOpenSystemDiagnostics,
@@ -122,9 +118,13 @@ fun HomeScreen(
         val bannerText = state.errorMessage ?: state.serviceNotice ?: state.statusMessage
         if (bannerText != null) {
             item {
+                val showSystemAction = state.errorMessage == null &&
+                    state.serviceNotice?.contains("SIGKILL") == true
                 TermVrNoticeBanner(
                     message = bannerText,
-                    isError = state.errorMessage != null,
+                    isError = state.isNoticeError,
+                    actionLabel = if (showSystemAction) "System" else null,
+                    onAction = if (showSystemAction) onOpenSystemDiagnostics else null,
                     onDismiss = viewModel::clearNotice,
                 )
             }
@@ -134,6 +134,9 @@ fun HomeScreen(
             item {
                 RunningStatusStrip(
                     runningCount = state.runningCount,
+                    liveChildProcessCount = state.hostReadiness.liveChildProcessCount,
+                    nearProcessLimit = state.hostReadiness.exceedsRecommendedProcessBudget ||
+                        state.exceedsRecommendedSandboxCount,
                     onFreezeAll = viewModel::freezeAllRunning,
                     onStopAll = viewModel::stopAllRunning,
                 )
@@ -223,10 +226,13 @@ fun HomeScreen(
 @Composable
 private fun RunningStatusStrip(
     runningCount: Int,
+    liveChildProcessCount: Int,
+    nearProcessLimit: Boolean,
     onFreezeAll: () -> Unit,
     onStopAll: () -> Unit,
 ) {
     val tokens = LocalTermVrPaletteTokens.current
+    val dotColor = if (nearProcessLimit) MaterialTheme.colorScheme.error else tokens.statusRunning
     TermVrCard(
         modifier = Modifier.fillMaxWidth(),
         containerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -242,9 +248,9 @@ private fun RunningStatusStrip(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TermVrStatusDot(color = tokens.statusRunning, size = 8.dp)
+                TermVrStatusDot(color = dotColor, size = 8.dp)
                 Text(
-                    text = if (runningCount == 1) "1 running" else "$runningCount running",
+                    text = HomeViewModel.formatRunningStatusSummary(runningCount, liveChildProcessCount),
                     style = MaterialTheme.typography.titleSmall,
                     fontFamily = LocalTermVrMonoFontFamily.current,
                 )

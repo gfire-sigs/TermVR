@@ -80,10 +80,10 @@ class HostReadinessInspector(
         val pageSize = pageSizeProvider()
         val exitRecords = exitReasonProvider.recentExitReasons()
         val killedRecord = detectPhantomOrResourceKill(exitRecords)
-        val remediation = when {
-            killedRecord == null -> PhantomProcessRemediation.NONE
-            sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> PhantomProcessRemediation.ANDROID_14_DEV_TOGGLE
-            else -> PhantomProcessRemediation.ANDROID_12_13_ADB_COMMAND
+        val remediation = if (killedRecord == null) {
+            PhantomProcessRemediation.NONE
+        } else {
+            remediationForSdk(sdkInt)
         }
 
         return HostReadinessReport(
@@ -92,13 +92,18 @@ class HostReadinessInspector(
             kernelPageSizeBytes = pageSize,
             totalHostRamMiB = totalHostRamMiBProvider().coerceAtLeast(0),
             freeDiskMiB = freeDiskMiBProvider().coerceAtLeast(0),
-            liveChildProcessCount = countDescendantProcesses(procRoot, selfPidProvider()),
+            liveChildProcessCount = countLiveChildProcesses(),
             phantomKillerDetected = killedRecord != null,
             remediationKind = remediation,
             lastKilledExitReasonCode = killedRecord?.reason,
             diskUsage = computeStorageBreakdown(),
         )
     }
+
+    /**
+     * Counts live `/proc` descendant processes of this app without scanning storage directories.
+     */
+    fun countLiveChildProcesses(): Int = countDescendantProcesses(procRoot, selfPidProvider())
 
     fun computeStorageBreakdown(): StorageUsageBreakdown {
         val gvxRoot = File(filesDir, "gvx-store/gvx")
@@ -131,6 +136,13 @@ class HostReadinessInspector(
                 },
             )
         }
+
+        fun remediationForSdk(sdkInt: Int): PhantomProcessRemediation =
+            if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                PhantomProcessRemediation.ANDROID_14_DEV_TOGGLE
+            } else {
+                PhantomProcessRemediation.ANDROID_12_13_ADB_COMMAND
+            }
 
         internal fun detectPhantomOrResourceKill(records: List<HistoricalExitRecord>): HistoricalExitRecord? {
             return records.firstOrNull { rec ->
