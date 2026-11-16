@@ -17,11 +17,13 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -88,6 +90,9 @@ class TerminalSessionCoordinator(
     },
 ) {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inputWriteDispatcher = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "termvr-pty-writer").apply { isDaemon = true }
+    }.asCoroutineDispatcher()
     private val paneRuntimes = ConcurrentHashMap<String, PaneRuntime>()
     private val tabControllers = ConcurrentHashMap<String, TerminalSurfaceController>()
     private val boundMuxByProfile = ConcurrentHashMap<String, MuxSessionClient>()
@@ -369,23 +374,36 @@ class TerminalSessionCoordinator(
      * Sends host keyboard or paste bytes to the backing PTY or Stream-0 pipe for [paneId].
      */
     fun sendPtyBytes(paneId: String, bytes: ByteArray) {
+        if (bytes.isEmpty()) return
         val runtime = paneRuntimes[paneId] ?: return
         if (runtime.closed) return
+        val tab = _tabs.value.firstOrNull { it.tabId == runtime.tabId }
+        if (tab != null && paneId in tab.exitedPanes) {
+            return
+        }
         if (runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
             return
         }
+        val payload = bytes.copyOf()
         runtimeGateway.markProfileActivity(runtime.profileId)
-        ioScope.launch {
+        ioScope.launch(inputWriteDispatcher) {
             if (runtime.closed || runtimeGateway.runStates.value[runtime.profileId] != SandboxRunState.RUNNING) {
+                return@launch
+            }
+            val currentTab = _tabs.value.firstOrNull { it.tabId == runtime.tabId }
+            if (currentTab != null && paneId in currentTab.exitedPanes) {
                 return@launch
             }
             runCatching {
                 when {
-                    runtime.isStreamZero -> runtimeGateway.getMuxClient(runtime.profileId)?.writeStream0Stdin(bytes)
+                    runtime.isStreamZero -> runtimeGateway.getMuxClient(runtime.profileId)?.writeStream0Stdin(payload)
                     runtime.muxPtyHandle != null -> {
-                        val currentMux = runtimeGateway.getMuxClient(runtime.profileId)
+                        val currentMux = runtimeGateway.getMuxClient(runtime.profileId) ?: return@runCatching
+                        if (currentMux.isClosed) {
+                            return@runCatching
+                        }
                         val bound = boundMuxByProfile[runtime.profileId]
-                        if (currentMux != null && !currentMux.isClosed && bound !== currentMux &&
+                        if (bound !== currentMux &&
                             runtime.streamId >= 1L && currentMux.isStreamOpen(runtime.streamId)
                         ) {
                             boundMuxByProfile[runtime.profileId] = currentMux
@@ -394,12 +412,19 @@ class TerminalSessionCoordinator(
                                 listener = createStreamListener(runtime),
                             )
                         }
-                        runtime.muxPtyHandle?.writeInput(bytes)
+                        if (runtime.streamId >= 1L && !currentMux.isStreamOpen(runtime.streamId)) {
+                            return@runCatching
+                        }
+                        runtime.muxPtyHandle?.writeInput(payload)
                     }
-                    else -> runtime.rawPtyHandle?.write(bytes)
+                    else -> runtime.rawPtyHandle?.write(payload)
                 }
             }.onFailure { err ->
-                if (runtimeGateway.runStates.value[runtime.profileId] == SandboxRunState.RUNNING) {
+                val closedOrExited = runtime.closed ||
+                    _tabs.value.firstOrNull { it.tabId == runtime.tabId }?.let { paneId in it.exitedPanes } == true ||
+                    (runtime.muxPtyHandle != null && runtime.streamId >= 1L &&
+                        runtimeGateway.getMuxClient(runtime.profileId)?.isStreamOpen(runtime.streamId) != true)
+                if (!closedOrExited && runtimeGateway.runStates.value[runtime.profileId] == SandboxRunState.RUNNING) {
                     _lastError.value = err.message ?: "PTY write failed"
                 }
             }

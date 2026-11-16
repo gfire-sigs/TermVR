@@ -291,6 +291,65 @@ class SnapshotResumeFlowTest {
             pool.shutdownNow()
         }
     }
+
+    @Test
+    fun `sendPtyBytes preserves FIFO ordering across rapid bursts and ignores exited panes`() = runTest(testDispatcher) {
+        val pool = Executors.newCachedThreadPool()
+        val gateway = PipedMuxGateway(tempDir, pool)
+        val profile = SandboxProfile(
+            id = "fifo-keys",
+            displayName = "FIFO Keys",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            muxMode = MuxMode.STDIO_MUX,
+        )
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> RecordingVtBackend() })
+            },
+        )
+        try {
+            assertEquals(SandboxRunState.RUNNING, gateway.startOrResumeSandbox(profile))
+            val tab = coordinator.openNewShellTab(profile, 1000, ColorPalette.DEFAULT_DARK)!!
+            val guest = gateway.latestGuestSession()!!
+            val openDeadline = System.currentTimeMillis() + 3_000L
+            while (!guest.openedStreamIds.contains(1L) && System.currentTimeMillis() < openDeadline) {
+                Thread.sleep(10L)
+            }
+            assertTrue(guest.openedStreamIds.contains(1L))
+
+            val expected = "fastfetch_0123456789_abcdefghijklmnopqrstuvwxyz"
+            for (ch in expected) {
+                coordinator.sendPtyBytes(tab.focusedPaneId, ch.toString().toByteArray(StandardCharsets.UTF_8))
+            }
+            val recvDeadline = System.currentTimeMillis() + 3_000L
+            while (guest.receivedInputForStream(1L).length < expected.length && System.currentTimeMillis() < recvDeadline) {
+                Thread.sleep(10L)
+            }
+            assertEquals(expected, guest.receivedInputForStream(1L))
+
+            // Emit a guest PTY_EXIT frame while the sandbox remains RUNNING and verify exited-pane input is ignored.
+            guest.sendPtyExitToHost(1L, 0)
+            val exitDeadline = System.currentTimeMillis() + 3_000L
+            while (coordinator.tabs.value.first().exitedPanes.isEmpty() && System.currentTimeMillis() < exitDeadline) {
+                Thread.sleep(10L)
+            }
+            assertTrue(tab.focusedPaneId in coordinator.tabs.value.first().exitedPanes)
+            coordinator.sendPtyBytes(tab.focusedPaneId, "after-exit".toByteArray(StandardCharsets.UTF_8))
+            Thread.sleep(40L)
+            assertEquals(expected, guest.receivedInputForStream(1L))
+            assertNull(coordinator.lastError.value)
+
+            // Verify closed mux writes also drop input without surfacing an error.
+            gateway.getMuxClient(profile.id)!!.close()
+            coordinator.sendPtyBytes(tab.focusedPaneId, "q".toByteArray(StandardCharsets.UTF_8))
+            Thread.sleep(40L)
+            assertNull(coordinator.lastError.value)
+        } finally {
+            gateway.closeAll()
+            pool.shutdownNow()
+        }
+    }
 }
 
 private class PipedMuxGateway(
@@ -501,6 +560,16 @@ private class FakeGuestMuxPipe(
             MuxCodec.writeFrame(
                 guestToHostOut,
                 MuxFrame(MuxFrameType.PTY_DATA, streamId, text.toByteArray(StandardCharsets.UTF_8)),
+            )
+        }
+    }
+
+    fun sendPtyExitToHost(streamId: Long, exitCode: Int = 0) {
+        openedStreamIds.remove(streamId)
+        synchronized(guestToHostOut) {
+            MuxCodec.writeFrame(
+                guestToHostOut,
+                MuxFrame(MuxFrameType.PTY_EXIT, streamId, byteArrayOf((exitCode and 0xFF).toByte())),
             )
         }
     }
