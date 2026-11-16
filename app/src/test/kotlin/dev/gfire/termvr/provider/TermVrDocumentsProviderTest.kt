@@ -6,10 +6,15 @@ import dev.gfire.termvr.core.runtime.CheckpointController
 import dev.gfire.termvr.core.runtime.CheckpointSlotMetadata
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.Paths
+import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.atomic.AtomicInteger
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -178,5 +183,177 @@ class TermVrDocumentsProviderTest {
         assertThrows(FileNotFoundException::class.java) {
             engine.resolveDocumentId("invalid:doc")
         }
+    }
+
+    @Test
+    fun preservesExecutablePosixModeAndLeavesGvxMetaIntactAcrossExternalSaves() {
+        // Property: External editor saves (truncate and non-truncate) preserve existing POSIX executable
+        // permissions on the workspace file and never mutate or delete the .gvx_meta journal file.
+        // Seam: WorkspaceDocumentsEngine.beginWriteTransaction + finishWriteTransaction.
+        // Fault: Creating a fresh .termvr.tmp file drops 0755 executable bits to 0644 on atomic move.
+        val workspace = File(tempDir, "workspaces/dev-shell").apply { mkdirs() }
+        val gvxMetaBytes = "GVXMETA\u0003frame-0755-build-sh".encodeToByteArray()
+        val gvxMeta = File(workspace, ".gvx_meta").apply { writeBytes(gvxMetaBytes) }
+        val script = File(workspace, "build.sh").apply { writeText("#!/bin/sh\necho v1\n") }
+        val posix755 = setOf(
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.OWNER_EXECUTE,
+            PosixFilePermission.GROUP_READ,
+            PosixFilePermission.GROUP_EXECUTE,
+            PosixFilePermission.OTHERS_READ,
+            PosixFilePermission.OTHERS_EXECUTE,
+        )
+        Files.setPosixFilePermissions(script.toPath(), posix755)
+
+        val engine = WorkspaceDocumentsEngine(
+            filesDir = tempDir,
+            liveRunStateProvider = { SandboxRunState.RUNNING },
+        )
+
+        val truncateTx = engine.beginWriteTransaction("entry:dev-shell/build.sh", truncateExisting = true)
+        truncateTx.stagingFile.writeText("#!/bin/sh\necho v2\n")
+        engine.finishWriteTransaction(truncateTx, errorOccurred = false)
+
+        assertEquals("#!/bin/sh\necho v2\n", script.readText())
+        assertEquals(posix755, Files.getPosixFilePermissions(script.toPath()))
+        assertTrue(script.canExecute())
+        assertArrayEquals(gvxMetaBytes, gvxMeta.readBytes())
+
+        val editTx = engine.beginWriteTransaction("entry:dev-shell/build.sh", truncateExisting = false)
+        assertEquals("#!/bin/sh\necho v2\n", editTx.stagingFile.readText())
+        editTx.stagingFile.writeText("#!/bin/sh\necho v3\n")
+        engine.finishWriteTransaction(editTx, errorOccurred = false)
+
+        assertEquals("#!/bin/sh\necho v3\n", script.readText())
+        assertEquals(posix755, Files.getPosixFilePermissions(script.toPath()))
+        assertArrayEquals(gvxMetaBytes, gvxMeta.readBytes())
+    }
+
+    @Test
+    fun concurrentReadsSeeCompleteOldFileDuringStagingAndConcurrentWritersDoNotClobberEachOther() {
+        // Property: Concurrent readers always observe the complete prior file while staging is uncommitted,
+        // and overlapping write transactions isolate their .termvr.tmp files without clobbering each other.
+        // Seam: WorkspaceDocumentsEngine.beginWriteTransaction, statDocument, resolveDocumentId, listChildren.
+        // Fault: Second writer truncating or deleting the first writer's fixed <name>.termvr.tmp file.
+        val workspace = File(tempDir, "workspaces/dev-shell").apply { mkdirs() }
+        val target = File(workspace, "app.conf").apply { writeText("version=1\ncomplete=true\n") }
+
+        val engine = WorkspaceDocumentsEngine(
+            filesDir = tempDir,
+            liveRunStateProvider = { SandboxRunState.RUNNING },
+        )
+
+        val tx1 = engine.beginWriteTransaction("entry:dev-shell/app.conf", truncateExisting = true)
+        tx1.stagingFile.writeText("ver")
+
+        // Concurrent read while tx1 is half-written sees old complete file and zero .termvr.tmp entries.
+        val statDuringWrite = engine.statDocument("entry:dev-shell/app.conf")
+        assertEquals("version=1\ncomplete=true\n".length.toLong(), statDuringWrite.sizeBytes)
+        val resolvedDuringWrite = engine.resolveDocumentId("entry:dev-shell/app.conf")
+            as WorkspaceDocumentsEngine.ResolvedDocument.ProfileEntry
+        assertEquals("version=1\ncomplete=true\n", resolvedDuringWrite.targetFile.readText())
+        assertEquals(listOf("app.conf"), engine.listChildren("profile:dev-shell").map { it.displayName })
+
+        // Second overlapping writer gets an isolated .termvr.tmp file.
+        val tx2 = engine.beginWriteTransaction("entry:dev-shell/app.conf", truncateExisting = true)
+        assertNotEquals(tx1.stagingFile.absolutePath, tx2.stagingFile.absolutePath)
+        assertTrue(tx2.stagingFile.name.endsWith(".termvr.tmp"))
+        assertEquals("ver", tx1.stagingFile.readText())
+        tx2.stagingFile.writeText("version=2\ncomplete=true\n")
+
+        // Aborting tx1 removes only tx1.stagingFile and leaves tx2 intact.
+        engine.finishWriteTransaction(tx1, errorOccurred = true)
+        assertFalse(tx1.stagingFile.exists())
+        assertTrue(tx2.stagingFile.exists())
+        assertEquals("version=1\ncomplete=true\n", target.readText())
+
+        // Committing tx2 atomically replaces target and leaves zero staging files.
+        engine.finishWriteTransaction(tx2, errorOccurred = false)
+        assertFalse(tx2.stagingFile.exists())
+        assertEquals("version=2\ncomplete=true\n", target.readText())
+        assertTrue(workspace.listFiles().orEmpty().none { it.name.endsWith(".termvr.tmp") })
+    }
+
+    @Test
+    fun protectsGvxMetaVariantsRejectsMidEditFreezeAndDoesNotFollowSymlinksOnRecursiveDelete() {
+        // Property: .gvx_meta and .gvx_meta.tmp (any case) are hidden and immutable, mid-edit freeze
+        // rejects commit with SecurityException while cleaning staging, fsync IOException cleans staging,
+        // and recursive directory delete unlinks symlinks without deleting outside symlink targets.
+        // Seam: WorkspaceDocumentsEngine CRUD + write transaction commit.
+        // Fault: Following symlinked directories in deleteRecursively(), silently swallowing mid-edit locks,
+        // or allowing case-variant ".GVX_META" / ".gvx_meta.tmp" mutation.
+        val workspace = File(tempDir, "workspaces/dev-shell").apply { mkdirs() }
+        val metaJournal = File(workspace, ".gvx_meta").apply { writeText("journal-v3") }
+        val metaCompaction = File(workspace, ".gvx_meta.tmp").apply { writeText("compaction-v3") }
+        val notes = File(workspace, "notes.md").apply { writeText("safe-v1") }
+
+        val outsideKeepDir = File(tempDir, "outside-keep").apply { mkdirs() }
+        val outsideKeepFile = File(outsideKeepDir, "precious.txt").apply { writeText("do-not-delete") }
+        val subDir = File(workspace, "nested").apply { mkdirs() }
+        File(subDir, "local.txt").writeText("delete-me")
+        Files.createSymbolicLink(File(subDir, "escape-sub").toPath(), outsideKeepDir.toPath())
+        Files.createSymbolicLink(File(workspace, "dangling-escape").toPath(), Paths.get("../missing-outside.txt"))
+
+        var currentState = SandboxRunState.RUNNING
+        var failNextFsync = false
+        val engine = WorkspaceDocumentsEngine(
+            filesDir = tempDir,
+            liveRunStateProvider = { currentState },
+            fsyncFile = {
+                if (failNextFsync) {
+                    throw IOException("Simulated ENOSPC during fsync")
+                }
+            },
+        )
+
+        // Hidden metadata and outside symlinks never appear in listing.
+        assertEquals(listOf("nested", "notes.md"), engine.listChildren("profile:dev-shell").map { it.displayName })
+
+        // Case variants of .gvx_meta and .gvx_meta.tmp and control chars are rejected across all operations.
+        for (forbidden in listOf(".gvx_meta", ".GVX_META", ".gvx_meta.tmp", ".GVX_META.TMP", "bad\nname.txt")) {
+            assertThrows(SecurityException::class.java) {
+                engine.createEntry("profile:dev-shell", "text/plain", forbidden)
+            }
+            assertThrows(SecurityException::class.java) {
+                engine.renameEntry("entry:dev-shell/notes.md", forbidden)
+            }
+            assertThrows(SecurityException::class.java) {
+                engine.resolveDocumentId("entry:dev-shell/$forbidden")
+            }
+        }
+        assertThrows(SecurityException::class.java) {
+            engine.resolveDocumentId("entry:dev-shell/dangling-escape")
+        }
+
+        // Fsync failure cleans up .termvr.tmp and propagates IOException.
+        failNextFsync = true
+        val fsyncFailTx = engine.beginWriteTransaction("entry:dev-shell/notes.md", truncateExisting = true)
+        fsyncFailTx.stagingFile.writeText("corrupt")
+        assertThrows(IOException::class.java) {
+            engine.finishWriteTransaction(fsyncFailTx, errorOccurred = false)
+        }
+        assertFalse(fsyncFailTx.stagingFile.exists())
+        assertEquals("safe-v1", notes.readText())
+        failNextFsync = false
+
+        // Mid-edit transition to FREEZING rejects commit with SecurityException and deletes staging file.
+        val midFreezeTx = engine.beginWriteTransaction("entry:dev-shell/notes.md", truncateExisting = true)
+        midFreezeTx.stagingFile.writeText("written-while-freezing")
+        currentState = SandboxRunState.FREEZING
+        assertThrows(SecurityException::class.java) {
+            engine.finishWriteTransaction(midFreezeTx, errorOccurred = false)
+        }
+        assertFalse(midFreezeTx.stagingFile.exists())
+        assertEquals("safe-v1", notes.readText())
+        currentState = SandboxRunState.RUNNING
+
+        // Deleting nested directory unlinks symlink without touching outsideKeepFile or .gvx_meta.
+        engine.deleteEntry("entry:dev-shell/nested")
+        assertFalse(subDir.exists())
+        assertTrue(outsideKeepFile.exists())
+        assertEquals("do-not-delete", outsideKeepFile.readText())
+        assertEquals("journal-v3", metaJournal.readText())
+        assertEquals("compaction-v3", metaCompaction.readText())
     }
 }

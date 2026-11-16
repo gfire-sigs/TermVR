@@ -15,13 +15,18 @@ import dev.gfire.termvr.TermVrApplication
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.runtime.CheckpointController
+import dev.gfire.termvr.util.SafUriUtils
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.nio.channels.FileChannel
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Pure JVM workspace confinement, lock inspection, and atomic write staging engine for SAF access.
@@ -36,6 +41,10 @@ class WorkspaceDocumentsEngine(
         }
     },
 ) {
+    private val stagingLock = Any()
+    private val activeStagingPaths = HashSet<Path>()
+    private val concurrentStagingSeq = AtomicLong(1L)
+
     private val workspacesRootDir: File
         get() = File(filesDir, "workspaces")
 
@@ -184,7 +193,7 @@ class WorkspaceDocumentsEngine(
             )
 
             is ResolvedDocument.ProfileEntry -> {
-                if (!resolved.targetFile.exists()) {
+                if (!Files.exists(resolved.targetFile.toPath(), LinkOption.NOFOLLOW_LINKS) && !resolved.targetFile.exists()) {
                     throw FileNotFoundException("Document does not exist: $documentId")
                 }
                 val isProfileRoot = resolved.relativePath.isEmpty()
@@ -238,7 +247,7 @@ class WorkspaceDocumentsEngine(
         val cleanName = sanitizeSingleSegment(displayName)
         val newRel = if (parent.relativePath.isEmpty()) cleanName else "${parent.relativePath}/$cleanName"
         val target = resolveConfinedTarget(parent.profileId, newRel)
-        if (target.exists()) {
+        if (Files.exists(target.toPath(), LinkOption.NOFOLLOW_LINKS)) {
             throw IOException("Target already exists: $cleanName")
         }
         val created = if (mimeType == Document.MIME_TYPE_DIR) {
@@ -253,7 +262,7 @@ class WorkspaceDocumentsEngine(
     }
 
     /**
-     * Deletes a confined file or directory inside a non-frozen workspace profile.
+     * Deletes a confined file or directory inside a non-frozen workspace profile without following symlinks.
      */
     fun deleteEntry(documentId: String) {
         val entry = resolveProfileEntry(documentId)
@@ -261,15 +270,13 @@ class WorkspaceDocumentsEngine(
             throw SecurityException("Cannot delete workspace root for ${entry.profileId}")
         }
         requireUnlocked(entry.profileId)
-        if (!entry.targetFile.exists()) {
+        val targetPath = entry.targetFile.toPath()
+        if (!Files.exists(targetPath, LinkOption.NOFOLLOW_LINKS)) {
             throw FileNotFoundException("Document does not exist: $documentId")
         }
-        val deleted = if (entry.targetFile.isDirectory) {
-            entry.targetFile.deleteRecursively()
-        } else {
-            entry.targetFile.delete()
-        }
-        if (!deleted) {
+        val canonicalRoot = entry.workspaceRoot.canonicalFile.toPath()
+        deleteConfinedPath(targetPath, canonicalRoot)
+        if (Files.exists(targetPath, LinkOption.NOFOLLOW_LINKS)) {
             throw IOException("Failed to delete $documentId")
         }
     }
@@ -283,22 +290,23 @@ class WorkspaceDocumentsEngine(
             throw SecurityException("Cannot rename workspace root for ${entry.profileId}")
         }
         requireUnlocked(entry.profileId)
-        if (!entry.targetFile.exists()) {
+        val sourcePath = entry.targetFile.toPath()
+        if (!Files.exists(sourcePath, LinkOption.NOFOLLOW_LINKS)) {
             throw FileNotFoundException("Document does not exist: $documentId")
         }
         val cleanName = sanitizeSingleSegment(newDisplayName)
         val parentRel = entry.relativePath.substringBeforeLast('/', "")
         val newRel = if (parentRel.isEmpty()) cleanName else "$parentRel/$cleanName"
         val destination = resolveConfinedTarget(entry.profileId, newRel)
-        if (destination.exists()) {
+        if (Files.exists(destination.toPath(), LinkOption.NOFOLLOW_LINKS)) {
             throw IOException("Destination already exists: $cleanName")
         }
-        Files.move(entry.targetFile.toPath(), destination.toPath())
+        Files.move(sourcePath, destination.toPath())
         return buildDocumentId(entry.profileId, newRel)
     }
 
     /**
-     * Prepares a confined target for read or atomic `<filename>.termvr.tmp` write access.
+     * Prepares a confined target for atomic `.termvr.tmp` write staging while isolating concurrent writers.
      */
     fun beginWriteTransaction(documentId: String, truncateExisting: Boolean): StagedWriteTransaction {
         val entry = resolveProfileEntry(documentId)
@@ -306,7 +314,8 @@ class WorkspaceDocumentsEngine(
             throw SecurityException("Cannot open workspace root directory as file")
         }
         requireUnlocked(entry.profileId)
-        if (entry.targetFile.isDirectory) {
+        val targetPath = entry.targetFile.toPath()
+        if (Files.isDirectory(targetPath, LinkOption.NOFOLLOW_LINKS)) {
             throw FileNotFoundException("Cannot open directory for writing: $documentId")
         }
         val parentDir = entry.targetFile.parentFile
@@ -314,54 +323,132 @@ class WorkspaceDocumentsEngine(
         if (!parentDir.isDirectory && !parentDir.mkdirs()) {
             throw IOException("Cannot prepare parent directory for $documentId")
         }
-        val stagingFile = File(parentDir, "${entry.targetFile.name}$TEMP_WRITE_SUFFIX")
-        if (!truncateExisting && entry.targetFile.exists()) {
-            Files.copy(
-                entry.targetFile.toPath(),
-                stagingFile.toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        } else if (stagingFile.exists()) {
-            stagingFile.delete()
+        if (Files.isSymbolicLink(parentDir.toPath()) || !isCanonicalPathConfined(entry.workspaceRoot, parentDir)) {
+            throw SecurityException("Parent directory escapes workspace root for $documentId")
         }
-        if (!stagingFile.exists()) {
-            stagingFile.createNewFile()
+
+        val preservedPermissions = SafUriUtils.captureExistingPermissions(targetPath)
+        val stagingFile = allocateStagingFile(parentDir, entry.targetFile.name)
+        val stagingPath = stagingFile.toPath()
+        try {
+            if (!truncateExisting && Files.exists(targetPath, LinkOption.NOFOLLOW_LINKS)) {
+                Files.copy(
+                    targetPath,
+                    stagingPath,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } else {
+                Files.deleteIfExists(stagingPath)
+            }
+            if (!Files.exists(stagingPath, LinkOption.NOFOLLOW_LINKS)) {
+                Files.createFile(stagingPath)
+            }
+        } catch (t: Throwable) {
+            releaseStagingFile(stagingFile)
+            runCatching { Files.deleteIfExists(stagingPath) }
+            throw t
         }
         return StagedWriteTransaction(
             profileId = entry.profileId,
+            workspaceRoot = entry.workspaceRoot,
             targetFile = entry.targetFile,
             stagingFile = stagingFile,
+            preservedPermissions = preservedPermissions,
         )
     }
 
     /**
-     * Commits a staged `<filename>.termvr.tmp` write with `fsync` and atomic replace, or aborts cleanly.
+     * Commits a staged `.termvr.tmp` write with mode preservation, `fsync`, and atomic replace.
      */
     fun finishWriteTransaction(transaction: StagedWriteTransaction, errorOccurred: Boolean) {
-        if (errorOccurred || isProfileWriteLocked(transaction.profileId)) {
-            transaction.stagingFile.delete()
-            return
-        }
+        val stagingPath = transaction.stagingFile.toPath()
         try {
-            fsyncFile(transaction.stagingFile)
-            try {
-                Files.move(
-                    transaction.stagingFile.toPath(),
-                    transaction.targetFile.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE,
-                )
-            } catch (_: IOException) {
-                Files.move(
-                    transaction.stagingFile.toPath(),
-                    transaction.targetFile.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING,
+            if (errorOccurred) {
+                runCatching { Files.deleteIfExists(stagingPath) }
+                return
+            }
+            if (isProfileWriteLocked(transaction.profileId)) {
+                runCatching { Files.deleteIfExists(stagingPath) }
+                throw SecurityException(
+                    "Workspace became write-locked before commit for profile ${transaction.profileId}",
                 )
             }
+            val parentDir = transaction.targetFile.parentFile
+                ?: throw IOException("Missing parent directory for ${transaction.targetFile}")
+            if (
+                Files.isSymbolicLink(parentDir.toPath()) ||
+                !isCanonicalPathConfined(transaction.workspaceRoot, parentDir) ||
+                !isCanonicalPathConfined(transaction.workspaceRoot, transaction.targetFile)
+            ) {
+                throw SecurityException("Workspace target escaped confinement before commit")
+            }
+
+            val effectivePermissions = SafUriUtils.captureExistingPermissions(transaction.targetFile.toPath())
+                ?: transaction.preservedPermissions
+            if (effectivePermissions != null) {
+                SafUriUtils.applyPreservedPermissions(stagingPath, effectivePermissions)
+            }
+
+            fsyncFile(transaction.stagingFile)
+            SafUriUtils.moveAtomically(stagingPath, transaction.targetFile.toPath())
         } catch (t: Throwable) {
-            transaction.stagingFile.delete()
+            runCatching { Files.deleteIfExists(stagingPath) }
             throw t
+        } finally {
+            releaseStagingFile(transaction.stagingFile)
         }
+    }
+
+    private fun allocateStagingFile(parentDir: File, targetName: String): File {
+        synchronized(stagingLock) {
+            val primary = File(parentDir, "$targetName$TEMP_WRITE_SUFFIX")
+            val primaryKey = primary.toPath().toAbsolutePath().normalize()
+            if (activeStagingPaths.add(primaryKey)) {
+                return primary
+            }
+            while (true) {
+                val seq = concurrentStagingSeq.getAndIncrement()
+                val alt = File(parentDir, "$targetName.$seq$TEMP_WRITE_SUFFIX")
+                val altKey = alt.toPath().toAbsolutePath().normalize()
+                if (activeStagingPaths.add(altKey)) {
+                    return alt
+                }
+            }
+        }
+    }
+
+    private fun releaseStagingFile(stagingFile: File) {
+        val key = stagingFile.toPath().toAbsolutePath().normalize()
+        synchronized(stagingLock) {
+            activeStagingPaths.remove(key)
+        }
+    }
+
+    internal fun deleteConfinedPath(path: Path, canonicalRoot: Path) {
+        val fileName = path.fileName?.toString().orEmpty()
+        if (isReservedMetaName(fileName)) {
+            throw SecurityException("Refusing to delete workspace metadata file: $fileName")
+        }
+        if (Files.isSymbolicLink(path)) {
+            Files.deleteIfExists(path)
+            return
+        }
+        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            val canonicalDir = path.toFile().canonicalFile.toPath()
+            if (canonicalDir != canonicalRoot && !canonicalDir.startsWith(canonicalRoot)) {
+                throw SecurityException("Directory escapes workspace root: $path")
+            }
+            Files.newDirectoryStream(path).use { stream ->
+                for (child in stream) {
+                    val childName = child.fileName?.toString().orEmpty()
+                    if (isReservedMetaName(childName)) {
+                        continue
+                    }
+                    deleteConfinedPath(child, canonicalRoot)
+                }
+            }
+        }
+        Files.deleteIfExists(path)
     }
 
     private fun resolveProfileEntry(documentId: String): ResolvedDocument.ProfileEntry {
@@ -403,8 +490,8 @@ class WorkspaceDocumentsEngine(
             if (segment.isEmpty() || segment == "." || segment == ".." || isHiddenName(segment)) {
                 throw SecurityException("Disallowed workspace path segment: $segment")
             }
-            if (segment.indexOf('\u0000') >= 0) {
-                throw SecurityException("Null byte in workspace path")
+            if (containsControlChar(segment)) {
+                throw SecurityException("Control character in workspace path")
             }
             cursor = File(cursor, segment)
             if (!isCanonicalPathConfined(workspaceRoot, cursor)) {
@@ -427,6 +514,9 @@ class WorkspaceDocumentsEngine(
     }
 
     private fun sanitizeSingleSegment(displayName: String): String {
+        if (containsControlChar(displayName)) {
+            throw SecurityException("Invalid document name: $displayName")
+        }
         val trimmed = displayName.trim()
         if (
             trimmed.isEmpty() ||
@@ -434,22 +524,45 @@ class WorkspaceDocumentsEngine(
             trimmed == ".." ||
             trimmed.contains('/') ||
             trimmed.contains('\\') ||
-            trimmed.indexOf('\u0000') >= 0 ||
-            isHiddenName(trimmed)
+            isHiddenName(trimmed) ||
+            trimmed.toByteArray(StandardCharsets.UTF_8).size > SafUriUtils.MAX_FILENAME_BYTES
         ) {
             throw SecurityException("Invalid document name: $displayName")
         }
         return trimmed
     }
 
+    private fun containsControlChar(value: String): Boolean {
+        for (ch in value) {
+            if (ch == '\u0000' || ch.code < 0x20 || ch.code == 0x7F || Character.isISOControl(ch)) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun isCanonicalPathConfined(canonicalRoot: File, candidate: File): Boolean {
         val rootPath = canonicalRoot.canonicalFile.toPath()
-        val candidatePath = candidate.canonicalFile.toPath()
+        val candidateNio = candidate.toPath()
+        if (Files.isSymbolicLink(candidateNio)) {
+            val linkTarget = runCatching { Files.readSymbolicLink(candidateNio) }.getOrNull() ?: return false
+            val parentBase = candidate.parentFile?.canonicalFile?.toPath() ?: return false
+            val resolvedLink = parentBase.resolve(linkTarget).normalize()
+            if (resolvedLink != rootPath && !resolvedLink.startsWith(rootPath)) {
+                return false
+            }
+        }
+        val candidatePath = runCatching { candidate.canonicalFile.toPath() }.getOrNull() ?: return false
         return candidatePath == rootPath || candidatePath.startsWith(rootPath)
     }
 
+    private fun isReservedMetaName(name: String): Boolean {
+        return name.equals(HIDDEN_META_DIR, ignoreCase = true) ||
+            name.equals(HIDDEN_META_TEMP_FILE, ignoreCase = true)
+    }
+
     private fun isHiddenName(name: String): Boolean {
-        return name == HIDDEN_META_DIR || name.endsWith(TEMP_WRITE_SUFFIX)
+        return isReservedMetaName(name) || name.endsWith(TEMP_WRITE_SUFFIX, ignoreCase = true)
     }
 
     private fun computeDirectoryFlags(isProfileRoot: Boolean, writeLocked: Boolean): Int {
@@ -488,11 +601,26 @@ class WorkspaceDocumentsEngine(
         val flags: Int,
     )
 
-    data class StagedWriteTransaction(
+    @ConsistentCopyVisibility
+    data class StagedWriteTransaction internal constructor(
         val profileId: String,
+        internal val workspaceRoot: File,
         val targetFile: File,
         val stagingFile: File,
-    )
+        internal val preservedPermissions: SafUriUtils.PreservedFilePermissions? = null,
+    ) {
+        constructor(
+            profileId: String,
+            targetFile: File,
+            stagingFile: File,
+        ) : this(
+            profileId = profileId,
+            workspaceRoot = targetFile.parentFile?.canonicalFile ?: targetFile.canonicalFile,
+            targetFile = targetFile,
+            stagingFile = stagingFile,
+            preservedPermissions = null,
+        )
+    }
 
     companion object {
         const val ROOT_ID = "termvr_workspaces"
@@ -500,6 +628,7 @@ class WorkspaceDocumentsEngine(
         const val PROFILE_PREFIX = "profile:"
         const val ENTRY_PREFIX = "entry:"
         const val HIDDEN_META_DIR = ".gvx_meta"
+        const val HIDDEN_META_TEMP_FILE = ".gvx_meta.tmp"
         const val TEMP_WRITE_SUFFIX = ".termvr.tmp"
     }
 }
@@ -591,10 +720,14 @@ class TermVrDocumentsProvider : DocumentsProvider() {
         return try {
             ParcelFileDescriptor.open(tx.stagingFile, pfdMode, mainHandler) { err ->
                 val cancelled = signal?.isCanceled == true
-                engine.finishWriteTransaction(tx, errorOccurred = err != null || cancelled)
+                runCatching {
+                    engine.finishWriteTransaction(tx, errorOccurred = err != null || cancelled)
+                }
             }
         } catch (t: Throwable) {
-            engine.finishWriteTransaction(tx, errorOccurred = true)
+            runCatching {
+                engine.finishWriteTransaction(tx, errorOccurred = true)
+            }
             throw t
         }
     }
