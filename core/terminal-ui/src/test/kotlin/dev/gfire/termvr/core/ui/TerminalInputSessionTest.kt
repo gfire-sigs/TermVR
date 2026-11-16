@@ -307,13 +307,167 @@ class TerminalInputSessionTest {
         TerminalInputConnection.configureEditorInfo(attrs)
         assertEquals(
             InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
-                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
             attrs.inputType,
         )
-        val capFlags = InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or
+        assertEquals(0, attrs.inputType and InputType.TYPE_MASK_VARIATION)
+        val capAndAutoFlags = InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or
             InputType.TYPE_TEXT_FLAG_CAP_WORDS or
-            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        assertEquals(0, attrs.inputType and capFlags)
+            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+            InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        assertEquals(0, attrs.inputType and capAndAutoFlags)
+        val expectedImeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+            EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or
+            EditorInfo.IME_ACTION_NONE
+        assertEquals(expectedImeOptions, attrs.imeOptions)
+        assertEquals(32, attrs.initialSelStart)
+        assertEquals(32, attrs.initialSelEnd)
+    }
+
+    @Test
+    fun `korean 2-beolsik liaison backspace in preedit enter commit and jamo CTRL chords work cleanly`() {
+        // Property: Hangul liaison batch transitions, in-preedit backspace, soft Return CR, and 2-beolsik CTRL/ALT chords conserve exact bytes.
+        // Seam: TerminalInputSession.
+        // Oracle: KS X 5002 2-beolsik layout and Design 0001 Section 14.3 CJK composition contract.
+        // Fault: deleting shell prompt chars during preedit, emitting LF on soft Enter, or ignoring Ctrl with Korean jamo.
+        var nowMs = 0L
+        val h = createHarness(clock = { nowMs })
+        h.vtSession.use {
+            // 1. Compose "한", then trigger liaison batch commit("하") plus compose("나") into "난", then commit Space.
+            h.input.setComposingText("ㅎ", 1)
+            h.input.setComposingText("하", 1)
+            h.input.setComposingText("한", 1)
+            h.selectionResets.clear()
+
+            h.input.beginBatchEdit()
+            h.input.commitText("하", 1)
+            h.input.setComposingText("나", 1)
+            // Batch edit keeps active preedit without sending intermediate selection resets.
+            assertEquals(0, h.selectionResets.size)
+            h.input.endBatchEdit()
+
+            assertEquals("하", h.allSentUtf8())
+            assertEquals("나", h.input.activePreedit)
+
+            h.input.setComposingText("난", 1)
+            h.input.finishComposingText()
+            h.input.commitText(" ", 1)
+            assertEquals("하난 ", h.allSentUtf8())
+
+            // 2. Backspace inside active preedit consumes uncommitted preedit chars before sending 0x7F.
+            h.sentBytes.clear()
+            h.input.setComposingText("한글", 1)
+            h.input.deleteSurroundingText(1, 0)
+            assertEquals("한", h.input.activePreedit)
+            assertEquals(0, h.sentBytes.size, "Deleting uncommitted preedit char must not send 0x7F to PTY")
+
+            // Deleting 2 chars when 1 char remains in preedit clears preedit and sends one backspace (0x7F).
+            h.input.deleteSurroundingTextInCodePoints(2, 0)
+            assertEquals("", h.input.activePreedit)
+            assertArrayEquals(byteArrayOf(0x7F), h.allSentBytes())
+
+            // 3. Soft keyboard Return via commitText("\n", 1) encodes Enter (\r).
+            h.sentBytes.clear()
+            h.input.commitText("\n", 1)
+            assertArrayEquals("\r".toByteArray(), h.allSentBytes())
+
+            // 4. Mid-preedit CTRL tap flushes "한" once, and tapping 'ㅊ' (2-beolsik 'c' key) emits 0x03.
+            h.sentBytes.clear()
+            h.input.setComposingText("한", 1)
+            h.input.flushComposingBeforeControlKey()
+            h.latch.onFingerDown(ModifierKey.CTRL)
+            nowMs += 40L
+            h.latch.onFingerUp(ModifierKey.CTRL)
+            assertEquals(ModifierLatchState.ONE_SHOT, h.latch.stateOf(ModifierKey.CTRL))
+
+            h.input.setComposingText("ㅊ", 1)
+            assertEquals("", h.input.activePreedit)
+            assertEquals(ModifierLatchState.RELEASED, h.latch.stateOf(ModifierKey.CTRL))
+            assertArrayEquals("한".toByteArray(Charsets.UTF_8) + byteArrayOf(0x03), h.allSentBytes())
+
+            // 5. ALT plus 'ㅠ' (2-beolsik 'b' key) via commitText emits ESC plus b.
+            h.sentBytes.clear()
+            h.latch.onFingerDown(ModifierKey.ALT)
+            nowMs += 40L
+            h.latch.onFingerUp(ModifierKey.ALT)
+            h.input.commitText("ㅠ", 1)
+            assertArrayEquals("\u001bb".toByteArray(), h.allSentBytes())
+            assertEquals(ModifierLatchState.RELEASED, h.latch.stateOf(ModifierKey.ALT))
+        }
+    }
+
+    @Test
+    fun `gboard non-password setComposingRegion and deleteSurroundingText word replacements preserve exact PTY text`() {
+        // Property: setComposingRegion(s, e) erases retroactive committed chars only when replaced and is a no-op when cancelled.
+        // Seam: TerminalInputSession.setComposingRegion, commitText, finishComposingText, and deleteSurroundingText.
+        // Oracle: Conservation of shell line buffer under simulated Backspace, Left, and Right edits.
+        // Fault: appending "the" onto "teh" ("tehthe") on setComposingRegion or deleting text on cancelled recomposition.
+        val h = createHarness()
+        h.vtSession.use {
+            // Simulate shell line buffer interpreter for ASCII, 0x7F, ESC[D, and ESC[C.
+            fun applyPtyStreamToLineBuffer(chunks: List<ByteArray>): String {
+                val raw = chunks.fold(ByteArray(0)) { a, b -> a + b }.toString(Charsets.UTF_8)
+                val buf = StringBuilder()
+                var cursor = 0
+                var i = 0
+                while (i < raw.length) {
+                    when {
+                        raw.startsWith("\u001b[D", i) -> {
+                            cursor = (cursor - 1).coerceAtLeast(0)
+                            i += 3
+                        }
+                        raw.startsWith("\u001b[C", i) -> {
+                            cursor = (cursor + 1).coerceAtMost(buf.length)
+                            i += 3
+                        }
+                        raw[i] == '\u007f' -> {
+                            if (cursor > 0) {
+                                buf.deleteCharAt(cursor - 1)
+                                cursor--
+                            }
+                            i++
+                        }
+                        else -> {
+                            buf.insert(cursor, raw[i])
+                            cursor++
+                            i++
+                        }
+                    }
+                }
+                return buf.toString()
+            }
+
+            // Case 1: "teh" committed per char, followed by setComposingRegion(29, 32) and commitText("the", 1), yields "the".
+            h.input.commitText("t", 1)
+            h.input.commitText("e", 1)
+            h.input.commitText("h", 1)
+            h.input.setComposingRegion(29, 32)
+            h.input.commitText("the", 1)
+            assertEquals("the", applyPtyStreamToLineBuffer(h.sentBytes))
+
+            // Case 2: setComposingRegion(29, 32) followed by finishComposingText() with no edit leaves "the" unchanged.
+            val countBeforeCancel = h.sentBytes.size
+            h.input.setComposingRegion(29, 32)
+            h.input.finishComposingText()
+            assertEquals(countBeforeCancel, h.sentBytes.size)
+            assertEquals("the", applyPtyStreamToLineBuffer(h.sentBytes))
+
+            // Case 3: trailing space committed ("teh "), followed by setComposingRegion(28, 31) and commitText("the", 1), yields "the ".
+            h.sentBytes.clear()
+            h.input.commitText("teh ", 1)
+            h.input.beginBatchEdit()
+            h.input.setComposingRegion(28, 31)
+            h.input.commitText("the", 1)
+            h.input.endBatchEdit()
+            assertEquals("the ", applyPtyStreamToLineBuffer(h.sentBytes))
+
+            // Case 4: deleteSurroundingText(3, 0) plus commitText("cat", 1) on "dog" yields "cat".
+            h.sentBytes.clear()
+            h.input.commitText("dog", 1)
+            h.input.deleteSurroundingText(3, 0)
+            h.input.commitText("cat", 1)
+            assertEquals("cat", applyPtyStreamToLineBuffer(h.sentBytes))
+        }
     }
 }

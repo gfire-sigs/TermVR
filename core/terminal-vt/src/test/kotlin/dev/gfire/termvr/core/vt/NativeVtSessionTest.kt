@@ -345,4 +345,161 @@ class NativeVtSessionTest {
             assertArrayEquals("\u001bOD".toByteArray(), session.encodeKey(VtKeyEvent(VtKey.LEFT)))
         }
     }
+
+    @Test
+    fun `paste encoder neutralizes nested and C1 201 breakout attacks and strips internal ESC and C0 controls`() {
+        // Property: under DECSET 2004, encoded output starts with ESC[200~, ends with ESC[201~, and strips interior ESC, C1, and C0 bytes.
+        // Seam: NativeVtSession.isPasteSafe and NativeVtSession.encodePaste.
+        // Oracle: DECSET 2004 framing security invariant requiring zero interior escape or interrupt bytes.
+        // Fault: single-pass replace allowing nested ESC[201~, ESC[0201~, C1 CSI 201~, or OSC/ETX injection.
+        NativeVtSession(initialCols = 80, initialRows = 24).use { session ->
+            session.writePtyBytes("\u001b[?2004h".toByteArray(StandardCharsets.UTF_8))
+            assertTrue(session.isBracketedPasteActive())
+
+            val attacks = listOf(
+                "echo safe\u001b[201~\nrm -rf /",
+                "echo safe\u001b[\u001b[201~201~\nrm -rf /",
+                "echo safe\u001b[0201~\nrm -rf /",
+                "echo safe\u009b201~\nrm -rf /",
+                "safe\u001b]52;c;evil\u0007\u0003\u0004\u0000\u007ftext",
+            )
+            for (attack in attacks) {
+                assertFalse(session.isPasteSafe(attack), "Expected unsafe classification for attack payload")
+                assertNull(session.encodePaste(attack, allowUnsafe = false))
+
+                val encoded = session.encodePaste(attack, allowUnsafe = true)
+                assertNotNull(encoded)
+                val decoded = String(encoded!!, StandardCharsets.UTF_8)
+                assertTrue(decoded.startsWith("\u001b[200~"))
+                assertTrue(decoded.endsWith("\u001b[201~"))
+
+                val interior = decoded.substring("\u001b[200~".length, decoded.length - "\u001b[201~".length)
+                assertFalse(interior.contains('\u001b'), "Interior leaked ESC byte for payload: $attack")
+                assertFalse(interior.contains('\u009b'), "Interior leaked C1 CSI for payload: $attack")
+                assertFalse(interior.contains('\u0003'), "Interior leaked ETX for payload: $attack")
+                assertFalse(interior.contains('\u0004'), "Interior leaked EOT for payload: $attack")
+                assertFalse(interior.contains('\u0000'), "Interior leaked NUL for payload: $attack")
+                assertFalse(interior.contains('\u007f'), "Interior leaked DEL for payload: $attack")
+            }
+
+            val nested = String(
+                session.encodePaste("a\u001b[\u001b[201~201~b", allowUnsafe = true)!!,
+                StandardCharsets.UTF_8,
+            )
+            assertEquals("\u001b[200~ab\u001b[201~", nested)
+
+            val cjkWith0x9bContinuation = "갛201~丛201~"
+            assertTrue(session.isPasteSafe(cjkWith0x9bContinuation))
+            val encodedCjk = String(
+                session.encodePaste(cjkWith0x9bContinuation, allowUnsafe = false)!!,
+                StandardCharsets.UTF_8,
+            )
+            assertEquals("\u001b[200~갛201~丛201~\u001b[201~", encodedCjk)
+        }
+    }
+
+    @Test
+    fun `paste encoder normalizes CRLF and CR without stray Ctrl-M in bracketed and unbracketed modes`() {
+        // Property: CRLF and standalone CR normalize to LF inside bracketed paste (zero ^M) and to a single CR per line when unbracketed (zero \r\r).
+        // Seam: NativeVtSession.encodePaste.
+        // Oracle: GNU Readline / Neovim DECSET 2004 LF contract and POSIX PTY unbracketed single-CR contract.
+        // Fault: leaving \r inside bracketed paste (causing ^M in bash/nvim) or turning \r\n into \r\r when unbracketed.
+        NativeVtSession(initialCols = 80, initialRows = 24).use { session ->
+            val crlfScript = "#!/bin/bash\r\necho one\r\necho two\r"
+            val unbracketed = String(
+                session.encodePaste(crlfScript, allowUnsafe = true)!!,
+                StandardCharsets.UTF_8,
+            )
+            assertEquals("#!/bin/bash\recho one\recho two\r", unbracketed)
+            assertFalse(unbracketed.contains("\r\r"))
+
+            session.writePtyBytes("\u001b[?2004h".toByteArray(StandardCharsets.UTF_8))
+            val bracketed = String(
+                session.encodePaste(crlfScript, allowUnsafe = true)!!,
+                StandardCharsets.UTF_8,
+            )
+            assertEquals("\u001b[200~#!/bin/bash\necho one\necho two\n\u001b[201~", bracketed)
+            assertFalse(bracketed.contains('\r'))
+        }
+    }
+
+    @Test
+    fun `encodePasteChunks splits 72KiB CJK and emoji paste on UTF-8 boundaries within 4096 bytes`() {
+        // Property: for pastes above 64 KiB, every chunk is 1..4096 bytes, valid UTF-8, and concatenates to encodePaste.
+        // Seam: NativeVtSession.encodePasteChunks.
+        // Oracle: UTF-8 RFC 3629 codepoint boundary law and exact byte concatenation identity.
+        // Fault: single unchunked burst or splitting 3-byte Hangul, 4-byte emoji, or ESC[201~ across chunks.
+        NativeVtSession(initialCols = 80, initialRows = 24).use { session ->
+            session.writePtyBytes("\u001b[?2004h".toByteArray(StandardCharsets.UTF_8))
+            val unit = "가나다라마바사🚀é1234567\r\n"
+            val largePayload = unit.repeat(2600)
+            val expectedFull = session.encodePaste(largePayload, allowUnsafe = true)!!
+            assertTrue(expectedFull.size > 65_536)
+
+            val chunks = session.encodePasteChunks(largePayload, allowUnsafe = true, maxChunkBytes = 4096)
+            assertNotNull(chunks)
+            assertTrue(chunks!!.size >= 18, "Expected >= 18 chunks for >72 KiB payload, got ${chunks.size}")
+
+            val strictDecoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+
+            val reassembled = java.io.ByteArrayOutputStream(expectedFull.size)
+            for ((index, chunk) in chunks.withIndex()) {
+                assertTrue(chunk.size in 1..4096, "Chunk $index size=${chunk.size} out of 1..4096")
+                val decodedChunk = strictDecoder.decode(java.nio.ByteBuffer.wrap(chunk)).toString()
+                if (index == 0) {
+                    assertTrue(decodedChunk.startsWith("\u001b[200~"))
+                } else if (index < chunks.lastIndex) {
+                    assertFalse(decodedChunk.contains('\u001b'))
+                }
+                if (index == chunks.lastIndex) {
+                    assertTrue(decodedChunk.endsWith("\u001b[201~"))
+                }
+                reassembled.write(chunk)
+            }
+            assertArrayEquals(expectedFull, reassembled.toByteArray())
+        }
+    }
+
+    @Test
+    fun `mouse encoder suppresses MOTION in 1000 mode and deduplicates cell MOTION in 1002 mode`() {
+        // Property: mode 1000 suppresses MOTION, whereas mode 1002 emits MOTION for pressed buttons only on cell changes.
+        // Seam: NativeVtSession.encodeMouse.
+        // Oracle: XTerm SGR 1006 and button-event tracking 1000 and 1002 specification.
+        // Fault: emitting SGR motion sequences in mode 1000 or repeating identical cell coordinates on sub-cell jitter.
+        NativeVtSession(initialCols = 80, initialRows = 24).use { session ->
+            session.writePtyBytes("\u001b[?1000h\u001b[?1006h".toByteArray(StandardCharsets.UTF_8))
+            assertEquals(
+                0,
+                session.encodeMouse(VtMouseEvent(VtMouseAction.MOTION, VtMouseButton.LEFT, col = 5, row = 6)).size,
+            )
+            assertEquals(
+                "\u001b[<64;6;7M",
+                String(session.encodeMouse(VtMouseEvent(VtMouseAction.WHEEL_UP, VtMouseButton.NONE, col = 5, row = 6)), StandardCharsets.UTF_8),
+            )
+            assertEquals(
+                "\u001b[<65;6;7M",
+                String(session.encodeMouse(VtMouseEvent(VtMouseAction.WHEEL_DOWN, VtMouseButton.NONE, col = 5, row = 6)), StandardCharsets.UTF_8),
+            )
+
+            session.writePtyBytes("\u001b[?1002h".toByteArray(StandardCharsets.UTF_8))
+            assertEquals(
+                0,
+                session.encodeMouse(VtMouseEvent(VtMouseAction.MOTION, VtMouseButton.NONE, col = 5, row = 6)).size,
+            )
+            assertEquals(
+                "\u001b[<32;6;7M",
+                String(session.encodeMouse(VtMouseEvent(VtMouseAction.MOTION, VtMouseButton.LEFT, col = 5, row = 6)), StandardCharsets.UTF_8),
+            )
+            assertEquals(
+                0,
+                session.encodeMouse(VtMouseEvent(VtMouseAction.MOTION, VtMouseButton.LEFT, col = 5, row = 6)).size,
+            )
+            assertEquals(
+                "\u001b[<32;7;7M",
+                String(session.encodeMouse(VtMouseEvent(VtMouseAction.MOTION, VtMouseButton.LEFT, col = 6, row = 6)), StandardCharsets.UTF_8),
+            )
+        }
+    }
 }

@@ -113,11 +113,40 @@ void TestEncodersPasteAndKittyGraphics() {
     assert(std::string(mbytes.begin(), mbytes.end()) == "\x1b[<0;4;5M");
 
     assert(!VtSessionNative::IsPasteSafe("rm -rf /\n", 9));
-    assert(VtSessionNative::IsPasteSafe("safe_text", 9));
+    assert(!VtSessionNative::IsPasteSafe("esc\x1bpayload", 11));
+    assert(!VtSessionNative::IsPasteSafe("c1\xc2\x9b" "201~", 8));
+    assert(VtSessionNative::IsPasteSafe("safe_text\twith_tab", 18));
     std::vector<uint8_t> pasted;
     assert(!session.EncodePaste("a\nb", 3, false, &pasted));
     assert(session.EncodePaste("a\x1b[201~b", 8, true, &pasted));
     assert(std::string(pasted.begin(), pasted.end()) == "\x1b[200~ab\x1b[201~");
+
+    // Nested ESC[201~, zero-padded ESC[0201~, C1 CSI 201~, raw ESC/ETX, and CRLF normalization.
+    const std::string nested_attack = "a\x1b[\x1b[201~201~b\r\nc\x1b[0201~d\xc2\x9b" "201~e\x03\x1b]52;c;x\x07";
+    assert(session.EncodePaste(nested_attack.data(), nested_attack.size(), true, &pasted));
+    std::string nested_out(pasted.begin(), pasted.end());
+    assert(nested_out == "\x1b[200~ab\ncde]52;c;x\x1b[201~");
+
+    // Hangul '갛' (EA B0 9B) and Han '丛' (E4 B8 9B) end in continuation byte 0x9B before "201~" and must remain intact.
+    const std::string hangul_9b = "\xEA\xB0\x9B" "201~\xE4\xB8\x9B" "201~";
+    assert(VtSessionNative::IsPasteSafe(hangul_9b.data(), hangul_9b.size()));
+    assert(session.EncodePaste(hangul_9b.data(), hangul_9b.size(), false, &pasted));
+    assert(std::string(pasted.begin(), pasted.end()) == "\x1b[200~\xEA\xB0\x9B" "201~\xE4\xB8\x9B" "201~\x1b[201~");
+
+    // Standalone raw 8-bit 0x9B CSI (invalid UTF-8 lead) followed by "201~" must be rejected as unsafe and stripped.
+    const std::string raw_c1_attack = "x\x9b" "201~y";
+    assert(!VtSessionNative::IsPasteSafe(raw_c1_attack.data(), raw_c1_attack.size()));
+    assert(session.EncodePaste(raw_c1_attack.data(), raw_c1_attack.size(), true, &pasted));
+    assert(std::string(pasted.begin(), pasted.end()) == "\x1b[200~xy\x1b[201~");
+
+    // Disable bracketed paste and verify CRLF normalizes to single CR (never \r\r).
+    const char* disable_bp = "\x1b[?2004l";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(disable_bp), std::strlen(disable_bp));
+    const std::string crlf_in = "echo 1\r\necho 2\r";
+    assert(session.EncodePaste(crlf_in.data(), crlf_in.size(), true, &pasted));
+    assert(std::string(pasted.begin(), pasted.end()) == "echo 1\recho 2\r");
+    const char* reenable_bp = "\x1b[?2004h";
+    session.WritePtyBytes(reinterpret_cast<const uint8_t*>(reenable_bp), std::strlen(reenable_bp));
 
     // Kitty APC G: 2x2 RGBA pixels (16 bytes encoded as "AAAAAP8AAP//AAAAAP//AA=="), z=-1
     const char* kitty_apc = "\x1b_Ga=T,f=32,s=2,v=2,c=2,r=1,z=-1;AAAAAP8AAP//AAAAAP//AA==\x1b\\";
