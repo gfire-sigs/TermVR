@@ -334,7 +334,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 distanceX: Float,
                 distanceY: Float,
             ): Boolean {
-                if (scaleGestureDetector.isInProgress) return false
+                if (scaleGestureDetector.isInProgress || e2.pointerCount > 1) return false
                 return touchRouter.onScroll(
                     downX = e1?.x,
                     downY = e1?.y,
@@ -343,6 +343,7 @@ class TerminalSurfaceView @JvmOverloads constructor(
                     distanceX = distanceX,
                     distanceY = distanceY,
                     hardwareMetaState = e2.metaState,
+                    pointerCount = e2.pointerCount,
                 )
             }
 
@@ -703,7 +704,8 @@ class TerminalSurfaceView @JvmOverloads constructor(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
-        when (event.actionMasked) {
+        val action = event.actionMasked
+        when (action) {
             MotionEvent.ACTION_DOWN -> {
                 ignoreCurrentGesture = GestureEdgeGuard.isWithinEdgeGuard(event.x, width, density)
                 if (ignoreCurrentGesture) {
@@ -712,10 +714,18 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain().apply { addMovement(event) }
             }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ignoreCurrentGesture) return false
+                touchRouter.onMultiTouchDetected(event.x, event.y, event.metaState)
+            }
             MotionEvent.ACTION_MOVE -> {
                 if (ignoreCurrentGesture) return false
                 velocityTracker?.addMovement(event)
-                touchRouter.onPointerMove(event.x, event.y)
+                if (event.pointerCount > 1) {
+                    touchRouter.onMultiTouchDetected(event.x, event.y, event.metaState)
+                } else {
+                    touchRouter.onPointerMove(event.x, event.y, event.pointerCount)
+                }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (ignoreCurrentGesture) {
@@ -724,13 +734,15 @@ class TerminalSurfaceView @JvmOverloads constructor(
                 }
                 velocityTracker?.recycle()
                 velocityTracker = null
-                touchRouter.onPointerUpOrCancel(event.x, event.y, event.metaState)
             }
         }
 
         if (ignoreCurrentGesture) return false
         var handled = scaleGestureDetector.onTouchEvent(event)
         handled = gestureDetector.onTouchEvent(event) || handled
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            touchRouter.onPointerUpOrCancel(event.x, event.y, event.metaState)
+        }
         return handled || super.onTouchEvent(event)
     }
 
@@ -1871,6 +1883,7 @@ internal class TerminalTouchGestureRouter(
 
     private var activeDragMode: DragMode = DragMode.NONE
     private var activeGesturePaneId: String = ""
+    private var multiTouchSuppressed: Boolean = false
     private var doubleTapDragArmed: Boolean = false
     private var mouseButtonDownSent: Boolean = false
     private var lastDragCol: Int = -1
@@ -1884,6 +1897,7 @@ internal class TerminalTouchGestureRouter(
 
     fun onDown(xPx: Float, yPx: Float): Boolean {
         isLongPressSelecting = false
+        multiTouchSuppressed = false
         activeDragMode = DragMode.NONE
         mouseButtonDownSent = false
         lastDragCol = -1
@@ -1895,6 +1909,7 @@ internal class TerminalTouchGestureRouter(
     }
 
     fun onSingleTapConfirmed(xPx: Float, yPx: Float, hardwareMetaState: Int = 0): Boolean {
+        if (multiTouchSuppressed) return false
         val layout = layoutProvider()
         val pane = SplitPaneLayoutCalculator.paneAt(layout, xPx, yPx) ?: return false
         ensureFocused(pane)
@@ -1912,6 +1927,7 @@ internal class TerminalTouchGestureRouter(
     }
 
     fun onDoubleTap(xPx: Float, yPx: Float, hardwareMetaState: Int = 0): Boolean {
+        if (multiTouchSuppressed) return false
         val layout = layoutProvider()
         val pane = SplitPaneLayoutCalculator.paneAt(layout, xPx, yPx) ?: return false
         ensureFocused(pane)
@@ -1931,7 +1947,7 @@ internal class TerminalTouchGestureRouter(
     }
 
     fun onLongPress(xPx: Float, yPx: Float) {
-        if (activeDragMode != DragMode.NONE) return
+        if (multiTouchSuppressed || activeDragMode != DragMode.NONE) return
         val layout = layoutProvider()
         val pane = SplitPaneLayoutCalculator.paneAt(layout, xPx, yPx) ?: return
         ensureFocused(pane)
@@ -1951,7 +1967,13 @@ internal class TerminalTouchGestureRouter(
         distanceX: Float,
         distanceY: Float,
         hardwareMetaState: Int = 0,
+        pointerCount: Int = 1,
     ): Boolean {
+        if (pointerCount > 1) {
+            onMultiTouchDetected(currentX, currentY, hardwareMetaState)
+            return false
+        }
+        if (multiTouchSuppressed) return false
         val pane = resolveGesturePane(downX, downY) ?: return false
         if (isLongPressSelecting) {
             val (col, row) = pixelToCell(pane, currentX, currentY)
@@ -1962,7 +1984,9 @@ internal class TerminalTouchGestureRouter(
 
         if (pane.session.isMouseTrackingActive() && !isShiftOverrideActive(hardwareMetaState)) {
             if (activeDragMode == DragMode.NONE) {
-                activeDragMode = if (doubleTapDragArmed || abs(distanceX) > abs(distanceY)) {
+                val axisDx = if (downX != null) (currentX - downX) else -distanceX
+                val axisDy = if (downY != null) (currentY - downY) else -distanceY
+                activeDragMode = if (doubleTapDragArmed || abs(axisDx) > abs(axisDy)) {
                     DragMode.MOUSE_BUTTON_DRAG
                 } else {
                     DragMode.MOUSE_WHEEL
@@ -2040,8 +2064,30 @@ internal class TerminalTouchGestureRouter(
         return true
     }
 
-    fun onPointerMove(currentX: Float, currentY: Float) {
-        if (!isLongPressSelecting) return
+    fun onMultiTouchDetected(xPx: Float, yPx: Float, hardwareMetaState: Int = 0) {
+        if (!multiTouchSuppressed) {
+            multiTouchSuppressed = true
+            doubleTapDragArmed = false
+            isLongPressSelecting = false
+            if (activeDragMode == DragMode.MOUSE_BUTTON_DRAG && mouseButtonDownSent) {
+                val pane = resolveGesturePane(null, null)
+                if (pane != null) {
+                    val (col, row) = pixelToCell(pane, xPx, yPx)
+                    val mods = modifierLatchProvider().activeModifierMask()
+                    sendMouse(pane, VtMouseAction.RELEASE, VtMouseButton.LEFT, mods, col, row, xPx.toInt(), yPx.toInt())
+                }
+                mouseButtonDownSent = false
+            }
+            activeDragMode = DragMode.NONE
+        }
+    }
+
+    fun onPointerMove(currentX: Float, currentY: Float, pointerCount: Int = 1) {
+        if (pointerCount > 1) {
+            onMultiTouchDetected(currentX, currentY)
+            return
+        }
+        if (multiTouchSuppressed || !isLongPressSelecting) return
         val pane = resolveGesturePane(null, null) ?: return
         val (col, row) = pixelToCell(pane, currentX, currentY)
         updateSelectionBounds(pane, selectionState.startRow, selectionState.startCol, row, col)
@@ -2049,7 +2095,7 @@ internal class TerminalTouchGestureRouter(
 
     fun onPointerUpOrCancel(xPx: Float, yPx: Float, hardwareMetaState: Int = 0) {
         val pane = resolveGesturePane(null, null)
-        if (pane != null) {
+        if (!multiTouchSuppressed && pane != null) {
             if (activeDragMode == DragMode.MOUSE_BUTTON_DRAG && mouseButtonDownSent) {
                 val (col, row) = pixelToCell(pane, xPx, yPx)
                 val mods = modifierLatchProvider().activeModifierMask()
@@ -2069,6 +2115,7 @@ internal class TerminalTouchGestureRouter(
             }
         }
         isLongPressSelecting = false
+        multiTouchSuppressed = false
         activeDragMode = DragMode.NONE
         mouseButtonDownSent = false
         doubleTapDragArmed = false
@@ -2077,10 +2124,10 @@ internal class TerminalTouchGestureRouter(
     }
 
     fun canFling(downX: Float?, downY: Float?, hardwareMetaState: Int = 0): Boolean {
-        val pane = resolveGesturePane(downX, downY) ?: return false
-        if (isLongPressSelecting || activeDragMode == DragMode.MOUSE_BUTTON_DRAG) {
+        if (multiTouchSuppressed || isLongPressSelecting || activeDragMode == DragMode.MOUSE_BUTTON_DRAG) {
             return false
         }
+        val pane = resolveGesturePane(downX, downY) ?: return false
         return !pane.session.isMouseTrackingActive() || isShiftOverrideActive(hardwareMetaState)
     }
 

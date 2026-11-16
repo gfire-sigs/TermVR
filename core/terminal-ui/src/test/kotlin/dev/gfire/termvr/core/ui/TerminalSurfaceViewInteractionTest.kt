@@ -231,6 +231,38 @@ class TerminalSurfaceViewInteractionTest {
             latch.onFingerDown(ModifierKey.SHIFT)
             assertTrue(router.canFling(45f, 100f, KeyEvent.META_SHIFT_ON))
             latch.resetAll()
+
+            // 8. Total displacement from (downX, downY) classifies vertical wheel even if single-frame deltaX jitters larger.
+            ptySent.clear()
+            router.onDown(100f, 100f)
+            // Overall displacement from (100, 100) to (103, 75) is dx=+3, dy=-25 (vertical), while frame delta has abs(dx)=4 > abs(dy)=2.
+            router.onScroll(downX = 100f, downY = 100f, currentX = 103f, currentY = 75f, distanceX = -4f, distanceY = 2f)
+            router.onScroll(downX = 100f, downY = 100f, currentX = 103f, currentY = 55f, distanceX = 0f, distanceY = 20f)
+            assertEquals(listOf("\u001b[<65;11;3M"), ptySent)
+            router.onPointerUpOrCancel(103f, 55f)
+
+            // 9. Multi-touch pinch suppresses SGR mouse wheel and releases any active drag immediately.
+            ptySent.clear()
+            router.onDown(25f, 45f)
+            router.onScroll(25f, 45f, 35f, 45f, -10f, 0f)
+            assertEquals(listOf("\u001b[<0;3;3M", "\u001b[<32;4;3M"), ptySent)
+            ptySent.clear()
+
+            router.onMultiTouchDetected(35f, 45f)
+            assertEquals(listOf("\u001b[<0;4;3m"), ptySent)
+            ptySent.clear()
+            assertFalse(router.onScroll(25f, 45f, 35f, 15f, 0f, 30f, pointerCount = 2))
+            assertTrue(ptySent.isEmpty())
+            router.onPointerUpOrCancel(35f, 15f)
+
+            // 10. During long-press selection (even with mouse tracking disabled), canFling stays false before onPointerUpOrCancel.
+            session.writePtyBytes("\u001b[?1002l\u001b[?1006l".toByteArray(StandardCharsets.UTF_8))
+            assertFalse(session.isMouseTrackingActive())
+            router.onDown(65f, 10f)
+            router.onLongPress(65f, 10f)
+            router.onScroll(65f, 10f, 95f, 30f, -30f, -20f)
+            assertFalse(router.canFling(65f, 10f, 0), "Long-press selection must block fling on finger lift")
+            router.onPointerUpOrCancel(95f, 30f)
         }
     }
 
