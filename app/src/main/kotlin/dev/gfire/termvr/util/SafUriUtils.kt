@@ -30,6 +30,7 @@ object SafUriUtils {
     const val STREAM_CHUNK_BYTES: Int = 64 * 1024
     const val MAX_FILENAME_BYTES: Int = 255
     const val HIDDEN_META_TEMP_FILE: String = ".gvx_meta.tmp"
+    internal const val MAX_STAGING_STEM_BYTES: Int = 200
 
     private val OPAQUE_SAF_ID_REGEX = Regex("^[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*:\\d+$")
     private val stagingCounter = AtomicLong(1L)
@@ -201,7 +202,11 @@ object SafUriUtils {
         val input = openStream() ?: throw IOException("Unable to open input stream for ${targetFile.name}")
         val stagingFile = File(
             parentDir,
-            ".${targetFile.name}.${stagingCounter.getAndIncrement()}${WorkspaceDocumentsEngine.TEMP_WRITE_SUFFIX}",
+            buildBoundedStagingFileName(
+                targetName = targetFile.name,
+                seq = stagingCounter.getAndIncrement(),
+                leadingDot = true,
+            ),
         )
         var committed = false
         try {
@@ -369,7 +374,29 @@ object SafUriUtils {
         return if (ext.toByteArray(StandardCharsets.UTF_8).size <= 24) ext else ""
     }
 
-    private fun takeUtf8PrefixByCodePoints(text: String, maxBytes: Int): String {
+    internal fun buildBoundedStagingFileName(
+        targetName: String,
+        seq: Long? = null,
+        leadingDot: Boolean = false,
+    ): String {
+        val prefix = if (leadingDot) "." else ""
+        val suffix = if (seq != null) {
+            ".$seq${WorkspaceDocumentsEngine.TEMP_WRITE_SUFFIX}"
+        } else {
+            WorkspaceDocumentsEngine.TEMP_WRITE_SUFFIX
+        }
+        val candidate = "$prefix$targetName$suffix"
+        if (!leadingDot && seq == null && candidate.toByteArray(StandardCharsets.UTF_8).size <= MAX_FILENAME_BYTES) {
+            return candidate
+        }
+        val fixedBytes = prefix.toByteArray(StandardCharsets.UTF_8).size +
+            suffix.toByteArray(StandardCharsets.UTF_8).size
+        val stemBudget = minOf(MAX_STAGING_STEM_BYTES, (MAX_FILENAME_BYTES - fixedBytes).coerceAtLeast(1))
+        val boundedStem = takeUtf8PrefixByCodePoints(targetName, stemBudget).ifEmpty { "tmp" }
+        return "$prefix$boundedStem$suffix"
+    }
+
+    internal fun takeUtf8PrefixByCodePoints(text: String, maxBytes: Int): String {
         val sb = StringBuilder()
         var usedBytes = 0
         var idx = 0

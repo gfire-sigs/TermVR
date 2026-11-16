@@ -401,14 +401,19 @@ class WorkspaceDocumentsEngine(
 
     private fun allocateStagingFile(parentDir: File, targetName: String): File {
         synchronized(stagingLock) {
-            val primary = File(parentDir, "$targetName$TEMP_WRITE_SUFFIX")
+            val primaryName = SafUriUtils.buildBoundedStagingFileName(targetName = targetName)
+            val primary = File(parentDir, primaryName)
             val primaryKey = primary.toPath().toAbsolutePath().normalize()
             if (activeStagingPaths.add(primaryKey)) {
                 return primary
             }
             while (true) {
                 val seq = concurrentStagingSeq.getAndIncrement()
-                val alt = File(parentDir, "$targetName.$seq$TEMP_WRITE_SUFFIX")
+                val altName = SafUriUtils.buildBoundedStagingFileName(
+                    targetName = targetName,
+                    seq = seq,
+                )
+                val alt = File(parentDir, altName)
                 val altKey = alt.toPath().toAbsolutePath().normalize()
                 if (activeStagingPaths.add(altKey)) {
                     return alt
@@ -622,6 +627,12 @@ class WorkspaceDocumentsEngine(
         )
     }
 
+    data class ParsedOpenMode(
+        val wantsWrite: Boolean,
+        val truncateExisting: Boolean,
+        val append: Boolean,
+    )
+
     companion object {
         const val ROOT_ID = "termvr_workspaces"
         const val ROOT_DOCUMENT_ID = "root"
@@ -630,6 +641,15 @@ class WorkspaceDocumentsEngine(
         const val HIDDEN_META_DIR = ".gvx_meta"
         const val HIDDEN_META_TEMP_FILE = ".gvx_meta.tmp"
         const val TEMP_WRITE_SUFFIX = ".termvr.tmp"
+
+        fun parseOpenMode(mode: String): ParsedOpenMode = when (mode) {
+            "r" -> ParsedOpenMode(wantsWrite = false, truncateExisting = false, append = false)
+            "w", "wt" -> ParsedOpenMode(wantsWrite = true, truncateExisting = true, append = false)
+            "wa" -> ParsedOpenMode(wantsWrite = true, truncateExisting = false, append = true)
+            "rw" -> ParsedOpenMode(wantsWrite = true, truncateExisting = false, append = false)
+            "rwt" -> ParsedOpenMode(wantsWrite = true, truncateExisting = true, append = false)
+            else -> throw IllegalArgumentException("Unsupported document open mode: $mode")
+        }
     }
 }
 
@@ -704,8 +724,9 @@ class TermVrDocumentsProvider : DocumentsProvider() {
         mode: String,
         signal: CancellationSignal?,
     ): ParcelFileDescriptor {
-        val wantsWrite = mode.contains('w') || mode.contains('a')
-        if (!wantsWrite) {
+        val parsedMode = WorkspaceDocumentsEngine.parseOpenMode(mode)
+        val pfdMode = ParcelFileDescriptor.parseMode(mode)
+        if (!parsedMode.wantsWrite) {
             val resolved = engine.resolveDocumentId(documentId) as? WorkspaceDocumentsEngine.ResolvedDocument.ProfileEntry
                 ?: throw FileNotFoundException("Not a readable file: $documentId")
             if (resolved.relativePath.isEmpty() || resolved.targetFile.isDirectory || !resolved.targetFile.exists()) {
@@ -714,9 +735,8 @@ class TermVrDocumentsProvider : DocumentsProvider() {
             return ParcelFileDescriptor.open(resolved.targetFile, ParcelFileDescriptor.MODE_READ_ONLY)
         }
 
-        val truncate = mode.contains('t') || !mode.contains('r')
+        val truncate = parsedMode.truncateExisting && (pfdMode and ParcelFileDescriptor.MODE_TRUNCATE) != 0
         val tx = engine.beginWriteTransaction(documentId, truncateExisting = truncate)
-        val pfdMode = ParcelFileDescriptor.parseMode(mode)
         return try {
             ParcelFileDescriptor.open(tx.stagingFile, pfdMode, mainHandler) { err ->
                 val cancelled = signal?.isCanceled == true

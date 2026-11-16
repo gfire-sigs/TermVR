@@ -777,21 +777,100 @@ class FilesViewModel(
     fun discardCheckpointAndUnlock() {
         scope.launch {
             val profile = resolveSelectedProfile() ?: return@launch
+            val currentRunState = runtimeGateway.runStates.value[profile.id] ?: SandboxRunState.STOPPED
+            if (currentRunState == SandboxRunState.FREEZING) {
+                localState.value = localState.value.copy(
+                    errorMessage = "Wait for checkpoint freeze to finish before unlocking.",
+                )
+                return@launch
+            }
             localState.value = localState.value.copy(busy = true, errorMessage = null)
+            var shouldRefreshVol = false
             try {
                 runtimeGateway.discardCheckpoint(profile.id)
+                if (runtimeGateway.runStates.value[profile.id] == SandboxRunState.FROZEN) {
+                    runtimeGateway.stopSandbox(profile.id)
+                }
+                val clearedPause = localState.value.selectedVolumePause?.let { pause ->
+                    val remainingIds = pause.attachedProfileIds - profile.id
+                    if (remainingIds.isEmpty()) null else pause.copy(attachedProfileIds = remainingIds)
+                }
                 localState.value = localState.value.copy(
                     hasActiveCheckpoint = false,
-                    selectedVolumePause = null,
+                    selectedVolumePause = clearedPause,
                     statusMessage = "Unlocked workspace.",
                 )
                 refreshWorkspace()
+                shouldRefreshVol = localState.value.selectedVolumeName != null
             } catch (ce: CancellationException) {
                 throw ce
             } catch (err: Throwable) {
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Failed to unlock workspace")
             } finally {
                 localState.value = localState.value.copy(busy = false)
+            }
+            if (shouldRefreshVol) {
+                refreshVolume()
+            }
+        }
+    }
+
+    /**
+     * Discards saved checkpoints for all frozen containers attached to [volumeName] and refreshes the volume.
+     */
+    fun discardCheckpointsForVolume(volumeName: String) {
+        scope.launch {
+            val profiles = currentProfilesSnapshot()
+            val attached = findAttachedProfiles(profiles, volumeName)
+            if (attached.any { runtimeGateway.runStates.value[it.id] == SandboxRunState.FREEZING }) {
+                localState.value = localState.value.copy(
+                    errorMessage = "Wait for checkpoint freeze to finish before unlocking.",
+                )
+                return@launch
+            }
+            localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+            var shouldRefreshWorkspace = false
+            var shouldRefreshVol = false
+            try {
+                val unlockedIds = HashSet<String>()
+                for (profile in attached) {
+                    val state = runtimeGateway.runStates.value[profile.id] ?: SandboxRunState.STOPPED
+                    val hadCheckpoint = runtimeGateway.hasActiveCheckpoint(profile.id)
+                    if (state == SandboxRunState.FROZEN || hadCheckpoint) {
+                        runtimeGateway.discardCheckpoint(profile.id)
+                        if (state == SandboxRunState.FROZEN) {
+                            runtimeGateway.stopSandbox(profile.id)
+                        }
+                        unlockedIds.add(profile.id)
+                    }
+                }
+                val selectedId = localState.value.selectedProfileId ?: uiState.value.selectedProfileId
+                val selectedAffected = selectedId != null && selectedId in unlockedIds
+                localState.value = localState.value.copy(
+                    hasActiveCheckpoint = if (selectedAffected) false else localState.value.hasActiveCheckpoint,
+                    selectedVolumePause = if (localState.value.selectedVolumeName == volumeName) {
+                        null
+                    } else {
+                        localState.value.selectedVolumePause
+                    },
+                    statusMessage = "Discarded checkpoint for $volumeName.",
+                )
+                shouldRefreshWorkspace = selectedAffected
+                shouldRefreshVol = localState.value.selectedVolumeName == volumeName
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (err: Throwable) {
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "Failed to discard checkpoint",
+                )
+            } finally {
+                localState.value = localState.value.copy(busy = false)
+            }
+            if (shouldRefreshWorkspace) {
+                refreshWorkspace()
+            }
+            if (shouldRefreshVol) {
+                refreshVolume()
             }
         }
     }

@@ -293,6 +293,78 @@ class FilesViewModelTest {
         vmScope.cancel()
     }
 
+    @Test
+    fun unlocksLiveFrozenStateBlocksMidFreezeUnlockAndUnlocksDualPaneFrozenVolumes() = runTest(testDispatcher) {
+        // Property: Unlocking a live FROZEN profile clears both persisted checkpoint state and live FROZEN
+        // runState, refuses unlock while FREEZING is mid-flight, and unlocks frozen volume owners in dual-pane
+        // mode even when another unlocked profile chip is selected.
+        // Seam: FilesViewModel.discardCheckpointAndUnlock + discardCheckpointsForVolume + uiState.
+        // Fault: Leaving runStates[id]==FROZEN so writeLocked stays true after clicking Unlock, or checking
+        // selectedProfile.writeLocked instead of pauseState.attachedProfileIds on frozen volumes.
+        val (repo, gateway) = createFixtures()
+        val unlockedSelected = SandboxProfile(
+            id = "shell-a",
+            displayName = "Shell A",
+            imageRef = "alpine:3.21",
+        )
+        val frozenVolumeOwner = SandboxProfile(
+            id = "worker-b",
+            displayName = "Worker B",
+            imageRef = "debian:trixie-slim",
+            persistentRootfs = true,
+        )
+        repo.upsertProfile(unlockedSelected)
+        repo.upsertProfile(frozenVolumeOwner)
+        gateway.createVolume(frozenVolumeOwner.rootfsVolumeName)
+
+        // 1. Reject unlock while FREEZING is mid-flight.
+        gateway.activeCheckpoints.add(unlockedSelected.id)
+        gateway.runStates.value = mapOf(
+            unlockedSelected.id to SandboxRunState.FREEZING,
+            frozenVolumeOwner.id to SandboxRunState.FROZEN,
+        )
+        gateway.activeCheckpoints.add(frozenVolumeOwner.id)
+
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = FilesViewModel(repo, gateway, scope = vmScope, ioDispatcher = testDispatcher)
+        advanceUntilIdle()
+
+        assertTrue(vm.uiState.value.writeLocked)
+        vm.discardCheckpointAndUnlock()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.writeLocked)
+        assertEquals(SandboxRunState.FREEZING, gateway.runStates.value[unlockedSelected.id])
+        assertNotNull(vm.uiState.value.errorMessage)
+
+        // 2. Once FROZEN, discardCheckpointAndUnlock clears both checkpoint and live FROZEN runState immediately.
+        gateway.runStates.value = gateway.runStates.value + (unlockedSelected.id to SandboxRunState.FROZEN)
+        vm.discardCheckpointAndUnlock()
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.writeLocked)
+        assertEquals(SandboxRunState.STOPPED, gateway.runStates.value[unlockedSelected.id])
+
+        // 3. Dual-pane scenario: shell-a is selected and unlocked, while worker-b's rootfs volume is FROZEN.
+        vm.browseVolume(frozenVolumeOwner.rootfsVolumeName)
+        advanceUntilIdle()
+        vm.selectProfile(unlockedSelected.id)
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.writeLocked)
+        assertEquals(VolumePauseKind.FROZEN_CHECKPOINT_LOCK, vm.uiState.value.selectedVolumePause?.kind)
+        assertEquals(0, gateway.volumeHelperCalls.get())
+
+        // Discarding checkpoints for the frozen volume unlocks worker-b and refreshes the volume via helper.
+        vm.discardCheckpointsForVolume(frozenVolumeOwner.rootfsVolumeName)
+        advanceUntilIdle()
+
+        assertEquals(SandboxRunState.STOPPED, gateway.runStates.value[frozenVolumeOwner.id])
+        assertFalse(gateway.hasActiveCheckpoint(frozenVolumeOwner.id))
+        assertNull(vm.uiState.value.selectedVolumePause)
+        assertEquals(1, gateway.volumeHelperCalls.get())
+
+        vmScope.cancel()
+    }
+
     private fun createFixtures(): Pair<ProfileRepository, TestRuntimeGateway> {
         val secretStore = object : SecretStore {
             private val map = ConcurrentHashMap<String, CharArray>()

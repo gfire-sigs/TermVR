@@ -331,6 +331,42 @@ class SafUriUtilsTest {
         assertArrayEquals(originalBytes, target.readBytes())
         assertTrue(tempDir.listFiles().orEmpty().none { it.name.endsWith(".termvr.tmp") })
     }
+
+    @Test
+    fun streamsMaxLength255ByteUtf8FileNameWithoutExceedingPosixNameMaxOnStaging() = runTest {
+        // Property: Streaming a target filename whose UTF-8 byte length is 255 (NAME_MAX) keeps its
+        // sibling .termvr.tmp staging entry <= 255 UTF-8 bytes and commits the full 255-byte target name.
+        // Seam: SafUriUtils.resolveDisplayName + copyStreamAtomicallyToFile.
+        // Fault: Building ".${targetFile.name}.${seq}.termvr.tmp" > 255 bytes throws ENAMETOOLONG on ext4/APFS.
+        val rawLongName = "가".repeat(100) + ".tar.gz"
+        val resolvedName = SafUriUtils.resolveDisplayName(
+            queriedDisplayName = rawLongName,
+            rawLastPathSegment = null,
+        )
+        val resolvedUtf8Len = resolvedName.toByteArray(StandardCharsets.UTF_8).size
+        assertTrue(resolvedUtf8Len in 250..SafUriUtils.MAX_FILENAME_BYTES)
+
+        val target = File(tempDir, resolvedName)
+        val payload = "255-byte-filename-payload".encodeToByteArray()
+        var stagingUtf8Len = -1
+
+        val copied = SafUriUtils.copyStreamAtomicallyToFile(
+            openStream = { ByteArrayInputStream(payload) },
+            targetFile = target,
+            fsyncChannel = { channel ->
+                val staging = tempDir.listFiles().orEmpty().single { it.name.endsWith(".termvr.tmp") }
+                stagingUtf8Len = staging.name.toByteArray(StandardCharsets.UTF_8).size
+                channel.force(true)
+            },
+        )
+
+        assertEquals(payload.size.toLong(), copied)
+        assertTrue(stagingUtf8Len in 1..SafUriUtils.MAX_FILENAME_BYTES)
+        assertTrue(target.isFile)
+        assertEquals(resolvedName, target.name)
+        assertArrayEquals(payload, target.readBytes())
+        assertTrue(tempDir.listFiles().orEmpty().none { it.name.endsWith(".termvr.tmp") })
+    }
 }
 
 private class SingleRowDisplayNameCursor(private val displayName: String?) : Cursor {

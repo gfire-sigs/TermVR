@@ -356,4 +356,80 @@ class TermVrDocumentsProviderTest {
         assertEquals("journal-v3", metaJournal.readText())
         assertEquals("compaction-v3", metaCompaction.readText())
     }
+
+    @Test
+    fun supportsAppendModeWithoutTruncatingAndHandlesMax255ByteUtf8DocumentSaves() {
+        // Property: Open mode "wa" preserves existing file bytes for append instead of truncating, invalid
+        // open modes fail before staging, and 255-byte UTF-8 filenames keep .termvr.tmp <= 255 UTF-8 bytes.
+        // Seam: WorkspaceDocumentsEngine.parseOpenMode, createEntry, beginWriteTransaction, finishWriteTransaction.
+        // Fault: Treating "wa" as truncateExisting=true or exceeding 255-byte NAME_MAX on <name>.termvr.tmp.
+        val readMode = WorkspaceDocumentsEngine.parseOpenMode("r")
+        assertFalse(readMode.wantsWrite)
+        assertFalse(readMode.truncateExisting)
+
+        val writeMode = WorkspaceDocumentsEngine.parseOpenMode("w")
+        assertTrue(writeMode.wantsWrite)
+        assertTrue(writeMode.truncateExisting)
+
+        val writeTruncMode = WorkspaceDocumentsEngine.parseOpenMode("wt")
+        assertTrue(writeTruncMode.wantsWrite)
+        assertTrue(writeTruncMode.truncateExisting)
+
+        val readWriteTruncMode = WorkspaceDocumentsEngine.parseOpenMode("rwt")
+        assertTrue(readWriteTruncMode.wantsWrite)
+        assertTrue(readWriteTruncMode.truncateExisting)
+
+        val readWriteMode = WorkspaceDocumentsEngine.parseOpenMode("rw")
+        assertTrue(readWriteMode.wantsWrite)
+        assertFalse(readWriteMode.truncateExisting)
+        assertFalse(readWriteMode.append)
+
+        val writeAppendMode = WorkspaceDocumentsEngine.parseOpenMode("wa")
+        assertTrue(writeAppendMode.wantsWrite)
+        assertFalse(writeAppendMode.truncateExisting)
+        assertTrue(writeAppendMode.append)
+
+        for (badMode in listOf("", "x", "rwa", "tw")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                WorkspaceDocumentsEngine.parseOpenMode(badMode)
+            }
+        }
+
+        val workspace = File(tempDir, "workspaces/dev-shell").apply { mkdirs() }
+        val logFile = File(workspace, "build.log").apply { writeText("line-1\n") }
+        val engine = WorkspaceDocumentsEngine(
+            filesDir = tempDir,
+            liveRunStateProvider = { SandboxRunState.RUNNING },
+        )
+
+        val appendTx = engine.beginWriteTransaction(
+            documentId = "entry:dev-shell/build.log",
+            truncateExisting = writeAppendMode.truncateExisting,
+        )
+        java.io.FileOutputStream(appendTx.stagingFile, writeAppendMode.append).use { out ->
+            out.write("line-2\n".toByteArray(Charsets.UTF_8))
+        }
+        engine.finishWriteTransaction(appendTx, errorOccurred = false)
+        assertEquals("line-1\nline-2\n", logFile.readText())
+
+        // 255-byte UTF-8 filename save through SAF write transaction without ENAMETOOLONG.
+        val maxUtf8Name = "가".repeat(83) + ".txt" // 83 * 3 + 4 = 253 UTF-8 bytes (+2 ascii = 255)
+            .let { "ab$it" }
+        assertEquals(255, maxUtf8Name.toByteArray(Charsets.UTF_8).size)
+
+        val createdDocId = engine.createEntry("profile:dev-shell", "text/plain", maxUtf8Name)
+        val longTx1 = engine.beginWriteTransaction(createdDocId, truncateExisting = true)
+        val longTx2 = engine.beginWriteTransaction(createdDocId, truncateExisting = true)
+        assertTrue(longTx1.stagingFile.name.toByteArray(Charsets.UTF_8).size <= 255)
+        assertTrue(longTx2.stagingFile.name.toByteArray(Charsets.UTF_8).size <= 255)
+        assertNotEquals(longTx1.stagingFile.absolutePath, longTx2.stagingFile.absolutePath)
+
+        engine.finishWriteTransaction(longTx1, errorOccurred = true)
+        longTx2.stagingFile.writeText("saved-255-utf8")
+        engine.finishWriteTransaction(longTx2, errorOccurred = false)
+
+        val savedLongFile = File(workspace, maxUtf8Name)
+        assertEquals("saved-255-utf8", savedLongFile.readText())
+        assertTrue(workspace.listFiles().orEmpty().none { it.name.endsWith(".termvr.tmp") })
+    }
 }

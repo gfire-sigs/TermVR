@@ -159,7 +159,7 @@ fun FilesScreen(
 
         if (state.writeLocked) {
             FrozenWorkspaceBanner(
-                busy = state.busy,
+                busy = state.busy || state.runState == dev.gfire.termvr.core.model.SandboxRunState.FREEZING,
                 onUnlock = viewModel::discardCheckpointAndUnlock,
             )
         }
@@ -219,7 +219,7 @@ fun FilesScreen(
                     onBrowseVolume = { viewModel.browseVolume(it.name) },
                     onOpenWorkspace = viewModel::openWorkspaceForVolume,
                     onStopVolumeContainers = viewModel::stopContainersForVolume,
-                    onUnlockFrozen = viewModel::discardCheckpointAndUnlock,
+                    onUnlockFrozen = viewModel::discardCheckpointsForVolume,
                     onDeleteVolume = { viewModel.deleteNamedVolume(it.name) },
                     onCloseBrowser = viewModel::closeVolumeBrowser,
                     onRefreshFiles = viewModel::refreshVolume,
@@ -281,7 +281,7 @@ fun FilesScreen(
                     onBrowseVolume = { viewModel.browseVolume(it.name) },
                     onOpenWorkspace = viewModel::openWorkspaceForVolume,
                     onStopVolumeContainers = viewModel::stopContainersForVolume,
-                    onUnlockFrozen = viewModel::discardCheckpointAndUnlock,
+                    onUnlockFrozen = viewModel::discardCheckpointsForVolume,
                     onDeleteVolume = { viewModel.deleteNamedVolume(it.name) },
                     onCloseBrowser = viewModel::closeVolumeBrowser,
                     onRefreshFiles = viewModel::refreshVolume,
@@ -590,7 +590,7 @@ private fun VolumesPane(
     onBrowseVolume: (ManagedVolumeItem) -> Unit,
     onOpenWorkspace: (String) -> Unit,
     onStopVolumeContainers: (String) -> Unit,
-    onUnlockFrozen: () -> Unit,
+    onUnlockFrozen: (String) -> Unit,
     onDeleteVolume: (ManagedVolumeItem) -> Unit,
     onCloseBrowser: () -> Unit,
     onRefreshFiles: () -> Unit,
@@ -680,7 +680,7 @@ private fun VolumesPane(
                     onNewFolder = onNewFolder,
                     onOpenWorkspace = { onOpenWorkspace(activeVolume) },
                     onStopContainers = { onStopVolumeContainers(activeVolume) },
-                    onUnlockFrozen = onUnlockFrozen,
+                    onUnlockFrozen = { onUnlockFrozen(activeVolume) },
                     onOpenDir = onOpenDir,
                     onShareEntry = onShareEntry,
                     onDeleteEntry = onDeleteEntry,
@@ -897,11 +897,14 @@ private fun VolumeBrowserCard(
             }
 
             if (pauseState != null) {
+                val freezingAttached = pauseState.attachedProfileIds.any { id ->
+                    state.runStates[id] == dev.gfire.termvr.core.model.SandboxRunState.FREEZING
+                }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 VolumeAccessPausedNotice(
                     pauseState = pauseState,
                     isExpandedWidth = isExpandedWidth,
-                    writeLocked = state.writeLocked,
+                    freezingAttached = freezingAttached,
                     busy = state.busy,
                     onOpenWorkspace = onOpenWorkspace,
                     onStopContainers = onStopContainers,
@@ -972,7 +975,7 @@ private fun VolumeBrowserCard(
 private fun VolumeAccessPausedNotice(
     pauseState: VolumeAccessPauseState,
     isExpandedWidth: Boolean,
-    writeLocked: Boolean,
+    freezingAttached: Boolean,
     busy: Boolean,
     onOpenWorkspace: () -> Unit,
     onStopContainers: () -> Unit,
@@ -1051,10 +1054,10 @@ private fun VolumeAccessPausedNotice(
                     }
                     Text(stopLabel)
                 }
-                if (isFrozen && writeLocked) {
+                if (isFrozen) {
                     TermVrTextButton(
                         onClick = onUnlockFrozen,
-                        enabled = !busy,
+                        enabled = !busy && !freezingAttached,
                     ) {
                         Text("Discard Checkpoint")
                     }
