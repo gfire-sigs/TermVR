@@ -1,6 +1,7 @@
 package dev.gfire.termvr.core.data
 
 import dev.gfire.termvr.core.model.GuestLinuxArch
+import dev.gfire.termvr.core.model.VolumeLockMode
 import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -330,5 +331,89 @@ class CatalogRepositoryTest {
             removeFailed = true
         }
         assertTrue(removeFailed)
+    }
+
+    @Test
+    fun `INV-C7 Volume parsers decode AllocatedBytes and LockMode with backwards compatibility and compactVolume runs -cache-dir`() = runTest {
+        // Property: AllocatedBytes defaults to SizeBytes when absent in legacy NDJSON/inspect JSON and preserves sparse values when present;
+        // LockMode resolves "none" | "shared" | "exclusive" or falls back to InUse; compactVolume passes <name> -cache-dir <filesDir>/gvx-store/gvx
+        // and returns Result.failure when volume is in use or invalid.
+        // Seam: CatalogRepository.listVolumes, inspectVolume, compactVolume, buildVolumeCompactArgs.
+        // Oracle: Phase 1 gvx volume ls/inspect/compact CLI contract.
+        // Fault detected: Reporting 0 B allocated on legacy JSON, misrouting -cache-dir to <filesDir>/gvx-store instead of <filesDir>/gvx-store/gvx,
+        // or throwing uncaught exceptions from compactVolume when InUse.
+        val recordedCommands = mutableListOf<List<String>>()
+        var compactExitCode = 0
+        var compactStderr = ""
+        val repo = CatalogRepository(
+            filesDir = tempDir,
+            assetSource = localAssets,
+            commandExecutor = { args, _ ->
+                recordedCommands += args
+                when {
+                    args.take(2) == listOf("volume", "ls") -> RungvCommandResult(
+                        0,
+                        """
+                        {"Name":"legacy-vol","Driver":"ext4lite","Mountpoint":"/v/legacy","SizeBytes":536870912}
+                        {"Name":"sparse-shared","Driver":"ext4lite","Mountpoint":"/v/sparse","SizeBytes":1503238553,"AllocatedBytes":134217728,"InUse":true,"LockMode":"shared"}
+                        {"Name":"active-rw","Driver":"ext4lite","Mountpoint":"/v/rw","SizeBytes":268435456,"AllocatedBytes":268435456,"InUse":true}
+                        """.trimIndent(),
+                        "",
+                    )
+                    args.take(2) == listOf("volume", "inspect") -> RungvCommandResult(
+                        0,
+                        """[{"Name":"sparse-shared","Driver":"ext4lite","Mountpoint":"/v/sparse","CreatedAt":"2026-11-17T00:00:00Z","SizeBytes":1503238553,"AllocatedBytes":134217728,"InUse":true,"LockMode":"shared"}]""",
+                        "",
+                    )
+                    args.take(2) == listOf("volume", "compact") -> RungvCommandResult(
+                        compactExitCode,
+                        "",
+                        compactStderr,
+                    )
+                    else -> RungvCommandResult(0, "", "")
+                }
+            },
+        )
+
+        val lsEntries = repo.listVolumes()
+        assertEquals(3, lsEntries.size)
+
+        val legacy = lsEntries[0]
+        assertEquals(536870912L, legacy.sizeBytes)
+        assertEquals(536870912L, legacy.allocatedBytes)
+        assertEquals(VolumeLockMode.NONE, legacy.lockMode)
+
+        val sparseShared = lsEntries[1]
+        assertEquals(1503238553L, sparseShared.sizeBytes)
+        assertEquals(134217728L, sparseShared.allocatedBytes)
+        assertTrue(sparseShared.inUse)
+        assertEquals(VolumeLockMode.SHARED, sparseShared.lockMode)
+
+        val activeRw = lsEntries[2]
+        assertEquals(268435456L, activeRw.allocatedBytes)
+        assertEquals(VolumeLockMode.EXCLUSIVE, activeRw.lockMode)
+
+        val inspected = repo.inspectVolume("sparse-shared").single()
+        assertEquals(1503238553L, inspected.sizeBytes)
+        assertEquals(134217728L, inspected.allocatedBytes)
+        assertEquals(VolumeLockMode.SHARED, inspected.lockMode)
+
+        val expectedCacheDir = File(tempDir, "gvx-store/gvx").absolutePath
+        val okCompact = repo.compactVolume("legacy-vol")
+        assertTrue(okCompact.isSuccess)
+        assertTrue(
+            recordedCommands.contains(
+                listOf("volume", "compact", "legacy-vol", "-cache-dir", expectedCacheDir),
+            ),
+        )
+
+        compactExitCode = 1
+        compactStderr = "rungv volume compact: gvx: volume is in use"
+        val busyCompact = repo.compactVolume("active-rw")
+        assertTrue(busyCompact.isFailure)
+        assertTrue(busyCompact.exceptionOrNull()?.message?.contains("in use") == true)
+
+        val invalidNameCompact = repo.compactVolume("../escape")
+        assertTrue(invalidNameCompact.isFailure)
     }
 }

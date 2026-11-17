@@ -5,6 +5,8 @@ import android.content.res.AssetManager
 import dev.gfire.termvr.core.model.DistributionCatalogEntry
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.RecipeManifest
+import dev.gfire.termvr.core.model.VolumeLockMode
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import java.io.File
 import java.io.InputStream
 import java.net.InetSocketAddress
@@ -66,9 +68,17 @@ data class RungvVolumeLsEntry(
     @SerialName("Name") val name: String = "",
     @SerialName("Driver") val driver: String = "local",
     @SerialName("Mountpoint") val mountpoint: String = "",
+    @SerialName("CreatedAt") val createdAt: String = "",
+    @SerialName("Size") val size: String = "",
     @SerialName("SizeBytes") val sizeBytes: Long = 0L,
+    @SerialName("AllocatedBytes") val allocatedBytes: Long = sizeBytes,
+    @SerialName("InUse") val inUse: Boolean = false,
+    @SerialName("LockMode") val rawLockMode: String? = null,
     @SerialName("Labels") val labels: JsonObject? = null,
-)
+) {
+    val lockMode: VolumeLockMode
+        get() = VolumeLockMode.fromWireOrInUse(rawLockMode, inUse)
+}
 
 @Serializable
 data class RungvVolumeInspectEntry(
@@ -76,9 +86,16 @@ data class RungvVolumeInspectEntry(
     @SerialName("Driver") val driver: String = "local",
     @SerialName("Mountpoint") val mountpoint: String = "",
     @SerialName("CreatedAt") val createdAt: String = "",
+    @SerialName("SizeBytes") val sizeBytes: Long = 0L,
+    @SerialName("AllocatedBytes") val allocatedBytes: Long = sizeBytes,
+    @SerialName("InUse") val inUse: Boolean = false,
+    @SerialName("LockMode") val rawLockMode: String? = null,
     @SerialName("Labels") val labels: JsonObject? = null,
     @SerialName("Options") val options: JsonObject? = null,
-)
+) {
+    val lockMode: VolumeLockMode
+        get() = VolumeLockMode.fromWireOrInUse(rawLockMode, inUse)
+}
 
 @Serializable
 data class DockerAuthEntry(
@@ -313,6 +330,9 @@ class CatalogRepository(
         return result
     }
 
+    val gvxCacheDir: File
+        get() = File(filesDir, "gvx-store/gvx")
+
     suspend fun removeVolume(
         volumeName: String,
         force: Boolean = false,
@@ -321,6 +341,20 @@ class CatalogRepository(
         val result = commandExecutor.execute(buildVolumeRmArgs(volumeName, force), env)
         check(result.exitCode == 0) { "rungv volume rm failed: ${result.stderr}" }
         return result
+    }
+
+    /**
+     * Replays any dirty journal, compacts trailing groups, and punches free holes on a stopped `ext4lite` volume.
+     */
+    suspend fun compactVolume(
+        name: String,
+        env: Map<String, String> = emptyMap(),
+    ): Result<Unit> = runCatching {
+        val args = buildVolumeCompactArgs(name, gvxCacheDir)
+        val result = commandExecutor.execute(args, env)
+        check(result.exitCode == 0) {
+            result.stderr.trim().ifEmpty { "rungv volume compact failed (${result.exitCode})" }
+        }
     }
 
     suspend fun systemPrune(env: Map<String, String> = emptyMap()): RungvCommandResult =
@@ -420,11 +454,14 @@ class CatalogRepository(
             return listOf("volume", "inspect", volumeName)
         }
 
-        private val VOLUME_NAME_REGEX = Regex("^[a-z0-9._-]{1,64}$")
+        fun buildVolumeCompactArgs(volumeName: String, gvxCacheDir: File): List<String> {
+            validateVolumeName(volumeName)
+            return listOf("volume", "compact", volumeName, "-cache-dir", gvxCacheDir.absolutePath)
+        }
 
         internal fun validateVolumeName(volumeName: String) {
-            require(VOLUME_NAME_REGEX.matches(volumeName) && volumeName != "." && volumeName != "..") {
-                "volumeName must match [a-z0-9._-]{1,64} without '.' or '..'"
+            require(VolumeMountSpec.isValidVolumeName(volumeName)) {
+                "volumeName must match [a-z0-9][a-z0-9._-]{0,63} without '.' or '..'"
             }
         }
 
