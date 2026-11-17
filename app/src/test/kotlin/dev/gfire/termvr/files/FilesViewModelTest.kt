@@ -529,7 +529,38 @@ class FilesViewModelTest {
 
             // Workspace entries list server.kt from the Git worktree while hiding .git and .gvx_meta.lock!
             assertEquals(listOf("server.kt"), vm.uiState.value.workspaceEntries.map { it.name })
+            assertEquals("Platform Service", vm.uiState.value.gitProjects.single().summary.name)
             assertEquals(1, vm.uiState.value.gitProjects.single().worktrees.size)
+
+            // Freezing svc-dev and calling refreshWorkspace() must NOT rewrite repo.git/worktrees/svc-dev/* or .git mtimes!
+            val wtMetaDir = File(gateway.gitWorktreeManager().repoGitDir(projectId), "worktrees/svc-dev")
+            val trackedMetaFiles = listOf(
+                File(wtMetaDir, "HEAD"),
+                File(wtMetaDir, "gitdir"),
+                File(wtMetaDir, "commondir"),
+                File(wtDir, ".git"),
+            )
+            val frozenSentinelEpochMs = 1_700_000_000_000L
+            for (metaFile in trackedMetaFiles) {
+                assertTrue(metaFile.setLastModified(frozenSentinelEpochMs))
+            }
+            val expectedTimes = trackedMetaFiles.associate { it.absolutePath to it.lastModified() }
+
+            gateway.freezeSandbox("svc-dev")
+            vm.refreshWorkspace()
+            advanceUntilIdle()
+
+            assertTrue(vm.uiState.value.writeLocked)
+            assertEquals(listOf("server.kt"), vm.uiState.value.workspaceEntries.map { it.name })
+            for (metaFile in trackedMetaFiles) {
+                assertEquals(
+                    expectedTimes[metaFile.absolutePath],
+                    metaFile.lastModified(),
+                    "FROZEN refreshWorkspace() must not mutate ${metaFile.name} mtime",
+                )
+            }
+            gateway.stopSandbox("svc-dev")
+            advanceUntilIdle()
 
             // Deleting while svc-dev is attached must fail!
             vm.deleteGitProject(projectId)

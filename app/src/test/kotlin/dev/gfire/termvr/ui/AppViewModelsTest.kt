@@ -776,6 +776,7 @@ class AppViewModelsTest {
         val alpha = vm.uiState.value.profiles.first { it.id == "alpha-agent" }
         assertEquals(GitWorktreeSpec("core-engine", "wt/alpha-agent"), alpha.gitWorktree)
         assertEquals(listOf("core-engine"), vm.uiState.value.gitProjects.map { it.id })
+        assertEquals("Core Engine", vm.uiState.value.gitProjects.single().name)
         assertTrue(File(tempDir, "git-projects/core-engine/worktrees/alpha-agent/.git").isFile)
 
         // Creating a second container on the SAME branch wt/alpha-agent must report a branch collision error!
@@ -787,7 +788,7 @@ class AppViewModelsTest {
         advanceUntilIdle()
         assertTrue(vm.uiState.value.errorMessage?.contains("already checked out") == true)
 
-        // Creating Beta Agent on distinct branch wt/beta-agent succeeds!
+        // Creating Beta Agent on distinct branch wt/beta-agent succeeds AND preserves "Core Engine" display name!
         vm.createProfile(
             displayName = "Beta Agent",
             imageRef = "debian:trixie-slim",
@@ -795,6 +796,26 @@ class AppViewModelsTest {
         )
         advanceUntilIdle()
         assertNull(vm.uiState.value.errorMessage)
+        assertEquals("Core Engine", vm.uiState.value.gitProjects.single().name)
+
+        // Editing Beta Agent config without a new project display name and re-provisioning on launch also preserve "Core Engine"!
+        vm.updateProfileConfig(
+            profileId = "beta-agent",
+            displayName = "Beta Agent v2",
+            memoryMiB = SandboxProfile.UNLIMITED_MEMORY_MIB,
+            cpuCores = SandboxProfile.UNLIMITED_CPU_CORES,
+            persistentRootfs = false,
+            gitWorktree = GitWorktreeSpec(projectId = "core-engine", branchName = "wt/beta-agent-v2"),
+            gitProjectDisplayName = null,
+        )
+        advanceUntilIdle()
+        gateway.gitWorktreeManager().provisionWorktreeForContainer(
+            profileId = "beta-agent",
+            spec = GitWorktreeSpec(projectId = "core-engine", branchName = "wt/beta-agent-v2"),
+        )
+        vm.refreshGitProjects()
+        advanceUntilIdle()
+        assertEquals("Core Engine", vm.uiState.value.gitProjects.single().name)
 
         // Attach Shared Read-Only, CoW Persistent Branch, and CoW Scratch mounts on Alpha Agent
         vm.attachVolumeToProfile(

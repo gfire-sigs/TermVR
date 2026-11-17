@@ -822,43 +822,56 @@ class FilesViewModel(
             try {
                 val profile = resolveSelectedProfile() ?: return@launch
                 val hasCheckpoint = runtimeGateway.hasActiveCheckpoint(profile.id)
+                val runState = runtimeGateway.runStates.value[profile.id] ?: SandboxRunState.STOPPED
+                val isWriteLocked = hasCheckpoint || runState.locksWorkspaceWrites
                 val forbidDotGit = profile.gitWorktree != null
                 val entries = withContext(ioDispatcher) {
                     val gitSpec = profile.gitWorktree
-                    val root = if (gitSpec != null) {
-                        runCatching {
-                            runtimeGateway.gitWorktreeManager().provisionWorktreeForContainer(profile.id, gitSpec)
-                        }.getOrElse { runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() } }
-                    } else {
-                        runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() }
+                    val root = when {
+                        isWriteLocked -> runtimeGateway.effectiveWorkspaceDir(profile)
+                        gitSpec != null -> {
+                            val wtMgr = runtimeGateway.gitWorktreeManager()
+                            if (wtMgr.isWorktreeProvisioned(profile.id, gitSpec)) {
+                                runtimeGateway.effectiveWorkspaceDir(profile)
+                            } else {
+                                runCatching {
+                                    wtMgr.provisionWorktreeForContainer(profile.id, gitSpec)
+                                }.getOrElse { runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() } }
+                            }
+                        }
+                        else -> runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() }
                     }
-                    val rel = localState.value.workspacePath
-                    val targetDir = if (rel.isEmpty()) root else File(root, rel)
-                    val canonicalRoot = root.canonicalFile.toPath()
-                    if (
-                        !isPathConfinedToWorkspace(canonicalRoot, targetDir) ||
-                        !targetDir.isDirectory
-                    ) {
+                    if (!root.exists() || Files.isSymbolicLink(root.toPath()) || !root.isDirectory) {
                         emptyList()
                     } else {
-                        targetDir.listFiles()
-                            .orEmpty()
-                            .asSequence()
-                            .filter { child ->
-                                !isReservedWorkspaceOrGitName(child.name, forbidDotGit = forbidDotGit) &&
-                                    isPathConfinedToWorkspace(canonicalRoot, child)
-                            }
-                            .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
-                            .map { child ->
-                                val childRel = if (rel.isEmpty()) child.name else "$rel/${child.name}"
-                                HostFileItem(
-                                    name = child.name,
-                                    relativePath = childRel,
-                                    isDirectory = child.isDirectory,
-                                    sizeBytes = if (child.isDirectory) 0L else child.length(),
-                                )
-                            }
-                            .toList()
+                        val rel = localState.value.workspacePath
+                        val targetDir = if (rel.isEmpty()) root else File(root, rel)
+                        val canonicalRoot = root.canonicalFile.toPath()
+                        if (
+                            !isPathConfinedToWorkspace(canonicalRoot, targetDir) ||
+                            !targetDir.isDirectory
+                        ) {
+                            emptyList()
+                        } else {
+                            targetDir.listFiles()
+                                .orEmpty()
+                                .asSequence()
+                                .filter { child ->
+                                    !isReservedWorkspaceOrGitName(child.name, forbidDotGit = forbidDotGit) &&
+                                        isPathConfinedToWorkspace(canonicalRoot, child)
+                                }
+                                .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
+                                .map { child ->
+                                    val childRel = if (rel.isEmpty()) child.name else "$rel/${child.name}"
+                                    HostFileItem(
+                                        name = child.name,
+                                        relativePath = childRel,
+                                        isDirectory = child.isDirectory,
+                                        sizeBytes = if (child.isDirectory) 0L else child.length(),
+                                    )
+                                }
+                                .toList()
+                        }
                     }
                 }
                 localState.value = localState.value.copy(

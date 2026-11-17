@@ -342,7 +342,7 @@ class HomeViewModel(
                     val wtMgr = runtimeGateway.gitWorktreeManager()
                     wtMgr.createOrEnsureProject(
                         projectId = gitWorktree.projectId,
-                        name = gitProjectDisplayName?.trim()?.takeIf { it.isNotEmpty() } ?: gitWorktree.projectId,
+                        name = gitProjectDisplayName?.trim()?.takeIf { it.isNotEmpty() },
                     )
                     wtMgr.provisionWorktreeForContainer(candidateId, gitWorktree)
                 }
@@ -398,7 +398,7 @@ class HomeViewModel(
                 if (gitWorktree != null) {
                     wtMgr.createOrEnsureProject(
                         projectId = gitWorktree.projectId,
-                        name = gitProjectDisplayName?.trim()?.takeIf { it.isNotEmpty() } ?: gitWorktree.projectId,
+                        name = gitProjectDisplayName?.trim()?.takeIf { it.isNotEmpty() },
                     )
                     wtMgr.provisionWorktreeForContainer(profileId, gitWorktree)
                     if (prevGit != null && prevGit.projectId != gitWorktree.projectId) {
