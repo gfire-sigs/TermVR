@@ -36,7 +36,7 @@ Hardware virtual machines on Android require vendor hypervisor entitlements that
 
 `TermVR` executes unmodified host-architecture OCI images inside `gvx`, a user-space Linux kernel that intercepts system calls through shared-memory fast paths (`systrap`). `gvx` implements user-space namespaces, control groups, overlay mounts, and packet filtering, allowing nested Docker and Kubernetes daemons to run without root access.
 
-Android forbids executing files stored in writable app directories. `TermVR` packages the sandbox runtime inside Android's read-only native library directory so the OS permits spawning it as a child process. Container layers compile into Enhanced Read-Only File System (`EROFS`) files. Writable Linux volumes use single-file `ext4lite` images, and shared folders use pinned `hostfs` workspace mounts.
+Android forbids executing files stored in writable app directories. `TermVR` packages the sandbox runtime inside Android's read-only native library directory so the OS permits spawning it as a child process. Container layers compile into Enhanced Read-Only File System (`EROFS`) files. Writable Linux volumes use sparse `ext4lite` images with online hole punching and copy-on-write overlays. Shared folders and bare Git project hubs use synchronized `hostfs` mounts across concurrent sandboxes.
 
 For interactive display, `TermVR` embeds `libghostty-vt` and renders glyph atlases via OpenGL ES 3.0 at display refresh rates (`60 Hz` to `120 Hz`). A tiny static guest multiplexer shares one sandbox across all open terminal tabs, capping host child processes at 4 per sandbox.
 
@@ -110,7 +110,7 @@ Six measurable engineering goals govern `TermVR` `v1.0`.
 - **G1 (Host-Architecture OCI Execution)**: Run unmodified OCI images matching the host CPU (`linux/arm64` on `arm64-v8a`; `linux/amd64` on `x86_64`), including Docker and Kubernetes recipes.
 - **G2 (GPU-Accelerated VT Emulation)**: Render terminal grids, ligatures, Nerd Font symbols, CJK fallback fonts, and Kitty inline graphics at up to `120 Hz`.
 - **G3 (Mobile-First Input Ergonomics)**: Provide a configurable two-row auxiliary key bar, three-state modifier latches, touch gestures, hardware keyboard parity, and composition-safe CJK IME input.
-- **G4 (Explicit Network, Proxy & Storage Control)**: Support loopback/LAN port forwards, `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` and system proxies, dynamic DNS, WireGuard, volume browsing, and `SAF` access.
+- **G4 (Explicit Network, Proxy & Storage Control)**: Support loopback/LAN port forwards, `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` and system proxies, dynamic DNS, WireGuard, copy-on-write volume branching, volume compaction, shared Git worktrees, and `SAF` access.
 - **G5 (Resilient Mobile Lifecycle)**: Maintain background execution through a foreground notification with live CPU and Proportional Set Size (`PSS`) memory metrics, timed wake locks, and checkpoint/restore.
 - **G6 (Trusted Reproducible Build)**: Compile all Kotlin, Go, Zig, and C/C++ sources deterministically from pinned commits for F-Droid `ReproducibleBuilds` and `SLSA` v1.0 Build Level 2 provenance.
 
@@ -173,9 +173,9 @@ Six end-to-end journeys define observable behavior across UI screens and runtime
 
 ### 5.5 CUJ 5: Directory Browser and External Android Editor Bridge
 
-- **Given** project files inside a profile's `/workspace` directory and container data inside a mounted `ext4lite` volume.
-- **When** the user browses both storage trees in `Files` or opens `TermVR Workspaces` from an external Android code editor via the system file picker.
-- **Then** external editor saves update `/workspace` atomically without half-written files, and `Files` transfers files into mounted `ext4lite` volumes through the guest multiplexer stream.
+- **Given** project files inside a profile's `/workspace` or shared Git worktree and container data inside a mounted `ext4lite` volume.
+- **When** the user browses storage roots, compacts or branches a volume in `Files`, or opens workspaces and Git worktrees from an external Android editor.
+- **Then** external editor saves update host files atomically, compacted volumes reclaim sparse disk blocks, and `Files` transfers files into mounted `ext4lite` volumes.
 
 ### 5.6 CUJ 6: Background Compilation, Wake Lock, and Idle Background Freeze
 
@@ -231,11 +231,11 @@ flowchart TB
 
 | Destination | Primary User Task | Key Sub-Views and Controls |
 | :--- | :--- | :--- |
-| **`Home`** | Launch profiles, inspect host readiness, and control live sandboxes. | Quick-launch tiles; active and frozen sandbox cards (CPU, RAM, ports, Resume/Freeze/Stop); host health banner (child-process status, 16 KB page badge, disk usage). |
+| **`Home`** | Launch profiles, inspect host readiness, and control live sandboxes. | Quick-launch tiles; active and frozen sandbox cards; volume mode and shared Git worktree configuration; host health banner. |
 | **`Terminal`** | Interact with multi-tab shells, split panes, and daemon logs. | Top tab strip with sandbox indicator; single-surface split-pane viewport; session drawer; scrollback search bar; collapsible two-row auxiliary key bar. |
 | **`Catalog`** | Pull host-ISA distributions, launch Docker/Kubernetes recipes, or import archives. | `Distributions` tab (`Alpine`, `Debian`, `Ubuntu`, `Fedora`); `Recipes` tab (`Docker`, `Kubernetes`); `Local Images` tab (pull, tar load/export, prune, registry auth). |
 | **`Network`** | Configure port forwards, outbound `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4` proxies, and WireGuard. | Inbound port rules plus `0.0.0.0` gate and QR modal; outbound proxy (`Direct`, `System`, `HTTP`, `HTTPS`, `SOCKS5`, `SOCKS4`, transparent TCP, remote DNS); WireGuard importer. |
-| **`Files`** | Browse workspaces and `ext4lite` volumes and exchange host files. | Dual-root browser (`/workspace` and `ext4lite` volumes); volume lifecycle controls; `SAF` archive transfers; external Android editor launch action. |
+| **`Files`** | Browse workspaces, `ext4lite` volumes, and shared Git projects. | Workspace, volume, and Git project manager; physical disk metrics, offline compaction, and copy-on-write branching; `SAF` archive transfers and external editor launch. |
 
 ### 6.2 Terminal Emulation and Single-Surface OpenGL ES 3.0 Pipeline
 
@@ -432,10 +432,10 @@ The table below maps every planned production file across `M1` through `M5`, mar
 | **`M1`** | `Create` | `core/terminal-ui/src/main/kotlin/dev/gfire/termvr/core/ui/TerminalSurfaceView.kt` | `:core:terminal-ui` | Single `SurfaceView`, `TermVrGlThread`, persistent surfaceless EGL context, and VSYNC gate. |
 | **`M1`** | `Create` | `core/terminal-ui/src/main/kotlin/dev/gfire/termvr/core/ui/TerminalInputConnection.kt` | `:core:terminal-ui` | 64-space sentinel `BaseInputConnection` for Hangul/CJK composition, Gboard scrub, and paste. |
 | **`M1`** | `Create` | `core/terminal-ui/src/main/kotlin/dev/gfire/termvr/core/ui/AuxiliaryKeyBar.kt` | `:core:terminal-ui` | Collapsible `2x7` soft modifier bar, 3-state latches, auto-repeat, and swipe cursor scrub. |
-| **`M2`** | `Create` | `core/model/src/main/kotlin/dev/gfire/termvr/core/model/SandboxModels.kt` | `:core:model` | `SandboxProfile`, `PortForwardRule`, `OutboundProxyConfig`, `VolumeMountSpec`, and `SandboxRunState`. |
+| **`M2`** | `Create` | `core/model/src/main/kotlin/dev/gfire/termvr/core/model/SandboxModels.kt` | `:core:model` | `SandboxProfile`, `PortForwardRule`, `OutboundProxyConfig`, `VolumeMountSpec`, `VolumeLockMode`, `GitWorktreeSpec`, and `SandboxRunState`. |
 | **`M2`** | `Create` | `guest/termvr-agent/internal/mux/{protocol.go,pty_linux.go,rpc.go}` | `guest/termvr-agent` | 12-byte binary frame codec, `/dev/ptmx` allocator, `SIGWINCH`, and gated host RPCs. |
 | **`M2`** | `Create` | `guest/termvr-agent/cmd/termvr-agent/main.go` | `guest/termvr-agent` | Guest PID 1 entrypoint, zombie reaper, `--make-root-rshared`, and `/run/termvr-agent/bin` wrappers. |
-| **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/GvxCommandBuilder.kt` | `:core:runtime-gvx` | Exact `buildRunArgs` and `buildRestoreArgs` builders, CA PEM export, and `RAW_PTY` JNI `openpty`. |
+| **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/GvxCommandBuilder.kt` | `:core:runtime-gvx` | Exact `buildRunArgs` and `buildRestoreArgs` builders, `--mount type=overlay`, Git worktree mounts, CA PEM export, and `RAW_PTY` JNI `openpty`. |
 | **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/LoopbackDnsProxy.kt` | `:core:runtime-gvx` | `127.0.0.1:<dnsPort>` UDP/TCP forwarder backed by `android.net.DnsResolver` or proxy TCP DNS. |
 | **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/MuxSessionClient.kt` | `:core:runtime-gvx` | Host-side stdio frame multiplexer, sliding-window flow control, and `MUX_RESYNC` recovery. |
 | **`M2`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/CheckpointController.kt` | `:core:runtime-gvx` | `LocalSocket` control client with `slot-a`/`slot-b` atomic checkpoint rotation. |
@@ -443,11 +443,12 @@ The table below maps every planned production file across `M1` through `M5`, mar
 | **`M3`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/LoopbackProxyBridge.kt` | `:core:runtime-gvx` | `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4`/`SOCKS4a` and Android system-proxy upstream dialer and bridge. |
 | **`M3`** | `Create` | `guest/termvr-agent/internal/mux/proxy_linux.go` | `guest/termvr-agent` | Guest `127.0.0.1:1080` mixed HTTP/SOCKS5 listener and `SO_ORIGINAL_DST` transparent port `1081`. |
 | **`M3`** | `Create` | `core/data/src/main/assets/recipes/{docker-dind.json,k3s-single-node.json,calico-vxlan.yaml}` | `:core:data` | Prebuilt `docker:dind` and `rancher/k3s` manifests plus the 5-patch Calico VXLAN manifest. |
-| **`M3`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/{ProfileRepository.kt,CatalogRepository.kt}` | `:core:data` | Versioned DataStore profile storage, Keystore proxy secrets, registry auth writer, and NDJSON parsers. |
-| **`M3`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/{home,terminal,catalog,network,settings}/*.kt` | `:app` | Compose screens, host diagnostics, proxy editor, LAN `0.0.0.0` gate with QR modal, and `Terminal` nav. |
+| **`M3`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/{ProfileRepository.kt,CatalogRepository.kt}` | `:core:data` | Versioned DataStore profile storage, Keystore proxy secrets, registry auth writer, NDJSON parsers, and `rungv volume compact`. |
+| **`M3`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/{home,terminal,catalog,network,settings}/*.kt` | `:app` | Compose screens, host diagnostics, volume mode/Git worktree dialogs, proxy editor, LAN `0.0.0.0` gate, and `Terminal` nav. |
+| **`M4`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/GitWorktreeManager.kt` | `:core:data` | Pure-Kotlin POSIX bare Git project hub (`repo.git`) and per-container `git worktree` provisioner. |
 | **`M4`** | `Modify` | `app/src/main/AndroidManifest.xml` | `:app` | Register `TermVrDocumentsProvider` with `MANAGE_DOCUMENTS` and `grantUriPermissions="true"`. |
-| **`M4`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/provider/TermVrDocumentsProvider.kt` | `:app` | `SAF` `DocumentsProvider` exposing `/workspace` with atomic `.termvr.tmp` swap and `FROZEN` lock. |
-| **`M4`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/files/FilesScreen.kt` | `:app` | Dual-root browser for `/workspace` and live `ext4lite` volumes via `HOST_RPC` stream transfers. |
+| **`M4`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/provider/TermVrDocumentsProvider.kt` | `:app` | `SAF` `DocumentsProvider` exposing `/workspace` and shared Git worktrees with atomic `.termvr.tmp` swap and `FROZEN` lock. |
+| **`M4`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/files/FilesScreen.kt` | `:app` | Browser for `/workspace`, sparse `ext4lite` volumes (compaction and CoW branching), and shared Git projects. |
 | **`M5`** | `Create` | `scripts/{provision-toolchains-and-vendor.sh,build-native-deps.sh}` | `scripts/` | Checksum-verified toolchain/vendor prefetch (`init:`) and offline native compilation (`prebuild:`). |
 | **`M5`** | `Create` | `scripts/{verify-16kb-alignment.sh,verify-reproducible-apk.sh}` | `scripts/` | ELF `PT_LOAD` `0x4000` verifier and clean-room `apksigcopier` APK reproducibility check. |
 | **`M5`** | `Create` | `.github/workflows/{ci.yml,release-slsa.yml}` | CI / Release | 16 KB emulator tests, upstream lockfile audit, and `SLSA` v1.0 Build Level 2 release workflow. |
@@ -489,6 +490,7 @@ data class SandboxProfile(
     val autoCheckpointOnLowMemory: Boolean = true,   // Defaults to false on docker/k3s recipes
     val makeRootRshared: Boolean = false,
     val persistentRootfs: Boolean = false,           // Pivots / onto named volume rootfs-<id>
+    val gitWorktree: GitWorktreeSpec? = null,        // Optional shared Git project worktree
 )
 
 @Serializable
@@ -499,17 +501,50 @@ enum class ClipboardReadPolicy { DISABLED, ASK_EACH_TIME, SESSION_ALLOWED }
 
 @Serializable
 data class VolumeMountSpec(
-    val sourceName: String,                          // [a-z0-9._-]+ (no ',', ':', or '/')
+    val sourceName: String,                          // [a-z0-9][a-z0-9._-]{0,63} (no ',', ':', or '/')
     val guestMountPath: String,                      // Absolute path, e.g. "/var/lib/docker"
     val kind: VolumeKind,
-    val readOnly: Boolean = false,
+    val readOnly: Boolean = false,                   // Must be false for OVERLAY_EXT4LITE
+    val overlayUpperVolumeName: String? = null,      // Optional persistent upper volume for OVERLAY_EXT4LITE
 )
 
 @Serializable
 enum class VolumeKind {
     NAMED_EXT4LITE,                                  // Stored under <filesDir>/gvx-store/gvx/volumes/
     WORKSPACE_HOSTFS,                                // Stored under <filesDir>/workspaces/<profileId>/
+    OVERLAY_EXT4LITE,                                // CoW overlay over read-only base ext4lite volume
 }
+
+@Serializable
+enum class VolumeLockMode {
+    NONE,
+    SHARED,
+    EXCLUSIVE,
+}
+
+@Serializable
+enum class VolumeMountMode {
+    EXCLUSIVE_RW,
+    SHARED_RO,
+    COW_PERSISTENT,
+    COW_EPHEMERAL,
+}
+
+@Serializable
+data class GitProjectSummary(
+    val id: String,                                  // [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63} without '..'
+    val name: String,
+    val defaultBranch: String = "main",
+    val createdAtEpochMs: Long,
+    val worktreeCount: Int = 0,
+    val diskBytes: Long = 0L,
+)
+
+@Serializable
+data class GitWorktreeSpec(
+    val projectId: String,                           // [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63} without '..'
+    val branchName: String,                          // Validated per git-check-ref-format rules
+)
 
 @Serializable
 data class NetworkModeConfig(
@@ -852,11 +887,13 @@ Upstream `rungv run` checks for `--` before reading positional image arguments, 
   - Passes `--host-dns "127.0.0.1:$dnsPort"`, `-h profile.id`, `-control-socket controlSock.absolutePath`, and `--host-ca-certs` when `profile.trustHostCaCerts` is `true`.
   - Passes `-net=nat` (plus `-isolate-lan` if `isolateLanEgress`), `-net=wg -wg-conf <path>`, or `-net=none`.
   - Formats each enabled `PortForwardRule` as `-p`: single port `<listenHost>:<hostPort>:<guestPort>/<proto>` (`hostPort = 0` for ephemeral), ephemeral range `<listenHost>::<guestStart>-<guestEnd>/<proto>`, fixed range `<listenHost>:<hStart>-<hEnd>:<gStart>-<gEnd>/<proto>`, or `unix:<hostSock>:<guestSock>`. Parses `rungv: publishing` lines on stderr to record assigned ephemeral host ports.
-  - Emits `-v <filesDir>/workspaces/<id>:/workspace:rw`, `-v <filesDir>/agent/<guestArch>:/run/termvr-agent:ro` (in `STDIO_MUX` mode), optional `-rootfs-volume rootfs-<id>` when `persistentRootfs` is `true`, user `VolumeMountSpec` entries, `--tmpfs` paths, and sorted `-e <key>=<value>` flags. Defaults `TERM=xterm-256color`, `COLORTERM=truecolor`, and `LANG=C.UTF-8` (when both `LANG` and `LC_ALL` are absent) without injecting a custom `TERM_PROGRAM`. In `STDIO_MUX` mode, it injects credential-free `HTTP_PROXY=http://127.0.0.1:1080`, `HTTPS_PROXY=http://127.0.0.1:1080`, `ALL_PROXY=socks5h://127.0.0.1:1080`, `NO_PROXY`, and lowercase aliases unless `initDaemonArgv` is non-empty under `OutboundProxyMode.DIRECT`.
+  - Emits `-v <filesDir>/workspaces/<id>:/workspace:rw` (or `-v <filesDir>/git-projects/<projectId>/repo.git:/git/<projectId>.git:rw` plus `-v <filesDir>/git-projects/<projectId>/worktrees/<id>:/workspace:rw` when `profile.gitWorktree` is configured without a custom `/workspace` override). Before boot, `SandboxSupervisor` calls `GitWorktreeManager.provisionWorktreeForContainer` to initialize linked Git metadata and reject duplicate branch checkouts.
+  - Emits `-v <filesDir>/agent/<guestArch>:/run/termvr-agent:ro` (in `STDIO_MUX` mode), optional `-rootfs-volume rootfs-<id>` when `persistentRootfs` is `true`, user `VolumeMountSpec` entries (`-v <vol>:<dst>:rw|ro` for `NAMED_EXT4LITE`, `-v <hostDir>:<dst>:rw|ro` for `WORKSPACE_HOSTFS`, or `--mount type=overlay,src=<base>,dst=<dst>[,upper=<upper>]` for `OVERLAY_EXT4LITE`), `--tmpfs` paths, and sorted `-e <key>=<value>` flags.
+  - Defaults `TERM=xterm-256color`, `COLORTERM=truecolor`, and `LANG=C.UTF-8` (when both `LANG` and `LC_ALL` are absent) without injecting a custom `TERM_PROGRAM`. Exports `TERMVR_GIT_PROJECT`, `TERMVR_GIT_BRANCH`, and `TERMVR_GIT_COMMON_DIR=/git/<projectId>.git` when `profile.gitWorktree` is set. In `STDIO_MUX` mode, it injects credential-free `HTTP_PROXY=http://127.0.0.1:1080`, `HTTPS_PROXY=http://127.0.0.1:1080`, `ALL_PROXY=socks5h://127.0.0.1:1080`, `NO_PROXY`, and lowercase aliases unless `initDaemonArgv` is non-empty under `OutboundProxyMode.DIRECT`.
   - In `STDIO_MUX` mode, appends `--entrypoint /run/termvr-agent/termvr-agent`, `-image profile.imageRef`, `--`, `--mux-stdio`, `--proxy-listen 127.0.0.1:1080`, optional `--transparent-proxy-port 1081`, optional `--make-root-rshared`, and optional `-- <initDaemonArgv...>`.
   - In `RAW_PTY` mode, appends `-t`, `-image profile.imageRef`, and optional `-- <rawCommand...>`, while `gvx` mounts `-rootfs-volume rootfs-<id>` natively before PID 1 starts when `persistentRootfs` is `true`.
 - **`buildRestoreArgs(profile, slotDir, dnsPort, controlSock, resolvedPorts)`**:
-  - Passes `restore`, `-checkpoint-dir slotDir.absolutePath`, `-control-socket controlSock.absolutePath`, `--host-dns "127.0.0.1:$dnsPort"`, and identical ordered `-rootfs-volume`, `-v`, and `--tmpfs` flags.
+  - Passes `restore`, `-checkpoint-dir slotDir.absolutePath`, `-control-socket controlSock.absolutePath`, `--host-dns "127.0.0.1:$dnsPort"`, and identical ordered `-rootfs-volume`, `-v` (including `/git/<projectId>.git:rw` and worktree `/workspace:rw`), `--mount type=overlay`, and `--tmpfs` flags.
   - Appends matching `-net` / `-isolate-lan` / `-wg-conf`, optional `-m` and clamped `--cpus` when positive, matching `--privileged` / `--net-raw` flags, optional `--host-ca-certs`, optional `-t`, and resolved `-p` rules.
 
 ### 15.3 App-Local `LoopbackDnsProxy` and `LoopbackProxyBridge`
@@ -935,7 +972,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 ### 16.1 `HomeScreen` and Android Host Readiness Diagnostics
 
-`HomeScreen` surfaces active/frozen sandbox cards (`Open`, `Freeze`/`Resume`, `Stop`, `Persistent` badge when `persistentRootfs` is enabled), a container creation dialog with a `Persistent root (ext4lite)` toggle, one-tap Quick-Launch tiles, and a collapsible **Host Readiness Card**:
+`HomeScreen` surfaces active/frozen sandbox cards (`Open`, `Freeze`/`Resume`, `Stop`, `Edit`, `Volumes`, `Persistent`, and `Git` badges), container create/edit dialogs (`Persistent root (ext4lite)` and `Shared Git Worktree` toggles with inline project creation and default `wt/<profile-slug>` branch), volume mount mode pickers (`Exclusive Read-Write`, `Shared Read-Only`, `CoW Branch` with auto-suggested `<baseVol>-wt-<sanitizedProfileName>`, and `CoW Scratch`), one-tap Quick-Launch tiles, and a collapsible **Host Readiness Card**:
 
 - **Phantom-process and exit-reason detector**: Queries `ActivityManager.getHistoricalProcessExitReasons(packageName, 0, 16)` on launch. If prior child processes exited with `REASON_EXCESSIVE_RESOURCE_USAGE` or `SIGKILL (9)` while `TermVR` was backgrounded, `HomeScreen` displays a targeted remediation guide:
   - **Android 14+ (`API 34+`)**: Deep-links `Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS` instructing the user to enable `"Disable child process restrictions"`.
@@ -950,7 +987,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 - **Registry auth & `rungv` CLI contracts**:
   - `CatalogRepository` authenticates against OCI registries using Kotlin `HttpsURLConnection` (`TLS 1.3`, routed through `LoopbackProxyBridge` when active) and writes `$HOME/.docker/config.json` (`0600`) directly because `rungv login` lacks `--host-dns`.
   - `rungv pull` and `rungv image save` always receive `--host-dns 127.0.0.1:<dnsPort>`. `Export Image (.tar)` is enabled only while online for registry-pulled images (upstream `rungv image save` re-fetches manifests and rejects local `image load` tar imports).
-  - `rungv system df --format json` and `rungv volume ls --format json` emit newline-delimited JSON (**NDJSON**, one JSON object per line), whereas `rungv volume inspect` emits a JSON array; `CatalogRepository` parses each format accordingly and passes `-f` to `system prune` and `volume prune`.
+  - `rungv system df --format json` and `rungv volume ls --format json` emit newline-delimited JSON (**NDJSON**, one JSON object per line), whereas `rungv volume inspect` emits a JSON array. `CatalogRepository` parses `SizeBytes`, physical `AllocatedBytes` (defaulting to `SizeBytes` when absent), `InUse`, and `LockMode` (`none`, `shared`, `exclusive`), passes `-f` to `system prune` and `volume prune`, and invokes `rungv volume compact <name> -cache-dir <gvxCacheDir>` on stopped `ext4lite` volumes.
 - **Recipe 1: `Docker Engine (DinD)` (`docker:28-dind`)**:
   - Requires `>= 4096 MiB` physical host RAM (unlimited default sandbox RAM) and `>= 2048 MiB` free disk.
   - Sets `guestPrivileged = true`, mounts per-profile `ext4lite` volume `docker-${profileId}:/var/lib/docker`, sets `-e DOCKER_TLS_CERTDIR=`, sets `autoCheckpointOnLowMemory = false`, and runs `initDaemonArgv = ["dockerd-entrypoint.sh", "--storage-driver=overlay2", "--iptables=true", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]`.
@@ -978,18 +1015,19 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 `TermVR` exposes both sandbox storage tiers cleanly without risking host path traversal or checkpoint corruption.
 
-### 17.1 Integrated Dual-Root `FilesScreen`
+### 17.1 Integrated Multi-Root `FilesScreen`
 
-`FilesScreen` provides a two-pane file manager (single-pane with root switcher on compact phones; side-by-side split on foldables and tablets):
+`FilesScreen` provides an adaptive file and storage manager across `Workspace`, `Volumes`, and `Git Projects`:
 
-- **`/workspace` (`hostfs` root)**: Reads, renames, uploads, downloads, and archives files directly inside `<filesDir>/workspaces/<profileId>/` while hiding internal `.gvx_meta` extended-attribute sidecars.
-- **Named `ext4lite` volumes**: Lists all `<filesDir>/gvx-store/gvx/volumes/*.ext4` images with size and owning profile (including `rootfs-<id>` mounted at `/` when `persistentRootfs` is enabled). Deleting a persistent profile also removes its `rootfs-<id>` volume. When the owning sandbox is `RUNNING`, `FilesScreen` browses, uploads, and downloads files live through stream-0 `VOLUME_FS_OP` chunks; when `STOPPED`, `FilesScreen` runs a short-lived read/write helper container against that volume.
+- **`/workspace` (`hostfs` or Git worktree root)**: Reads, renames, uploads, downloads, and archives files directly inside `<filesDir>/workspaces/<profileId>/` (or `<filesDir>/git-projects/<projectId>/worktrees/<profileId>/` when `gitWorktree` is enabled) while hiding internal `.gvx_meta`, `.gvx_meta.lock`, and `.gvx_meta.tmp*` extended-attribute sidecars.
+- **Named `ext4lite` volumes**: Lists all `<filesDir>/gvx-store/gvx/volumes/*.ext4` images with physical `AllocatedBytes` alongside logical `SizeBytes`, lock badges (`Active (RW)` and `Shared (RO)`), offline **`Compact`** with reclaimed-byte feedback, **`Branch Volume`** copy-on-write overlay setup, and owning profile attachments. Deleting a persistent profile also removes its `rootfs-<id>` volume.
+- **Shared Git Projects (`GitWorktreeManager`)**: Creates and deletes POSIX bare repositories under `<filesDir>/git-projects/<projectId>/repo.git`, lists linked container worktrees and checked-out branches, and blocks project deletion while containers remain attached.
 
 ### 17.2 External Android Editor Bridge (`TermVrDocumentsProvider`)
 
-`TermVrDocumentsProvider` subclasses `android.provider.DocumentsProvider` (`android:authorities="dev.gfire.termvr.documents"`, `android:exported="true"`, `android:grantUriPermissions="true"`, `android:permission="android.permission.MANAGE_DOCUMENTS"`), publishing each profile's `/workspace` under Android's system file picker (`TermVR Workspaces`):
+`TermVrDocumentsProvider` subclasses `android.provider.DocumentsProvider` (`android:authorities="dev.gfire.termvr.documents"`, `android:exported="true"`, `android:grantUriPermissions="true"`, `android:permission="android.permission.MANAGE_DOCUMENTS"`), publishing both `TermVR Workspaces` and `TermVR Git Worktrees` under Android's system file picker:
 
-- **Canonical path confinement**: Every `documentId` resolves via `File(workspaceRoot, relPath).canonicalFile` and verifies `canonicalPath.startsWith(workspaceRoot.canonicalPath + File.separator)` before opening descriptors, rejecting `..` segments and symlink escapes.
+- **Canonical path confinement**: Every `documentId` resolves via `canonicalFile` inside `<filesDir>/workspaces/<profileId>/` or `<filesDir>/git-projects/<projectId>/worktrees/<profileId>/`, rejecting `..` segments, `.gvx_meta*` sidecars, and symlink escapes outside the target root.
 - **Atomic `.termvr.tmp` save swap**: `openDocument` in write mode (`"w"`, `"wt"`, `"wa"`, `"rw"`) stages writes in a bounded sibling `.termvr.tmp` file, copying prior bytes for append or read-write opens. On clean descriptor close, `onCloseListener` syncs disk, preserves POSIX file modes, and moves the staging file over the target.
 - **`FROZEN` workspace write lock**: Upstream `gvx` `hostfs` validates host file sizes and modification timestamps during `rungv restore` (`ValidateFileSizes` / `ValidateFileTimestamps`). While a profile is `FREEZING` or `FROZEN`, both `TermVrDocumentsProvider` and `FilesScreen` omit `Document.FLAG_SUPPORTS_WRITE` / `FLAG_SUPPORTS_DELETE` so external edits cannot corrupt the saved checkpoint. `FilesScreen` offers an explicit `"Discard Checkpoint & Unlock Workspace"` button when offline host edits are required.
 
