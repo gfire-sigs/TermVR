@@ -1,6 +1,7 @@
 package dev.gfire.termvr.core.runtime
 
 import dev.gfire.termvr.core.model.ForwardProtocol
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.ListenHost
 import dev.gfire.termvr.core.model.MuxMode
@@ -557,5 +558,120 @@ class GvxCommandBuilderTest {
         assertFalse(rootfsArgs.any { it.contains(":/mnt/volume") })
         val imgIdx = rootfsArgs.indexOf("-image")
         assertEquals("docker.io/library/debian:trixie-slim", rootfsArgs[imgIdx + 1])
+    }
+
+    @Test
+    fun `OVERLAY_EXT4LITE and shared RO volumes emit exact --mount type=overlay and -v flags across run and restore`() {
+        // Property: OVERLAY_EXT4LITE emits --mount type=overlay,src=<base>,dst=<dst>[,upper=<upper>] in both
+        // buildRunArgs and buildRestoreArgs with Checkpoint/Restore parity, alongside -v <base>:<dst>:ro.
+        // Seam: GvxCommandBuilder.buildRunArgs, buildRestoreArgs.
+        // Oracle: Phase 2 gvx --mount type=overlay CLI contract.
+        // Fault detected: Passing OVERLAY_EXT4LITE to -v instead of --mount, dropping upper=..., or losing --mount on restore.
+        val builder = newBuilder()
+        val profile = SandboxProfile(
+            id = "cow-worker",
+            displayName = "CoW Worker",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            volumes = listOf(
+                VolumeMountSpec(
+                    sourceName = "shared-toolchain",
+                    guestMountPath = "/opt/ro-sdk",
+                    kind = VolumeKind.NAMED_EXT4LITE,
+                    readOnly = true,
+                ),
+                VolumeMountSpec(
+                    sourceName = "shared-toolchain",
+                    guestMountPath = "/opt/persist-branch",
+                    kind = VolumeKind.OVERLAY_EXT4LITE,
+                    overlayUpperVolumeName = "shared-toolchain-wt-cow-worker",
+                ),
+                VolumeMountSpec(
+                    sourceName = "shared-toolchain",
+                    guestMountPath = "/opt/scratch-branch",
+                    kind = VolumeKind.OVERLAY_EXT4LITE,
+                    overlayUpperVolumeName = null,
+                ),
+            ),
+        )
+
+        val ctl = builder.controlSocketFile(profile.id)
+        val runArgs = builder.buildRunArgs(profile, 5353, ctl)
+        val restoreArgs = builder.buildRestoreArgs(profile, File(tempDir, "slot-a"), 5353, ctl)
+
+        val expectedPersistSpec = "type=overlay,src=shared-toolchain,dst=/opt/persist-branch,upper=shared-toolchain-wt-cow-worker"
+        val expectedScratchSpec = "type=overlay,src=shared-toolchain,dst=/opt/scratch-branch"
+
+        for (args in listOf(runArgs, restoreArgs)) {
+            assertTrue(args.contains("shared-toolchain:/opt/ro-sdk:ro"))
+            val persistIdx = args.indexOf(expectedPersistSpec)
+            assertTrue(persistIdx > 0)
+            assertEquals("--mount", args[persistIdx - 1])
+
+            val scratchIdx = args.indexOf(expectedScratchSpec)
+            assertTrue(scratchIdx > 0)
+            assertEquals("--mount", args[scratchIdx - 1])
+        }
+    }
+
+    @Test
+    fun `gitWorktree mounts shared repo_git and container worktree with TERMVR_GIT env vars and restore parity`() {
+        // Property: When profile.gitWorktree != null, buildRunArgs and buildRestoreArgs mount <repo.git>:/git/<id>.git:rw
+        // and <worktrees>/<profileId>:/workspace:rw (even when default self-workspace mount is present in profile.volumes,
+        // while honoring explicit custom /workspace overrides), and buildRunArgs exports TERMVR_GIT_* env vars.
+        // Seam: GvxCommandBuilder.buildRunArgs, buildRestoreArgs, effectiveWorkspaceDir.
+        // Oracle: Phase 3 Git worktree runtime mount and env specification.
+        // Fault detected: Shadowing worktree with empty <filesDir>/workspaces/<id>, double-mounting /workspace, or omitting /git/<id>.git on restore.
+        val builder = newBuilder()
+        val gitSpec = GitWorktreeSpec(projectId = "termvr-core", branchName = "wt/agent-1")
+
+        // Case 1: Profile created from curated catalog (contains default self WORKSPACE_HOSTFS at /workspace)
+        val profile = SandboxProfile(
+            id = "agent-1",
+            displayName = "Agent 1",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            volumes = listOf(
+                VolumeMountSpec(
+                    sourceName = "agent-1",
+                    guestMountPath = "/workspace",
+                    kind = VolumeKind.WORKSPACE_HOSTFS,
+                    readOnly = false,
+                ),
+            ),
+            gitWorktree = gitSpec,
+        )
+
+        val expectedRepoMount = "${builder.gitProjectRepoDir("termvr-core").absolutePath}:/git/termvr-core.git:rw"
+        val expectedWtMount = "${builder.gitWorktreeDir("termvr-core", "agent-1").absolutePath}:/workspace:rw"
+        assertEquals(builder.gitWorktreeDir("termvr-core", "agent-1"), builder.effectiveWorkspaceDir(profile))
+
+        val ctl = builder.controlSocketFile(profile.id)
+        val runArgs = builder.buildRunArgs(profile, 5353, ctl)
+        val restoreArgs = builder.buildRestoreArgs(profile, File(tempDir, "slot-git"), 5353, ctl)
+
+        for (args in listOf(runArgs, restoreArgs)) {
+            assertTrue(args.contains(expectedRepoMount))
+            val wsMounts = args.filter { it.endsWith(":/workspace:rw") || it.endsWith(":/workspace:ro") }
+            assertEquals(listOf(expectedWtMount), wsMounts)
+        }
+
+        assertTrue(runArgs.contains("TERMVR_GIT_PROJECT=termvr-core"))
+        assertTrue(runArgs.contains("TERMVR_GIT_BRANCH=wt/agent-1"))
+        assertTrue(runArgs.contains("TERMVR_GIT_COMMON_DIR=/git/termvr-core.git"))
+
+        // Case 2: Explicit non-default /workspace override is honored without losing /git/<id>.git:rw
+        val customWsProfile = profile.copy(
+            volumes = listOf(
+                VolumeMountSpec(
+                    sourceName = "custom-ext4-ws",
+                    guestMountPath = "/workspace",
+                    kind = VolumeKind.NAMED_EXT4LITE,
+                    readOnly = false,
+                ),
+            ),
+        )
+        val customArgs = builder.buildRunArgs(customWsProfile, 5353, ctl)
+        assertTrue(customArgs.contains(expectedRepoMount))
+        val customWsMounts = customArgs.filter { it.endsWith(":/workspace:rw") || it.endsWith(":/workspace:ro") }
+        assertEquals(listOf("custom-ext4-ws:/workspace:rw"), customWsMounts)
     }
 }

@@ -5,6 +5,7 @@ import android.content.ComponentCallbacks2
 import android.os.Build
 import dev.gfire.termvr.core.data.InMemorySecretStore
 import dev.gfire.termvr.core.model.ForwardProtocol
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.ListenHost
 import dev.gfire.termvr.core.model.MuxMode
@@ -919,6 +920,95 @@ class HostReadinessAndSupervisorTest {
     private fun writeProcStat(procRoot: File, pid: Int, comm: String, ppid: Int) {
         val pidDir = File(procRoot, pid.toString()).apply { mkdirs() }
         File(pidDir, "stat").writeText("$pid ($comm) S $ppid 1 1 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0")
+    }
+
+    @Test
+    fun `SandboxSupervisor provisions Git worktrees before launch and rejects colliding branch checkouts`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val pool = Executors.newCachedThreadPool()
+        val launchedArgs = CopyOnWriteArrayList<List<String>>()
+        val commandBuilder = GvxCommandBuilder(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            caExporter = { pem, dir ->
+                pem.parentFile?.mkdirs()
+                pem.writeText("PEM")
+                dir.mkdirs()
+            },
+        )
+        val proxyBridge = LoopbackProxyBridge(secretStore = InMemorySecretStore())
+        val dnsProxy = LoopbackDnsProxy(
+            networkDnsBackend = { _, _ -> ByteArray(0) },
+            proxyBridge = proxyBridge,
+        )
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = commandBuilder,
+            proxyBridge = proxyBridge,
+            dnsProxy = dnsProxy,
+            checkpointController = CheckpointController(filesDir),
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { 35 },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                freeDiskMiBProvider = { 2048 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = { args, _, _ ->
+                // Verify git worktree metadata ALREADY exists on disk at the moment librungv.so is spawned!
+                assertTrue(File(filesDir, "git-projects/mono/repo.git/HEAD").isFile)
+                launchedArgs.add(args)
+                FakeMuxProcessHandle(pool)
+            },
+            agentExtractor = { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("agent")
+                }
+            },
+        )
+        try {
+            val workerA = SandboxProfile(
+                id = "worker-a",
+                displayName = "Worker A",
+                imageRef = "debian:trixie-slim",
+                gitWorktree = GitWorktreeSpec(projectId = "mono", branchName = "wt/shared-branch"),
+            )
+            val stateA = supervisor.startOrResumeSandbox(workerA)
+            assertEquals(SandboxRunState.RUNNING, stateA)
+            assertEquals(1, launchedArgs.size)
+            assertEquals(
+                "gitdir: /git/mono.git/worktrees/worker-a\n",
+                File(filesDir, "git-projects/mono/worktrees/worker-a/.git").readText(),
+            )
+            assertTrue(launchedArgs.single().contains("${File(filesDir, "git-projects/mono/repo.git").absolutePath}:/git/mono.git:rw"))
+
+            // Worker B attempting to launch on the SAME branch wt/shared-branch must fail BEFORE spawning librungv.so!
+            val workerB = SandboxProfile(
+                id = "worker-b",
+                displayName = "Worker B",
+                imageRef = "debian:trixie-slim",
+                gitWorktree = GitWorktreeSpec(projectId = "mono", branchName = "wt/shared-branch"),
+            )
+            var collisionCaught = false
+            try {
+                supervisor.startOrResumeSandbox(workerB)
+            } catch (e: IllegalStateException) {
+                collisionCaught = e.message?.contains("already checked out") == true
+            }
+            assertTrue(collisionCaught)
+            assertEquals(SandboxRunState.FAILED, supervisor.runStates.value["worker-b"])
+            assertEquals(1, launchedArgs.size)
+        } finally {
+            supervisor.close()
+            pool.shutdownNow()
+        }
     }
 
     private class FakeMuxProcessHandle(

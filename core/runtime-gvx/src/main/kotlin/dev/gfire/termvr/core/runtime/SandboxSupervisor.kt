@@ -3,6 +3,7 @@ package dev.gfire.termvr.core.runtime
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.os.Build
+import dev.gfire.termvr.core.data.GitWorktreeManager
 import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.HostReadinessReport
@@ -204,6 +205,7 @@ class SandboxSupervisor(
     private val ptyBackend: PtyBackend = NativePtyBridge,
     private val hostPssSampler: HostProcessPssSampler = HostProcessPssSampler { 0L },
     private val hostPortProbe: HostPortProbe = NoOpHostPortProbe,
+    private val gitWorktreeManager: GitWorktreeManager = GitWorktreeManager(filesDir),
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
     private val nanoClock: () -> Long = { System.nanoTime() },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -343,6 +345,15 @@ class SandboxSupervisor(
             cachedProfiles[profile.id] = profile
             ensureBridgesRunning()
             proxyBridge.updatePolicy(profile.network.outboundProxy, profile.network.isolateLanEgress)
+            val gitSpec = profile.gitWorktree
+            if (gitSpec != null) {
+                try {
+                    gitWorktreeManager.provisionWorktreeForContainer(profile.id, gitSpec)
+                } catch (e: Exception) {
+                    setRunState(profile.id, SandboxRunState.FAILED)
+                    throw e
+                }
+            }
             commandBuilder.ensureHostDirectories(profile, clearScratchTmp = sessions.isEmpty())
             if (profile.muxMode == MuxMode.STDIO_MUX) {
                 agentExtractor.ensureExtracted(guestArch)

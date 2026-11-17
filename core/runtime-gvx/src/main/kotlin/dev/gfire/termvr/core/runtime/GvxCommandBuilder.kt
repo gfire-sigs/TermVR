@@ -202,6 +202,20 @@ class GvxCommandBuilder(
 
     fun workspaceDir(profileId: String): File = File(filesDir, "workspaces/$profileId")
 
+    fun gitProjectRepoDir(projectId: String): File = File(filesDir, "git-projects/$projectId/repo.git")
+
+    fun gitWorktreeDir(projectId: String, profileId: String): File =
+        File(filesDir, "git-projects/$projectId/worktrees/$profileId")
+
+    fun effectiveWorkspaceDir(profile: SandboxProfile): File {
+        val spec = profile.gitWorktree
+        return if (spec != null) {
+            gitWorktreeDir(spec.projectId, profile.id)
+        } else {
+            workspaceDir(profile.id)
+        }
+    }
+
     fun agentDir(guestArch: GuestLinuxArch): File = File(filesDir, "agent/${guestArch.ociArch}")
 
     fun controlSocketFile(profileId: String): File = File(filesDir, "ctl/$profileId.sock")
@@ -223,7 +237,13 @@ class GvxCommandBuilder(
             setOwnerOnlyDirMode(this)
         }
         if (profile != null) {
-            workspaceDir(profile.id).mkdirs()
+            val gitSpec = profile.gitWorktree
+            if (gitSpec != null) {
+                gitProjectRepoDir(gitSpec.projectId).mkdirs()
+                gitWorktreeDir(gitSpec.projectId, profile.id).mkdirs()
+            } else {
+                workspaceDir(profile.id).mkdirs()
+            }
             if (profile.portForwards.any { it.enabled && it.protocol == ForwardProtocol.UNIX_STREAM }) {
                 File(filesDir, "fwd/${profile.id}").apply {
                     if (!exists()) mkdirs()
@@ -551,7 +571,19 @@ class GvxCommandBuilder(
         profile: SandboxProfile,
         guestArch: GuestLinuxArch,
     ) {
-        if (profile.volumes.none { it.guestMountPath.trimEnd('/') == "/workspace" }) {
+        val gitSpec = profile.gitWorktree
+        if (gitSpec != null) {
+            args.add("-v")
+            args.add("${gitProjectRepoDir(gitSpec.projectId).absolutePath}:/git/${gitSpec.projectId}.git:rw")
+            val hasExplicitWorkspaceOverride = profile.volumes.any { vol ->
+                vol.guestMountPath.trimEnd('/') == "/workspace" &&
+                    !(vol.kind == VolumeKind.WORKSPACE_HOSTFS && vol.sourceName == profile.id && !vol.readOnly)
+            }
+            if (!hasExplicitWorkspaceOverride) {
+                args.add("-v")
+                args.add("${gitWorktreeDir(gitSpec.projectId, profile.id).absolutePath}:/workspace:rw")
+            }
+        } else if (profile.volumes.none { it.guestMountPath.trimEnd('/') == "/workspace" }) {
             args.add("-v")
             args.add("${workspaceDir(profile.id).absolutePath}:/workspace:rw")
         }
@@ -567,13 +599,32 @@ class GvxCommandBuilder(
         }
 
         for (volume in profile.volumes) {
-            val mode = if (volume.readOnly) "ro" else "rw"
-            val hostOrVolumeSource = when (volume.kind) {
-                VolumeKind.NAMED_EXT4LITE -> volume.sourceName
-                VolumeKind.WORKSPACE_HOSTFS -> workspaceDir(volume.sourceName).absolutePath
+            if (
+                gitSpec != null &&
+                volume.guestMountPath.trimEnd('/') == "/workspace" &&
+                volume.kind == VolumeKind.WORKSPACE_HOSTFS &&
+                volume.sourceName == profile.id &&
+                !volume.readOnly
+            ) {
+                continue
             }
-            args.add("-v")
-            args.add("$hostOrVolumeSource:${volume.guestMountPath}:$mode")
+            when (volume.kind) {
+                VolumeKind.NAMED_EXT4LITE -> {
+                    val mode = if (volume.readOnly) "ro" else "rw"
+                    args.add("-v")
+                    args.add("${volume.sourceName}:${volume.guestMountPath}:$mode")
+                }
+                VolumeKind.WORKSPACE_HOSTFS -> {
+                    val mode = if (volume.readOnly) "ro" else "rw"
+                    args.add("-v")
+                    args.add("${workspaceDir(volume.sourceName).absolutePath}:${volume.guestMountPath}:$mode")
+                }
+                VolumeKind.OVERLAY_EXT4LITE -> {
+                    val upperSuffix = volume.overlayUpperVolumeName?.let { ",upper=$it" }.orEmpty()
+                    args.add("--mount")
+                    args.add("type=overlay,src=${volume.sourceName},dst=${volume.guestMountPath}$upperSuffix")
+                }
+            }
         }
 
         for (tmpfsPath in profile.tmpfsMounts) {
@@ -589,6 +640,19 @@ class GvxCommandBuilder(
     ) {
         val mergedEnv = linkedMapOf<String, String>()
         mergedEnv.putAll(profile.envVars)
+
+        val gitSpec = profile.gitWorktree
+        if (gitSpec != null) {
+            if ("TERMVR_GIT_PROJECT" !in mergedEnv) {
+                mergedEnv["TERMVR_GIT_PROJECT"] = gitSpec.projectId
+            }
+            if ("TERMVR_GIT_BRANCH" !in mergedEnv) {
+                mergedEnv["TERMVR_GIT_BRANCH"] = gitSpec.branchName
+            }
+            if ("TERMVR_GIT_COMMON_DIR" !in mergedEnv) {
+                mergedEnv["TERMVR_GIT_COMMON_DIR"] = "/git/${gitSpec.projectId}.git"
+            }
+        }
 
         if (mergedEnv["TERM"].isNullOrBlank()) {
             mergedEnv["TERM"] = DEFAULT_GUEST_TERM

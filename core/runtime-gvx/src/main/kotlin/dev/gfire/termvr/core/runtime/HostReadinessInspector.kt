@@ -110,7 +110,8 @@ class HostReadinessInspector(
         return StorageUsageBreakdown(
             layersBytes = directorySizeBytes(File(gvxRoot, "layers")),
             volumesBytes = directorySizeBytes(File(gvxRoot, "volumes")),
-            workspacesBytes = directorySizeBytes(File(filesDir, "workspaces")),
+            workspacesBytes = directorySizeBytes(File(filesDir, "workspaces")) +
+                directorySizeBytes(File(filesDir, "git-projects")),
             checkpointsBytes = directorySizeBytes(File(filesDir, "checkpoints")),
         )
     }
