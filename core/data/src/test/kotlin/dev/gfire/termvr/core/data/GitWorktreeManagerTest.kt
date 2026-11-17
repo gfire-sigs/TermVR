@@ -54,11 +54,18 @@ class GitWorktreeManagerTest {
         now += 60_000L
         val ensured = manager.createOrEnsureProject(
             projectId = "core-repo",
-            name = "Core Repo",
-            defaultBranch = "main",
         )
         assertEquals(1763350000000L, ensured.createdAtEpochMs)
-        assertEquals(listOf("core-repo"), manager.listProjects().map { it.id })
+        assertEquals("Core Repo", ensured.name)
+
+        // Provisioning a container worktree must also preserve the existing human display name!
+        manager.provisionWorktreeForContainer(
+            profileId = "dev-one",
+            spec = GitWorktreeSpec(projectId = "core-repo", branchName = "wt/dev-one"),
+        )
+        val afterProvision = manager.listProjects().single()
+        assertEquals("core-repo", afterProvision.id)
+        assertEquals("Core Repo", afterProvision.name)
     }
 
     @Test
@@ -234,6 +241,17 @@ class GitWorktreeManagerTest {
                 spec = GitWorktreeSpec("safe-proj", "wt/evil"),
             )
         }
+
+        // Symlinked entries inside repo.git/worktrees must be ignored during branch-collision scanning
+        val fakeOutsideWorktree = File(outsideDir, "fake-wt").apply { mkdirs() }
+        File(fakeOutsideWorktree, "HEAD").writeText("ref: refs/heads/wt/clean-box\n")
+        val repoWorktrees = File(tempDir, "git-projects/safe-proj/repo.git/worktrees").apply { mkdirs() }
+        Files.createSymbolicLink(File(repoWorktrees, "symlink-other").toPath(), fakeOutsideWorktree.toPath())
+        val cleanWt = manager.provisionWorktreeForContainer(
+            profileId = "clean-box",
+            spec = GitWorktreeSpec("safe-proj", "wt/clean-box"),
+        )
+        assertTrue(cleanWt.isDirectory)
     }
 
     @Test

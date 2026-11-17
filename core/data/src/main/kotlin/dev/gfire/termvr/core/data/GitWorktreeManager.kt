@@ -75,13 +75,14 @@ class GitWorktreeManager(
      */
     fun createOrEnsureProject(
         projectId: String,
-        name: String = projectId,
+        name: String? = null,
         defaultBranch: String = GitProjectSummary.DEFAULT_BRANCH,
+        overwriteExistingName: Boolean = false,
     ): GitProjectSummary = synchronized(lock) {
         require(GitWorktreeSpec.isValidProjectId(projectId)) {
             "Invalid Git projectId: '$projectId'"
         }
-        require(name.isNotBlank()) { "Git project name must not be blank" }
+        require(name == null || name.isNotBlank()) { "Git project name must not be blank" }
         require(GitWorktreeSpec.isValidBranchName(defaultBranch)) {
             "Invalid Git defaultBranch: '$defaultBranch'"
         }
@@ -110,9 +111,10 @@ class GitWorktreeManager(
 
         val metaFile = File(projDir, PROJECT_METADATA_FILE_NAME)
         val existingMeta = readMetadataOrNull(metaFile)
+        val requestedName = name?.trim()
         val effectiveMeta = if (existingMeta != null) {
-            if (existingMeta.name != name.trim()) {
-                existingMeta.copy(name = name.trim()).also { updated ->
+            if (overwriteExistingName && requestedName != null && existingMeta.name != requestedName) {
+                existingMeta.copy(name = requestedName).also { updated ->
                     writeAtomicText(metaFile, json.encodeToString(updated) + "\n")
                 }
             } else {
@@ -121,7 +123,7 @@ class GitWorktreeManager(
         } else {
             GitProjectMetadata(
                 id = projectId,
-                name = name.trim(),
+                name = requestedName ?: projectId,
                 defaultBranch = defaultBranch,
                 createdAtEpochMs = clockMillis().coerceAtLeast(0L),
             ).also { created ->
@@ -184,7 +186,11 @@ class GitWorktreeManager(
             }
             .sortedBy { it.name }
             .mapNotNull { entry ->
-                val headRaw = runCatching { File(entry, "HEAD").readText(StandardCharsets.UTF_8).trim() }.getOrNull()
+                val headFile = File(entry, "HEAD")
+                if (Files.isSymbolicLink(headFile.toPath()) || !headFile.isFile) {
+                    return@mapNotNull null
+                }
+                val headRaw = runCatching { headFile.readText(StandardCharsets.UTF_8).trim() }.getOrNull()
                     ?: return@mapNotNull null
                 val branch = headRaw.removePrefix(REFS_HEADS_PREFIX).takeIf { headRaw.startsWith(REFS_HEADS_PREFIX) }
                     ?: headRaw
@@ -199,6 +205,31 @@ class GitWorktreeManager(
     }
 
     /**
+     * Checks without mutating disk whether [profileId]'s worktree and gitdir links already exist.
+     */
+    fun isWorktreeProvisioned(
+        profileId: String,
+        spec: GitWorktreeSpec,
+    ): Boolean = synchronized(lock) {
+        if (!SandboxProfile.isValidProfileId(profileId)) return false
+        val wtDir = containerWorktreeDir(spec.projectId, profileId)
+        if (!wtDir.isDirectory || Files.isSymbolicLink(wtDir.toPath())) return false
+        val dotGitFile = File(wtDir, ".git")
+        if (!dotGitFile.isFile || Files.isSymbolicLink(dotGitFile.toPath())) return false
+        val expectedGitdirLine = "gitdir: /git/${spec.projectId}.git/worktrees/$profileId\n"
+        val currentDotGit = runCatching { dotGitFile.readText(StandardCharsets.UTF_8) }.getOrNull()
+        if (currentDotGit != expectedGitdirLine) return false
+
+        val wtMetaDir = File(repoGitDir(spec.projectId), "$WORKTREES_DIR_NAME/$profileId")
+        if (!wtMetaDir.isDirectory || Files.isSymbolicLink(wtMetaDir.toPath())) return false
+        for (metaName in listOf("HEAD", "gitdir", "commondir")) {
+            val metaFile = File(wtMetaDir, metaName)
+            if (!metaFile.isFile || Files.isSymbolicLink(metaFile.toPath())) return false
+        }
+        true
+    }
+
+    /**
      * Provisions `<filesDir>/git-projects/<projectId>/worktrees/<profileId>` and `<repo.git>/worktrees/<profileId>`.
      */
     fun provisionWorktreeForContainer(
@@ -210,7 +241,6 @@ class GitWorktreeManager(
         }
         val summary = createOrEnsureProject(
             projectId = spec.projectId,
-            name = spec.projectId,
         )
         val projDir = projectDir(spec.projectId)
         val repoDir = repoGitDir(spec.projectId)
@@ -220,9 +250,9 @@ class GitWorktreeManager(
         val desiredHeadLine = "$REFS_HEADS_PREFIX${spec.branchName}"
         val existingEntries = repoWorktreesRoot.listFiles().orEmpty()
         for (otherDir in existingEntries) {
-            if (!otherDir.isDirectory || otherDir.name == profileId) continue
+            if (Files.isSymbolicLink(otherDir.toPath()) || !otherDir.isDirectory || otherDir.name == profileId) continue
             val otherHeadFile = File(otherDir, "HEAD")
-            if (!otherHeadFile.isFile) continue
+            if (Files.isSymbolicLink(otherHeadFile.toPath()) || !otherHeadFile.isFile) continue
             val otherHead = otherHeadFile.readText(StandardCharsets.UTF_8).trim()
             check(otherHead != desiredHeadLine) {
                 "Branch '${spec.branchName}' is already checked out by container '${otherDir.name}' in project '${spec.projectId}'."
@@ -238,9 +268,9 @@ class GitWorktreeManager(
         }
 
         val wtMetaDir = ensureSafeDirectory(File(repoWorktreesRoot, profileId), repoWorktreesRoot)
-        writeAtomicText(File(wtMetaDir, "commondir"), "../..\n")
-        writeAtomicText(File(wtMetaDir, "gitdir"), "/workspace/.git\n")
-        writeAtomicText(File(wtMetaDir, "HEAD"), "$desiredHeadLine\n")
+        writeAtomicTextIfChanged(File(wtMetaDir, "commondir"), "../..\n")
+        writeAtomicTextIfChanged(File(wtMetaDir, "gitdir"), "/workspace/.git\n")
+        writeAtomicTextIfChanged(File(wtMetaDir, "HEAD"), "$desiredHeadLine\n")
 
         val wtDir = ensureSafeDirectory(File(hostWorktreesRoot, profileId), hostWorktreesRoot)
         val dotGitFile = File(wtDir, ".git")
@@ -251,14 +281,7 @@ class GitWorktreeManager(
             "Worktree path ${wtDir.absolutePath} already contains a standalone .git directory."
         }
         val expectedGitdirLine = "gitdir: /git/${spec.projectId}.git/worktrees/$profileId\n"
-        val currentContent = if (dotGitFile.isFile) {
-            runCatching { dotGitFile.readText(StandardCharsets.UTF_8) }.getOrNull()
-        } else {
-            null
-        }
-        if (currentContent != expectedGitdirLine) {
-            writeAtomicText(dotGitFile, expectedGitdirLine)
-        }
+        writeAtomicTextIfChanged(dotGitFile, expectedGitdirLine)
         wtDir
     }
 
@@ -470,6 +493,17 @@ class GitWorktreeManager(
             throw SecurityException("Git storage path escaped confinement root: ${target.absolutePath}")
         }
         return target
+    }
+
+    private fun writeAtomicTextIfChanged(target: File, content: String) {
+        if (Files.isSymbolicLink(target.toPath())) {
+            throw SecurityException("Refusing to write through symbolic link: ${target.absolutePath}")
+        }
+        if (target.isFile) {
+            val existing = runCatching { target.readText(StandardCharsets.UTF_8) }.getOrNull()
+            if (existing == content) return
+        }
+        writeAtomicText(target, content)
     }
 
     private fun writeAtomicText(target: File, content: String) {
