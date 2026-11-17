@@ -2,8 +2,8 @@
   "schema_version": 1,
   "termvr": {
     "app_revision": 0,
-    "version_name": "0.16.10022026110900",
-    "version_code": 301600020
+    "version_name": "0.17.10002026110900",
+    "version_code": 301700000
   },
   "toolchains": {
     "jdk": "17",
@@ -18,8 +18,8 @@
   "sources": {
     "gvx": {
       "repository": "https://github.com/gfire-sigs/gvx.git",
-      "tag": "v0.16.10022026110900",
-      "commit": "4f7bbd5ff889989597f0d745c5ed318c1faa222f",
+      "tag": "v0.17.10002026110900",
+      "commit": "e410633f24cf34fddfde473e48dde172593dc5af",
       "spdx_license": "Apache-2.0",
       "artifact": "librungv.so"
     },

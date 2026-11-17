@@ -6,7 +6,27 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.16.10022026110900`.
+This section tracks changes staged on `main` after `0.17.10002026110900`.
+
+---
+
+## [0.17.10002026110900]
+
+This release (`versionCode` `301700000`) upgrades the bundled `gvx` runtime to `v0.17.10002026110900` (`e410633f24cf`). It adds online `ext4lite` space reclamation, offline compaction, copy-on-write (`CoW`) volume branches, and shared Git worktree projects.
+
+### Storage compaction and CoW volume branches
+
+`ext4lite` volumes now reclaim deleted blocks automatically while containers run, compact offline on demand, and support concurrent `CoW` overlays.
+
+- Enabled online `ext4lite` auto-shrink in `gvx` `v0.17.10002026110900` and surfaced `AllocatedBytes` vs `SizeBytes` plus `Compact` actions in `Files > Volumes`.
+- Added `OVERLAY_EXT4LITE` (`overlay_ext4lite`) `CoW` volume branching in `GvxCommandBuilder`, `SandboxSupervisor`, `Home`, and `Files` with `Shared (RO)` base locks.
+
+### Multi-container Git worktrees and SAF bridge
+
+Concurrent containers now share host-backed bare Git repositories across isolated worktrees with external Android `SAF` editor support.
+
+- Added `GitWorktreeManager` (`core:data`) and `Git Projects` UI in `Files` and `Home` for concurrent `/git/<project>.git` and `/workspace` worktree branches.
+- Added the `TermVR Git Worktrees` root in `TermVrDocumentsProvider` with atomic `.termvr.tmp` writes, `0755` preservation, and frozen-container write guards.
 
 ---
 

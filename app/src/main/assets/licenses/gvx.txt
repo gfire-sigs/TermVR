@@ -1,6 +1,6 @@
-gvx User-Space Linux Sandbox (v0.16.10022026110900)
+gvx User-Space Linux Sandbox (v0.17.10002026110900)
 Repository: https://github.com/gfire-sigs/gvx
-Commit: 4f7bbd5ff889989597f0d745c5ed318c1faa222f
+Commit: e410633f24cf34fddfde473e48dde172593dc5af
 
                                  Apache License
                            Version 2.0, January 2004

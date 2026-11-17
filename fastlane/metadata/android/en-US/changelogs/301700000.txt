@@ -1,0 +1,5 @@
+TermVR 0.17.10002026110900 (gvx v0.17.10002026110900):
+- Upgraded gvx to v0.17.10002026110900 with online ext4lite block reclamation and overlay_ext4lite CoW mounts.
+- Added AllocatedBytes reporting and offline Compact actions in Files > Volumes.
+- Added CoW volume branching (OVERLAY_EXT4LITE) and Shared (RO) base locks across Home and Files.
+- Added multi-container Git Projects (git worktree) and TermVR Git Worktrees SAF access.
