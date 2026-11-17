@@ -28,6 +28,7 @@ data class SandboxProfile(
     val autoCheckpointOnLowMemory: Boolean = true,
     val makeRootRshared: Boolean = false,
     val persistentRootfs: Boolean = false,
+    val gitWorktree: GitWorktreeSpec? = null,
 ) {
     init {
         require(schemaVersion == CURRENT_SCHEMA_VERSION) {
@@ -53,6 +54,7 @@ data class SandboxProfile(
         require(cpuCores == UNLIMITED_CPU_CORES || (cpuCores.isFinite() && cpuCores > 0.0)) {
             "SandboxProfile cpuCores must be $UNLIMITED_CPU_CORES (unlimited) or finite and positive, found $cpuCores"
         }
+        validateExt4VolumeConflicts()
         for (tmpfsPath in tmpfsMounts) {
             require(isCleanAbsoluteGuestPath(tmpfsPath)) {
                 "SandboxProfile tmpfsMount must be a clean absolute path, found '$tmpfsPath'"
@@ -64,6 +66,45 @@ data class SandboxProfile(
             }
             require(!envValue.contains('\u0000')) {
                 "SandboxProfile envVar '$envKey' value must not contain NUL bytes"
+            }
+        }
+    }
+
+    private fun validateExt4VolumeConflicts() {
+        val writerVolumes = HashSet<String>()
+        val readerVolumes = HashSet<String>()
+        if (persistentRootfs) {
+            writerVolumes.add(rootfsVolumeName)
+        }
+        for (mount in volumes) {
+            when (mount.kind) {
+                VolumeKind.WORKSPACE_HOSTFS -> Unit
+                VolumeKind.NAMED_EXT4LITE -> {
+                    if (mount.readOnly) {
+                        require(mount.sourceName !in writerVolumes) {
+                            "Volume '${mount.sourceName}' cannot be mounted both read-write and read-only in profile '$id'"
+                        }
+                        readerVolumes.add(mount.sourceName)
+                    } else {
+                        require(mount.sourceName !in writerVolumes && mount.sourceName !in readerVolumes) {
+                            "Volume '${mount.sourceName}' cannot have conflicting exclusive read-write mounts in profile '$id'"
+                        }
+                        writerVolumes.add(mount.sourceName)
+                    }
+                }
+                VolumeKind.OVERLAY_EXT4LITE -> {
+                    require(mount.sourceName !in writerVolumes) {
+                        "Overlay base volume '${mount.sourceName}' cannot also be mounted read-write in profile '$id'"
+                    }
+                    readerVolumes.add(mount.sourceName)
+                    val upper = mount.overlayUpperVolumeName
+                    if (upper != null) {
+                        require(upper !in writerVolumes && upper !in readerVolumes) {
+                            "Overlay upper volume '$upper' conflicts with another mount in profile '$id'"
+                        }
+                        writerVolumes.add(upper)
+                    }
+                }
             }
         }
     }
@@ -127,7 +168,7 @@ enum class ClipboardReadPolicy {
 }
 
 /**
- * Defines a persistent volume mount mapped into a sandbox guest path.
+ * Defines a persistent or copy-on-write volume mount mapped into a sandbox guest path.
  */
 @Serializable
 data class VolumeMountSpec(
@@ -135,22 +176,115 @@ data class VolumeMountSpec(
     val guestMountPath: String,
     val kind: VolumeKind,
     val readOnly: Boolean = false,
+    val overlayUpperVolumeName: String? = null,
 ) {
     init {
-        require(
-            VOLUME_SOURCE_REGEX.matches(sourceName) &&
-                sourceName != "." &&
-                sourceName != "..",
-        ) {
-            "VolumeMountSpec sourceName must match [a-z0-9._-]+ without '.' or '..', found '$sourceName'"
+        require(isValidVolumeName(sourceName)) {
+            "VolumeMountSpec sourceName must match [a-z0-9][a-z0-9._-]{0,63}, found '$sourceName'"
         }
         require(isCleanAbsoluteGuestPath(guestMountPath)) {
             "VolumeMountSpec guestMountPath must be an absolute path without ':', ',', or '..', found '$guestMountPath'"
         }
+        if (kind == VolumeKind.OVERLAY_EXT4LITE) {
+            require(!readOnly) {
+                "VolumeMountSpec with OVERLAY_EXT4LITE must have readOnly == false"
+            }
+            val normalizedGuestPath = guestMountPath.trimEnd('/').ifEmpty { "/" }
+            require(normalizedGuestPath !in FORBIDDEN_OVERLAY_GUEST_PATHS) {
+                "VolumeMountSpec OVERLAY_EXT4LITE guestMountPath cannot target '$normalizedGuestPath'"
+            }
+            if (overlayUpperVolumeName != null) {
+                require(isValidVolumeName(overlayUpperVolumeName)) {
+                    "VolumeMountSpec overlayUpperVolumeName must match [a-z0-9][a-z0-9._-]{0,63}, found '$overlayUpperVolumeName'"
+                }
+                require(overlayUpperVolumeName != sourceName) {
+                    "VolumeMountSpec overlayUpperVolumeName must not equal sourceName '$sourceName'"
+                }
+            }
+        } else {
+            require(overlayUpperVolumeName == null) {
+                "VolumeMountSpec overlayUpperVolumeName is only permitted when kind is OVERLAY_EXT4LITE"
+            }
+        }
     }
 
+    val mountMode: VolumeMountMode
+        get() = when {
+            kind == VolumeKind.OVERLAY_EXT4LITE && overlayUpperVolumeName != null -> VolumeMountMode.COW_PERSISTENT
+            kind == VolumeKind.OVERLAY_EXT4LITE -> VolumeMountMode.COW_EPHEMERAL
+            readOnly -> VolumeMountMode.SHARED_RO
+            else -> VolumeMountMode.EXCLUSIVE_RW
+        }
+
     companion object {
-        private val VOLUME_SOURCE_REGEX = Regex("^[a-z0-9._-]+$")
+        const val MAX_VOLUME_NAME_LENGTH: Int = 64
+        private val VOLUME_SOURCE_REGEX = Regex("^[a-z0-9][a-z0-9._-]{0,63}$")
+        private val FORBIDDEN_OVERLAY_GUEST_PATHS = setOf("/", "/proc", "/sys", "/dev")
+
+        fun isValidVolumeName(candidate: String): Boolean =
+            VOLUME_SOURCE_REGEX.matches(candidate) && candidate != "." && candidate != ".."
+
+        fun forMode(
+            baseVolumeName: String,
+            guestMountPath: String,
+            mode: VolumeMountMode,
+            overlayUpperVolumeName: String? = null,
+        ): VolumeMountSpec = when (mode) {
+            VolumeMountMode.EXCLUSIVE_RW -> VolumeMountSpec(
+                sourceName = baseVolumeName,
+                guestMountPath = guestMountPath,
+                kind = VolumeKind.NAMED_EXT4LITE,
+                readOnly = false,
+            )
+            VolumeMountMode.SHARED_RO -> VolumeMountSpec(
+                sourceName = baseVolumeName,
+                guestMountPath = guestMountPath,
+                kind = VolumeKind.NAMED_EXT4LITE,
+                readOnly = true,
+            )
+            VolumeMountMode.COW_PERSISTENT -> VolumeMountSpec(
+                sourceName = baseVolumeName,
+                guestMountPath = guestMountPath,
+                kind = VolumeKind.OVERLAY_EXT4LITE,
+                readOnly = false,
+                overlayUpperVolumeName = requireNotNull(overlayUpperVolumeName?.trim()?.takeIf { it.isNotEmpty() }) {
+                    "Persistent CoW branch requires an upper volume name"
+                },
+            )
+            VolumeMountMode.COW_EPHEMERAL -> VolumeMountSpec(
+                sourceName = baseVolumeName,
+                guestMountPath = guestMountPath,
+                kind = VolumeKind.OVERLAY_EXT4LITE,
+                readOnly = false,
+                overlayUpperVolumeName = null,
+            )
+        }
+
+        fun suggestOverlayUpperVolumeName(
+            baseVolumeName: String,
+            profileNameOrId: String,
+        ): String {
+            val cleanBase = sanitizeVolumeSegment(baseVolumeName).ifEmpty { "vol" }
+            val cleanProfile = sanitizeVolumeSegment(profileNameOrId).ifEmpty { "sandbox" }
+            val separator = "-wt-"
+            val maxBaseChars = (MAX_VOLUME_NAME_LENGTH - separator.length - 8).coerceAtLeast(8)
+            val truncatedBase = cleanBase.take(maxBaseChars).trimEnd('-', '.', '_').ifEmpty { "vol" }
+            val remainingForProfile = (MAX_VOLUME_NAME_LENGTH - truncatedBase.length - separator.length).coerceAtLeast(1)
+            val truncatedProfile = cleanProfile.take(remainingForProfile).trimEnd('-', '.', '_').ifEmpty { "1" }
+            val candidate = "$truncatedBase$separator$truncatedProfile"
+            return if (candidate == baseVolumeName) {
+                "${candidate.take(MAX_VOLUME_NAME_LENGTH - 2)}-2"
+            } else {
+                candidate
+            }
+        }
+
+        private fun sanitizeVolumeSegment(raw: String): String =
+            raw.trim()
+                .lowercase()
+                .replace(Regex("[^a-z0-9._-]+"), "-")
+                .replace(Regex("-{2,}"), "-")
+                .trim('-', '.', '_')
     }
 }
 
@@ -158,6 +292,161 @@ data class VolumeMountSpec(
 enum class VolumeKind {
     NAMED_EXT4LITE,
     WORKSPACE_HOSTFS,
+    OVERLAY_EXT4LITE,
+}
+
+@Serializable
+enum class VolumeLockMode {
+    NONE,
+    SHARED,
+    EXCLUSIVE,
+    ;
+
+    val isInUse: Boolean
+        get() = this != NONE
+
+    val allowsSharedReaders: Boolean
+        get() = this != EXCLUSIVE
+
+    companion object {
+        fun fromWireOrInUse(wireMode: String?, inUse: Boolean): VolumeLockMode =
+            when (wireMode?.trim()?.lowercase()) {
+                "exclusive" -> EXCLUSIVE
+                "shared" -> SHARED
+                "none" -> NONE
+                else -> if (inUse) EXCLUSIVE else NONE
+            }
+    }
+}
+
+@Serializable
+enum class VolumeMountMode {
+    EXCLUSIVE_RW,
+    SHARED_RO,
+    COW_PERSISTENT,
+    COW_EPHEMERAL,
+}
+
+/**
+ * Summarizes a shared host-side bare Git project repository under `<filesDir>/git-projects/<id>`.
+ */
+@Serializable
+data class GitProjectSummary(
+    val id: String,
+    val name: String,
+    val defaultBranch: String = DEFAULT_BRANCH,
+    val createdAtEpochMs: Long,
+    val worktreeCount: Int = 0,
+    val diskBytes: Long = 0L,
+) {
+    init {
+        require(GitWorktreeSpec.isValidProjectId(id)) {
+            "GitProjectSummary id must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63} without '..', found '$id'"
+        }
+        require(name.isNotBlank()) { "GitProjectSummary name must not be blank" }
+        require(GitWorktreeSpec.isValidBranchName(defaultBranch)) {
+            "GitProjectSummary defaultBranch '${defaultBranch}' violates git-check-ref-format"
+        }
+        require(createdAtEpochMs >= 0L) { "GitProjectSummary createdAtEpochMs must be non-negative" }
+        require(worktreeCount >= 0) { "GitProjectSummary worktreeCount must be non-negative" }
+        require(diskBytes >= 0L) { "GitProjectSummary diskBytes must be non-negative" }
+    }
+
+    companion object {
+        const val DEFAULT_BRANCH: String = "main"
+    }
+}
+
+/**
+ * Attaches a sandbox profile to a per-container linked `git worktree` of a shared bare Git project.
+ */
+@Serializable
+data class GitWorktreeSpec(
+    val projectId: String,
+    val branchName: String,
+) {
+    init {
+        require(isValidProjectId(projectId)) {
+            "GitWorktreeSpec projectId must match [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63} without '..', found '$projectId'"
+        }
+        require(isValidBranchName(branchName)) {
+            "GitWorktreeSpec branchName '$branchName' violates git-check-ref-format"
+        }
+    }
+
+    companion object {
+        const val MAX_PROJECT_ID_LENGTH: Int = 64
+        const val MAX_BRANCH_NAME_LENGTH: Int = 200
+        private val PROJECT_ID_REGEX = Regex("^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
+        private val FORBIDDEN_REF_CHARS = setOf(' ', '~', '^', ':', '?', '*', '[', '\\')
+
+        fun isValidProjectId(candidate: String): Boolean {
+            if (!PROJECT_ID_REGEX.matches(candidate)) return false
+            if (candidate.contains("..")) return false
+            return true
+        }
+
+        fun isValidBranchName(candidate: String): Boolean {
+            if (candidate.isEmpty() || candidate.length > MAX_BRANCH_NAME_LENGTH) return false
+            if (candidate == "@" || candidate == "HEAD") return false
+            if (candidate.startsWith('-') || candidate.startsWith('/') || candidate.endsWith('/') || candidate.endsWith('.')) {
+                return false
+            }
+            if (candidate.contains("..") || candidate.contains("@{") || candidate.contains("//")) {
+                return false
+            }
+            for (ch in candidate) {
+                if (
+                    ch == '\u0000' ||
+                    ch.code < 0x20 ||
+                    ch.code == 0x7F ||
+                    Character.isISOControl(ch) ||
+                    ch.isWhitespace() ||
+                    ch in FORBIDDEN_REF_CHARS
+                ) {
+                    return false
+                }
+            }
+            val segments = candidate.split('/')
+            for (segment in segments) {
+                if (
+                    segment.isEmpty() ||
+                    segment == "." ||
+                    segment == ".." ||
+                    segment.startsWith('.') ||
+                    segment.endsWith(".lock", ignoreCase = true)
+                ) {
+                    return false
+                }
+            }
+            return true
+        }
+
+        fun suggestProjectId(rawName: String): String {
+            val cleaned = rawName.trim()
+                .lowercase()
+                .replace(Regex("[^a-z0-9_.-]+"), "-")
+                .replace(Regex("\\.{2,}"), ".")
+                .replace(Regex("-{2,}"), "-")
+                .trim('-', '.', '_')
+                .take(MAX_PROJECT_ID_LENGTH)
+                .trimEnd('-', '.', '_')
+            return if (cleaned.isNotEmpty() && isValidProjectId(cleaned)) cleaned else "project"
+        }
+
+        fun defaultBranchForProfile(profileIdOrName: String): String {
+            val slug = profileIdOrName.trim()
+                .lowercase()
+                .replace(Regex("[^a-z0-9_-]+"), "-")
+                .replace(Regex("-{2,}"), "-")
+                .trim('-', '_')
+                .take(48)
+                .trimEnd('-', '_')
+                .ifEmpty { "container" }
+            val candidate = "wt/$slug"
+            return if (isValidBranchName(candidate)) candidate else "wt/container"
+        }
+    }
 }
 
 /**

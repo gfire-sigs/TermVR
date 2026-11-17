@@ -361,4 +361,255 @@ class SandboxModelsTest {
         assertFalse(distro.toSandboxProfile().persistentRootfs)
         assertTrue(distro.toSandboxProfile(persistentRootfs = true).persistentRootfs)
     }
+
+    @Test
+    fun `INV-S6 VolumeLockMode infers NONE SHARED and EXCLUSIVE from wire mode or legacy InUse flag`() {
+        // Property: Explicit wire lock modes map case-insensitively to VolumeLockMode; blank/absent wire mode falls back to InUse.
+        // Seam: VolumeLockMode.fromWireOrInUse, isInUse, allowsSharedReaders.
+        // Oracle: Phase 1 gvx VolumeInfo LockMode contract ("none" | "shared" | "exclusive" + InUse fallback).
+        // Fault detected: Treating LOCK_SH ("shared") as exclusive single-writer or misclassifying legacy InUse=true JSON.
+        assertEquals(VolumeLockMode.NONE, VolumeLockMode.fromWireOrInUse("none", inUse = false))
+        assertEquals(VolumeLockMode.SHARED, VolumeLockMode.fromWireOrInUse("shared", inUse = true))
+        assertEquals(VolumeLockMode.SHARED, VolumeLockMode.fromWireOrInUse("SHARED", inUse = false))
+        assertEquals(VolumeLockMode.EXCLUSIVE, VolumeLockMode.fromWireOrInUse("exclusive", inUse = true))
+        assertEquals(VolumeLockMode.EXCLUSIVE, VolumeLockMode.fromWireOrInUse(null, inUse = true))
+        assertEquals(VolumeLockMode.NONE, VolumeLockMode.fromWireOrInUse(null, inUse = false))
+        assertEquals(VolumeLockMode.EXCLUSIVE, VolumeLockMode.fromWireOrInUse("", inUse = true))
+
+        assertFalse(VolumeLockMode.NONE.isInUse)
+        assertTrue(VolumeLockMode.SHARED.isInUse)
+        assertTrue(VolumeLockMode.EXCLUSIVE.isInUse)
+
+        assertTrue(VolumeLockMode.NONE.allowsSharedReaders)
+        assertTrue(VolumeLockMode.SHARED.allowsSharedReaders)
+        assertFalse(VolumeLockMode.EXCLUSIVE.allowsSharedReaders)
+    }
+
+    @Test
+    fun `INV-S7 VolumeMountSpec enforces OVERLAY_EXT4LITE upper-volume self-overlay readOnly and sandbox conflict invariants`() {
+        // Property: OVERLAY_EXT4LITE permits null (ephemeral tmpfs) or valid distinct upper volume name with readOnly=false,
+        // rejects upper on non-overlay kinds, rejects self-overlay (upper == sourceName), rejects readOnly=true on overlay,
+        // rejects reserved guest roots, and allows shared lower base volumes while rejecting RW+RO self-conflicts in one profile.
+        // Seam: VolumeMountSpec constructor, forMode, suggestOverlayUpperVolumeName, and SandboxProfile constructor.
+        // Oracle: Phase 2 CoW overlay volume specification.
+        // Fault detected: Emitting --mount type=overlay with upper==src, readonly overlay, or non-overlay carrying upper volume.
+        val ephemeralOverlay = VolumeMountSpec(
+            sourceName = "base-sdk",
+            guestMountPath = "/opt/sdk",
+            kind = VolumeKind.OVERLAY_EXT4LITE,
+            readOnly = false,
+            overlayUpperVolumeName = null,
+        )
+        assertEquals(VolumeMountMode.COW_EPHEMERAL, ephemeralOverlay.mountMode)
+        assertEquals(ephemeralOverlay, json.decodeFromString<VolumeMountSpec>(json.encodeToString(ephemeralOverlay)))
+
+        val suggestedUpper = VolumeMountSpec.suggestOverlayUpperVolumeName("base-sdk", "Ubuntu 24.04 Dev!")
+        assertEquals("base-sdk-wt-ubuntu-24.04-dev", suggestedUpper)
+        assertTrue(VolumeMountSpec.isValidVolumeName(suggestedUpper))
+
+        val maxBase = "b".repeat(60)
+        val boundedUpper = VolumeMountSpec.suggestOverlayUpperVolumeName(maxBase, "very-long-container-profile-name")
+        assertTrue(boundedUpper.length <= 64)
+        assertTrue(VolumeMountSpec.isValidVolumeName(boundedUpper))
+        assertFalse(boundedUpper == maxBase)
+
+        val persistentOverlay = VolumeMountSpec.forMode(
+            baseVolumeName = "base-sdk",
+            guestMountPath = "/opt/sdk",
+            mode = VolumeMountMode.COW_PERSISTENT,
+            overlayUpperVolumeName = suggestedUpper,
+        )
+        assertEquals(VolumeKind.OVERLAY_EXT4LITE, persistentOverlay.kind)
+        assertFalse(persistentOverlay.readOnly)
+        assertEquals(suggestedUpper, persistentOverlay.overlayUpperVolumeName)
+        assertEquals(VolumeMountMode.COW_PERSISTENT, persistentOverlay.mountMode)
+        assertEquals(persistentOverlay, json.decodeFromString<VolumeMountSpec>(json.encodeToString(persistentOverlay)))
+
+        // Non-overlay kinds must never set overlayUpperVolumeName.
+        for (nonOverlayKind in listOf(VolumeKind.NAMED_EXT4LITE, VolumeKind.WORKSPACE_HOSTFS)) {
+            assertThrows(IllegalArgumentException::class.java) {
+                VolumeMountSpec(
+                    sourceName = "data-vol",
+                    guestMountPath = "/data",
+                    kind = nonOverlayKind,
+                    overlayUpperVolumeName = "upper-vol",
+                )
+            }
+        }
+
+        // OVERLAY_EXT4LITE must have readOnly == false.
+        assertThrows(IllegalArgumentException::class.java) {
+            VolumeMountSpec(
+                sourceName = "base-sdk",
+                guestMountPath = "/opt/sdk",
+                kind = VolumeKind.OVERLAY_EXT4LITE,
+                readOnly = true,
+            )
+        }
+
+        // Self-overlay (overlayUpperVolumeName == sourceName) and invalid upper names must fail.
+        for (badUpper in listOf("base-sdk", "", ".", "..", "-leading-dash", ".hidden", "Upper", "bad/vol", "a".repeat(65))) {
+            assertThrows(IllegalArgumentException::class.java, {
+                VolumeMountSpec(
+                    sourceName = "base-sdk",
+                    guestMountPath = "/opt/sdk",
+                    kind = VolumeKind.OVERLAY_EXT4LITE,
+                    overlayUpperVolumeName = badUpper,
+                )
+            }, "Expected overlayUpperVolumeName '$badUpper' to fail")
+        }
+
+        // Reserved guest paths /, /proc, /sys, /dev must fail on OVERLAY_EXT4LITE.
+        for (reservedDst in listOf("/", "/proc", "/sys", "/dev")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                VolumeMountSpec(
+                    sourceName = "base-sdk",
+                    guestMountPath = reservedDst,
+                    kind = VolumeKind.OVERLAY_EXT4LITE,
+                )
+            }
+        }
+
+        // Multiple overlays or :ro mounts sharing the same lower base volume in one profile are permitted.
+        val multiReaderProfile = SandboxProfile(
+            id = "multi-reader",
+            displayName = "Multi Reader",
+            imageRef = "alpine:3.21",
+            volumes = listOf(
+                VolumeMountSpec("shared-base", "/mnt/ro", VolumeKind.NAMED_EXT4LITE, readOnly = true),
+                VolumeMountSpec("shared-base", "/mnt/cow1", VolumeKind.OVERLAY_EXT4LITE, overlayUpperVolumeName = "upper-1"),
+                VolumeMountSpec("shared-base", "/mnt/cow2", VolumeKind.OVERLAY_EXT4LITE, overlayUpperVolumeName = null),
+            ),
+        )
+        assertEquals(3, multiReaderProfile.volumes.size)
+
+        // Mixing RW (or upper) and RO/overlay-base on the same volume inside one profile must fail.
+        assertThrows(IllegalArgumentException::class.java) {
+            SandboxProfile(
+                id = "rw-ro-conflict",
+                displayName = "Conflict",
+                imageRef = "alpine:3.21",
+                volumes = listOf(
+                    VolumeMountSpec("shared-base", "/mnt/rw", VolumeKind.NAMED_EXT4LITE, readOnly = false),
+                    VolumeMountSpec("shared-base", "/mnt/cow", VolumeKind.OVERLAY_EXT4LITE, overlayUpperVolumeName = "upper-1"),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SandboxProfile(
+                id = "dup-upper-conflict",
+                displayName = "Dup Upper",
+                imageRef = "alpine:3.21",
+                volumes = listOf(
+                    VolumeMountSpec("base-a", "/mnt/a", VolumeKind.OVERLAY_EXT4LITE, overlayUpperVolumeName = "same-upper"),
+                    VolumeMountSpec("base-b", "/mnt/b", VolumeKind.OVERLAY_EXT4LITE, overlayUpperVolumeName = "same-upper"),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `INV-S8 GitWorktreeSpec and GitProjectSummary enforce git-check-ref-format and path-traversal rejection`() {
+        // Property: projectId matches [a-zA-Z0-9][a-zA-Z0-9_.-]{0,63} without '..'; branchName obeys git-check-ref-format;
+        // legacy SandboxProfile JSON without gitWorktree decodes with gitWorktree == null.
+        // Seam: GitWorktreeSpec, GitProjectSummary, SandboxProfile.gitWorktree.
+        // Oracle: Phase 3 shared Git worktree contract and git-check-ref-format(1).
+        // Fault detected: Host path traversal via projectId/branchName, option injection via leading '-', or .lock ref corruption.
+        val validBranches = listOf(
+            "main",
+            "wt/debian-main",
+            "feature/auth_v2.1",
+            "release/2026-11-rc1",
+            "bugfix/123",
+        )
+        for (branch in validBranches) {
+            val spec = GitWorktreeSpec(projectId = "TermVR_Core-1.0", branchName = branch)
+            assertEquals(branch, spec.branchName)
+            assertEquals(spec, json.decodeFromString<GitWorktreeSpec>(json.encodeToString(spec)))
+        }
+
+        val badProjectIds = listOf(
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "-dash",
+            "_under",
+            "proj..escape",
+            "proj/sub",
+            "proj\\sub",
+            "proj space",
+            "proj\u0000null",
+            "a".repeat(65),
+        )
+        for (badId in badProjectIds) {
+            assertThrows(IllegalArgumentException::class.java, {
+                GitWorktreeSpec(projectId = badId, branchName = "main")
+            }, "Expected projectId '$badId' to fail")
+        }
+
+        val badBranches = listOf(
+            "",
+            " ",
+            "@",
+            "HEAD",
+            "-main",
+            "--upload-pack=evil",
+            "/main",
+            "main/",
+            "wt//sub",
+            "..",
+            "wt/../escape",
+            "a..b",
+            ".hidden",
+            "wt/.hidden",
+            "main.",
+            "main.lock",
+            "MAIN.LOCK",
+            "wt/sub.lock/leaf",
+            "feat@{0}",
+            "feat space",
+            "feat\ttab",
+            "feat\nline",
+            "feat\u0000nul",
+            "feat\u007fdel",
+            "feat:colon",
+            "feat~1",
+            "feat^2",
+            "feat?mark",
+            "feat*glob",
+            "feat[0]",
+            "feat\\slash",
+        )
+        for (badBranch in badBranches) {
+            assertThrows(IllegalArgumentException::class.java, {
+                GitWorktreeSpec(projectId = "valid-proj", branchName = badBranch)
+            }, "Expected branchName '$badBranch' to fail")
+        }
+
+        val summary = GitProjectSummary(
+            id = GitWorktreeSpec.suggestProjectId("My Monorepo 2026!"),
+            name = "My Monorepo 2026!",
+            defaultBranch = "main",
+            createdAtEpochMs = 1763340000000L,
+            worktreeCount = 2,
+            diskBytes = 65536L,
+        )
+        assertEquals("my-monorepo-2026", summary.id)
+        assertEquals("wt/debian-main", GitWorktreeSpec.defaultBranchForProfile("Debian Main"))
+        assertEquals(summary, json.decodeFromString<GitProjectSummary>(json.encodeToString(summary)))
+
+        val profileWithWt = SandboxProfile(
+            id = "wt-agent-1",
+            displayName = "Agent 1",
+            imageRef = "debian:trixie-slim",
+            gitWorktree = GitWorktreeSpec(projectId = "my-monorepo-2026", branchName = "wt/agent-1"),
+        )
+        assertEquals(profileWithWt, json.decodeFromString<SandboxProfile>(json.encodeToString(profileWithWt)))
+
+        val legacyDecoded = Json { ignoreUnknownKeys = true }.decodeFromString<SandboxProfile>(
+            """{"id":"legacy-box","displayName":"Legacy","imageRef":"alpine:3.21"}""",
+        )
+        assertNull(legacyDecoded.gitWorktree)
+    }
 }
