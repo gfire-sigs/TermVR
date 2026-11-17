@@ -21,7 +21,9 @@ import dev.gfire.termvr.core.model.ProxyProtocol
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeMountMode
 import dev.gfire.termvr.core.runtime.HostPtyHandle
 import dev.gfire.termvr.core.runtime.MuxSessionClient
 import dev.gfire.termvr.core.runtime.ProxyTestResult
@@ -747,6 +749,90 @@ class AppViewModelsTest {
         assertTrue(shouldConfirmPaneClose(liveTab, paneId = "pane-1", screenWidthDp = 390, tabRowViewportWidthDp = 280.dp, tabCount = 1))
         assertFalse(shouldConfirmPaneClose(exitedTab, paneId = "pane-1", screenWidthDp = 390, tabRowViewportWidthDp = 280.dp, tabCount = 1))
         assertFalse(shouldConfirmPaneClose(liveTab, paneId = "pane-1", screenWidthDp = 840, tabRowViewportWidthDp = 640.dp, tabCount = 2))
+    }
+
+    @Test
+    fun homeViewModelSupportsOverlayMountModesAndInlineSharedGitWorktreeProvisioning() = runTest(testDispatcher) {
+        val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = HomeViewModel(profileRepo, catalogRepo, gateway, coordinator, scope = vmScope)
+        advanceUntilIdle()
+
+        // Create first container with inline Shared Git Worktree project creation!
+        vm.createProfile(
+            displayName = "Alpha Agent",
+            imageRef = "debian:trixie-slim",
+            gitWorktree = GitWorktreeSpec(projectId = "core-engine", branchName = "wt/alpha-agent"),
+            gitProjectDisplayName = "Core Engine",
+        )
+        advanceUntilIdle()
+
+        val alpha = vm.uiState.value.profiles.first { it.id == "alpha-agent" }
+        assertEquals(GitWorktreeSpec("core-engine", "wt/alpha-agent"), alpha.gitWorktree)
+        assertEquals(listOf("core-engine"), vm.uiState.value.gitProjects.map { it.id })
+        assertTrue(File(tempDir, "git-projects/core-engine/worktrees/alpha-agent/.git").isFile)
+
+        // Creating a second container on the SAME branch wt/alpha-agent must report a branch collision error!
+        vm.createProfile(
+            displayName = "Beta Agent",
+            imageRef = "debian:trixie-slim",
+            gitWorktree = GitWorktreeSpec(projectId = "core-engine", branchName = "wt/alpha-agent"),
+        )
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.errorMessage?.contains("already checked out") == true)
+
+        // Creating Beta Agent on distinct branch wt/beta-agent succeeds!
+        vm.createProfile(
+            displayName = "Beta Agent",
+            imageRef = "debian:trixie-slim",
+            gitWorktree = GitWorktreeSpec(projectId = "core-engine", branchName = "wt/beta-agent"),
+        )
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.errorMessage)
+
+        // Attach Shared Read-Only, CoW Persistent Branch, and CoW Scratch mounts on Alpha Agent
+        vm.attachVolumeToProfile(
+            profileId = "alpha-agent",
+            volumeName = "toolchain-base",
+            guestMountPath = "/opt/ro",
+            mode = VolumeMountMode.SHARED_RO,
+        )
+        vm.attachVolumeToProfile(
+            profileId = "alpha-agent",
+            volumeName = "toolchain-base",
+            guestMountPath = "/opt/cow-persist",
+            mode = VolumeMountMode.COW_PERSISTENT,
+        )
+        vm.attachVolumeToProfile(
+            profileId = "alpha-agent",
+            volumeName = "toolchain-base",
+            guestMountPath = "/opt/cow-ram",
+            mode = VolumeMountMode.COW_EPHEMERAL,
+        )
+        advanceUntilIdle()
+
+        val updatedAlpha = vm.uiState.value.profiles.first { it.id == "alpha-agent" }
+        val roMount = updatedAlpha.volumes.first { it.guestMountPath == "/opt/ro" }
+        assertEquals(VolumeMountMode.SHARED_RO, roMount.mountMode)
+        val persistMount = updatedAlpha.volumes.first { it.guestMountPath == "/opt/cow-persist" }
+        assertEquals(VolumeKind.OVERLAY_EXT4LITE, persistMount.kind)
+        assertEquals("toolchain-base-wt-alpha-agent", persistMount.overlayUpperVolumeName)
+        val ramMount = updatedAlpha.volumes.first { it.guestMountPath == "/opt/cow-ram" }
+        assertEquals(VolumeKind.OVERLAY_EXT4LITE, ramMount.kind)
+        assertNull(ramMount.overlayUpperVolumeName)
+
+        // Deleting Alpha Agent detaches its worktree so wt/alpha-agent is freed!
+        vm.deleteProfile("alpha-agent")
+        advanceUntilIdle()
+        assertEquals(1, gateway.gitWorktreeManager().listProjects().single().worktreeCount)
+
+        vmScope.cancel()
     }
 
     private fun createFixtures(scope: CoroutineScope): Triple<ProfileRepository, CatalogRepository, FakeGateway> {

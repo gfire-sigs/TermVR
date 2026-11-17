@@ -2,6 +2,7 @@ package dev.gfire.termvr.ui.files
 
 import android.content.Intent
 import android.provider.DocumentsContract
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -42,7 +43,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.SandboxProfile
+import dev.gfire.termvr.core.model.VolumeLockMode
+import dev.gfire.termvr.core.model.VolumeMountMode
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.core.runtime.VolumeDirEntry
 import dev.gfire.termvr.provider.TermVrDocumentsProvider
 import dev.gfire.termvr.provider.WorkspaceDocumentsEngine
@@ -76,10 +81,21 @@ fun FilesScreen(
     val appContext = context.applicationContext
     var showNewFolderFor by remember { mutableStateOf<FileRootTab?>(null) }
     var showNewVolumeDialog by remember { mutableStateOf(false) }
+    var showNewGitProjectDialog by remember { mutableStateOf(false) }
     var mountDialogVolume by remember { mutableStateOf<ManagedVolumeItem?>(null) }
+    var mountDialogInitialMode by remember { mutableStateOf(VolumeMountMode.EXCLUSIVE_RW) }
+    var expandedRightTab by remember { mutableStateOf(FileRootTab.VOLUME) }
 
     LaunchedEffect(Unit) {
         viewModel.refreshVolumeList()
+        viewModel.refreshGitProjects()
+    }
+
+    LaunchedEffect(state.statusMessage) {
+        val msg = state.statusMessage
+        if (msg != null && msg.startsWith("Compacted ")) {
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        }
     }
 
     val importFileLauncher = rememberLauncherForActivityResult(
@@ -106,18 +122,34 @@ fun FilesScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Files", style = MaterialTheme.typography.headlineSmall)
-            if (isExpandedWidth || state.selectedRootTab == FileRootTab.VOLUME) {
-                TermVrOutlinedButton(
-                    onClick = { showNewVolumeDialog = true },
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Icon(
-                        imageVector = TermVrIcons.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("New Volume")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (isExpandedWidth || state.selectedRootTab == FileRootTab.GIT) {
+                    TermVrOutlinedButton(
+                        onClick = { showNewGitProjectDialog = true },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Icon(
+                            imageVector = TermVrIcons.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("New Git Project")
+                    }
+                }
+                if (isExpandedWidth || state.selectedRootTab == FileRootTab.VOLUME) {
+                    TermVrOutlinedButton(
+                        onClick = { showNewVolumeDialog = true },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Icon(
+                            imageVector = TermVrIcons.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("New Volume")
+                    }
                 }
             }
         }
@@ -167,7 +199,16 @@ fun FilesScreen(
         val profile = state.selectedProfile
         val openSafEditor: (HostFileItem) -> Unit = { item ->
             if (profile != null) {
-                val docId = "${WorkspaceDocumentsEngine.ENTRY_PREFIX}${profile.id}/${item.relativePath}"
+                val gitSpec = profile.gitWorktree
+                val docId = if (gitSpec != null) {
+                    WorkspaceDocumentsEngine.buildWorktreeDocumentId(
+                        projectId = gitSpec.projectId,
+                        profileId = profile.id,
+                        relativePath = item.relativePath,
+                    )
+                } else {
+                    "${WorkspaceDocumentsEngine.ENTRY_PREFIX}${profile.id}/${item.relativePath}"
+                }
                 val docUri = DocumentsContract.buildDocumentUri(TermVrDocumentsProvider.AUTHORITY, docId)
                 val flags = if (state.writeLocked) {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
@@ -207,34 +248,80 @@ fun FilesScreen(
                         .weight(1f)
                         .fillMaxHeight(),
                 )
-                VolumesPane(
-                    state = state,
-                    isExpandedWidth = true,
-                    onRefreshList = viewModel::refreshVolumeList,
-                    onNewVolume = { showNewVolumeDialog = true },
-                    onMountVolume = { mountDialogVolume = it },
-                    onUnmountFromSelected = { volName ->
-                        profile?.let { viewModel.unmountVolumeFromProfile(volName, it.id) }
-                    },
-                    onBrowseVolume = { viewModel.browseVolume(it.name) },
-                    onOpenWorkspace = viewModel::openWorkspaceForVolume,
-                    onStopVolumeContainers = viewModel::stopContainersForVolume,
-                    onUnlockFrozen = viewModel::discardCheckpointsForVolume,
-                    onDeleteVolume = { viewModel.deleteNamedVolume(it.name) },
-                    onCloseBrowser = viewModel::closeVolumeBrowser,
-                    onRefreshFiles = viewModel::refreshVolume,
-                    onUp = viewModel::navigateVolumeUp,
-                    onOpenDir = { entry ->
-                        val next = if (state.volumePath == "/") "/${entry.name}" else "${state.volumePath}/${entry.name}"
-                        viewModel.navigateVolume(next)
-                    },
-                    onNewFolder = { showNewFolderFor = FileRootTab.VOLUME },
-                    onShareEntry = viewModel::shareVolumeFile,
-                    onDeleteEntry = viewModel::deleteVolumeEntry,
+                Column(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight(),
-                )
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TermVrSelectableChip(
+                            label = "Volumes (${state.volumes.size})",
+                            selected = expandedRightTab != FileRootTab.GIT,
+                            onClick = {
+                                expandedRightTab = FileRootTab.VOLUME
+                                viewModel.refreshVolumeList()
+                            },
+                        )
+                        TermVrSelectableChip(
+                            label = "Git Projects (${state.gitProjects.size})",
+                            selected = expandedRightTab == FileRootTab.GIT,
+                            onClick = {
+                                expandedRightTab = FileRootTab.GIT
+                                viewModel.refreshGitProjects()
+                            },
+                        )
+                    }
+                    if (expandedRightTab == FileRootTab.GIT) {
+                        GitProjectsPane(
+                            state = state,
+                            onRefresh = viewModel::refreshGitProjects,
+                            onNewProject = { showNewGitProjectDialog = true },
+                            onOpenWorktree = viewModel::openWorktreeInWorkspace,
+                            onDeleteProject = viewModel::deleteGitProject,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                        )
+                    } else {
+                        VolumesPane(
+                            state = state,
+                            isExpandedWidth = true,
+                            onRefreshList = viewModel::refreshVolumeList,
+                            onNewVolume = { showNewVolumeDialog = true },
+                            onMountVolume = {
+                                mountDialogInitialMode = VolumeMountMode.EXCLUSIVE_RW
+                                mountDialogVolume = it
+                            },
+                            onBranchVolume = {
+                                mountDialogInitialMode = VolumeMountMode.COW_PERSISTENT
+                                mountDialogVolume = it
+                            },
+                            onCompactVolume = { viewModel.compactNamedVolume(it.name) },
+                            onUnmountFromSelected = { volName ->
+                                profile?.let { viewModel.unmountVolumeFromProfile(volName, it.id) }
+                            },
+                            onBrowseVolume = { viewModel.browseVolume(it.name) },
+                            onOpenWorkspace = viewModel::openWorkspaceForVolume,
+                            onStopVolumeContainers = viewModel::stopContainersForVolume,
+                            onUnlockFrozen = viewModel::discardCheckpointsForVolume,
+                            onDeleteVolume = { viewModel.deleteNamedVolume(it.name) },
+                            onCloseBrowser = viewModel::closeVolumeBrowser,
+                            onRefreshFiles = viewModel::refreshVolume,
+                            onUp = viewModel::navigateVolumeUp,
+                            onOpenDir = { entry ->
+                                val next = if (state.volumePath == "/") "/${entry.name}" else "${state.volumePath}/${entry.name}"
+                                viewModel.navigateVolume(next)
+                            },
+                            onNewFolder = { showNewFolderFor = FileRootTab.VOLUME },
+                            onShareEntry = viewModel::shareVolumeFile,
+                            onDeleteEntry = viewModel::deleteVolumeEntry,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                        )
+                    }
+                }
             }
         } else {
             TabRow(
@@ -252,9 +339,14 @@ fun FilesScreen(
                     onClick = { viewModel.selectRootTab(FileRootTab.VOLUME) },
                     text = { Text("Volumes") },
                 )
+                Tab(
+                    selected = state.selectedRootTab == FileRootTab.GIT,
+                    onClick = { viewModel.selectRootTab(FileRootTab.GIT) },
+                    text = { Text("Git Projects") },
+                )
             }
-            if (state.selectedRootTab == FileRootTab.WORKSPACE) {
-                WorkspacePane(
+            when (state.selectedRootTab) {
+                FileRootTab.WORKSPACE -> WorkspacePane(
                     state = state,
                     onRefresh = viewModel::refreshWorkspace,
                     onUp = viewModel::navigateWorkspaceUp,
@@ -268,13 +360,20 @@ fun FilesScreen(
                         .weight(1f)
                         .fillMaxWidth(),
                 )
-            } else {
-                VolumesPane(
+                FileRootTab.VOLUME -> VolumesPane(
                     state = state,
                     isExpandedWidth = false,
                     onRefreshList = viewModel::refreshVolumeList,
                     onNewVolume = { showNewVolumeDialog = true },
-                    onMountVolume = { mountDialogVolume = it },
+                    onMountVolume = {
+                        mountDialogInitialMode = VolumeMountMode.EXCLUSIVE_RW
+                        mountDialogVolume = it
+                    },
+                    onBranchVolume = {
+                        mountDialogInitialMode = VolumeMountMode.COW_PERSISTENT
+                        mountDialogVolume = it
+                    },
+                    onCompactVolume = { viewModel.compactNamedVolume(it.name) },
                     onUnmountFromSelected = { volName ->
                         profile?.let { viewModel.unmountVolumeFromProfile(volName, it.id) }
                     },
@@ -293,6 +392,16 @@ fun FilesScreen(
                     onNewFolder = { showNewFolderFor = FileRootTab.VOLUME },
                     onShareEntry = viewModel::shareVolumeFile,
                     onDeleteEntry = viewModel::deleteVolumeEntry,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                )
+                FileRootTab.GIT -> GitProjectsPane(
+                    state = state,
+                    onRefresh = viewModel::refreshGitProjects,
+                    onNewProject = { showNewGitProjectDialog = true },
+                    onOpenWorktree = viewModel::openWorktreeInWorkspace,
+                    onDeleteProject = viewModel::deleteGitProject,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
@@ -326,14 +435,31 @@ fun FilesScreen(
         )
     }
 
+    if (showNewGitProjectDialog) {
+        NewGitProjectDialog(
+            onDismiss = { showNewGitProjectDialog = false },
+            onCreate = { name, defaultBranch ->
+                viewModel.createGitProject(name = name, defaultBranch = defaultBranch)
+                showNewGitProjectDialog = false
+            },
+        )
+    }
+
     val targetVol = mountDialogVolume
     if (targetVol != null) {
         MountVolumeDialog(
             volume = targetVol,
             profiles = state.profiles,
             initialProfileId = state.selectedProfile?.id,
-            onMount = { profileId, mountPath ->
-                viewModel.mountVolumeToProfile(targetVol.name, profileId, mountPath)
+            initialMode = mountDialogInitialMode,
+            onMount = { profileId, mountPath, mode, upperName ->
+                viewModel.mountVolumeToProfile(
+                    volumeName = targetVol.name,
+                    profileId = profileId,
+                    guestMountPath = mountPath,
+                    mode = mode,
+                    overlayUpperVolumeName = upperName,
+                )
                 mountDialogVolume = null
             },
             onUnmount = { profileId ->
@@ -419,6 +545,7 @@ private fun WorkspacePane(
         return
     }
 
+    val gitSpec = state.selectedProfile?.gitWorktree
     TermVrCard(modifier = modifier) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -449,6 +576,13 @@ private fun WorkspacePane(
                         Icon(TermVrIcons.Refresh, contentDescription = "Refresh", modifier = Modifier.size(16.dp))
                     }
                 }
+            }
+            if (gitSpec != null) {
+                TermVrBadge(
+                    text = "Git worktree: ${gitSpec.projectId} (${gitSpec.branchName})",
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TermVrOutlinedButton(
@@ -586,6 +720,8 @@ private fun VolumesPane(
     onRefreshList: () -> Unit,
     onNewVolume: () -> Unit,
     onMountVolume: (ManagedVolumeItem) -> Unit,
+    onBranchVolume: (ManagedVolumeItem) -> Unit,
+    onCompactVolume: (ManagedVolumeItem) -> Unit,
     onUnmountFromSelected: (String) -> Unit,
     onBrowseVolume: (ManagedVolumeItem) -> Unit,
     onOpenWorkspace: (String) -> Unit,
@@ -656,6 +792,8 @@ private fun VolumesPane(
                     isExpandedWidth = isExpandedWidth,
                     busy = state.busy,
                     onMountVolume = { onMountVolume(vol) },
+                    onBranchVolume = { onBranchVolume(vol) },
+                    onCompactVolume = { onCompactVolume(vol) },
                     onUnmountFromSelected = { onUnmountFromSelected(vol.name) },
                     onBrowseVolume = { onBrowseVolume(vol) },
                     onOpenWorkspace = { onOpenWorkspace(vol.name) },
@@ -699,6 +837,8 @@ private fun VolumeSummaryCard(
     isExpandedWidth: Boolean,
     busy: Boolean,
     onMountVolume: () -> Unit,
+    onBranchVolume: () -> Unit,
+    onCompactVolume: () -> Unit,
     onUnmountFromSelected: () -> Unit,
     onBrowseVolume: () -> Unit,
     onOpenWorkspace: () -> Unit,
@@ -742,18 +882,27 @@ private fun VolumeSummaryCard(
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         monospace = false,
                     )
-                } else if (volume.hasRunningMount) {
+                } else if (volume.lockMode == VolumeLockMode.EXCLUSIVE) {
                     TermVrBadge(
-                        text = "Active",
+                        text = "Active (RW)",
                         dotColor = paletteTokens.statusRunning,
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         monospace = false,
                     )
+                } else if (volume.lockMode == VolumeLockMode.SHARED) {
+                    TermVrBadge(
+                        text = "Shared (RO)",
+                        dotColor = paletteTokens.statusRunning,
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        monospace = false,
+                    )
                 }
-                if (volume.sizeBytes > 0L) {
-                    TermVrBadge(text = formatBytes(volume.sizeBytes))
-                }
+            }
+
+            if (volume.sizeBytes > 0L || volume.allocatedBytes > 0L) {
+                TermVrBadge(text = volume.diskUsageLabel)
             }
 
             if (volume.mounts.isNotEmpty()) {
@@ -762,8 +911,15 @@ private fun VolumeSummaryCard(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     for (mount in volume.mounts) {
+                        val modeTag = when {
+                            mount.isUpperOverlay -> " (CoW upper)"
+                            mount.mountMode == VolumeMountMode.COW_PERSISTENT -> " (CoW base)"
+                            mount.mountMode == VolumeMountMode.COW_EPHEMERAL -> " (CoW scratch)"
+                            mount.mountMode == VolumeMountMode.SHARED_RO -> " (RO)"
+                            else -> ""
+                        }
                         TermVrBadge(
-                            text = "${mount.profileDisplayName}:${mount.guestMountPath}",
+                            text = "${mount.profileDisplayName}:${mount.guestMountPath}$modeTag",
                             dotColor = if (mount.isRunning) runStateColor(mount.runState) else null,
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -772,14 +928,14 @@ private fun VolumeSummaryCard(
                 }
             }
 
-            if (volume.hasRunningMount) {
-                val lockNotice = if (volume.hasFrozenMount) {
-                    FilesViewModel.FROZEN_VOLUME_LOCK_MESSAGE
-                } else {
-                    FilesViewModel.SINGLE_WRITER_VOLUME_LOCK_MESSAGE
+            if (volume.hasFrozenMount || volume.lockMode != VolumeLockMode.NONE) {
+                val lockNotice = when {
+                    volume.hasFrozenMount -> FilesViewModel.FROZEN_VOLUME_LOCK_MESSAGE
+                    volume.lockMode == VolumeLockMode.SHARED -> FilesViewModel.SHARED_READER_VOLUME_LOCK_MESSAGE
+                    else -> FilesViewModel.SINGLE_WRITER_VOLUME_LOCK_MESSAGE
                 }
                 Text(
-                    text = "$lockNotice Use Workspace for live shared files, or stop the attached container before deleting.",
+                    text = lockNotice,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -794,6 +950,23 @@ private fun VolumeSummaryCard(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                 ) {
                     Text("Mount", style = MaterialTheme.typography.labelMedium)
+                }
+                if (volume.lockMode.allowsSharedReaders && !volume.hasFrozenMount) {
+                    TermVrOutlinedButton(
+                        onClick = onBranchVolume,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text("Branch Volume", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                if (volume.canCompact) {
+                    TermVrOutlinedButton(
+                        onClick = onCompactVolume,
+                        enabled = !busy,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text("Compact", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
                 if (mountedOnSelected) {
                     TermVrOutlinedButton(
@@ -830,7 +1003,7 @@ private fun VolumeSummaryCard(
                 }
                 TermVrTextButton(
                     onClick = onDeleteVolume,
-                    enabled = !volume.hasRunningMount && !busy,
+                    enabled = !volume.hasRunningMount && !volume.hasFrozenMount && volume.lockMode == VolumeLockMode.NONE && !busy,
                     contentColor = MaterialTheme.colorScheme.error,
                 ) {
                     Text("Delete")
@@ -1205,24 +1378,220 @@ private fun NewVolumeDialog(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun GitProjectsPane(
+    state: FilesUiState,
+    onRefresh: () -> Unit,
+    onNewProject: () -> Unit,
+    onOpenWorktree: (String) -> Unit,
+    onDeleteProject: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val mono = LocalTermVrMonoFontFamily.current
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Shared Git Projects (${state.gitProjects.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
+                        Icon(TermVrIcons.Refresh, contentDescription = "Refresh Git projects", modifier = Modifier.size(16.dp))
+                    }
+                    TermVrOutlinedButton(
+                        onClick = onNewProject,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text("+ New Project", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
+        if (state.gitProjects.isEmpty()) {
+            item {
+                TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text("No shared Git projects yet", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = "Create a shared bare Git repository so multiple containers can work concurrently in isolated branches.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        } else {
+            items(state.gitProjects, key = { it.summary.id }) { item ->
+                val summary = item.summary
+                val hasAttachments = item.worktrees.isNotEmpty() || summary.worktreeCount > 0
+                TermVrCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = summary.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = "/git/${summary.id}.git (${summary.defaultBranch})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = mono,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TermVrBadge(text = formatBytes(summary.diskBytes))
+                        }
+
+                        if (item.worktrees.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                for (wt in item.worktrees) {
+                                    TermVrOutlinedButton(
+                                        onClick = { onOpenWorktree(wt.profileId) },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    ) {
+                                        Text(
+                                            text = "${wt.profileDisplayName}: ${wt.branchName}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontFamily = mono,
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "No container worktrees attached.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            TermVrTextButton(
+                                onClick = { onDeleteProject(summary.id) },
+                                enabled = !hasAttachments && !state.busy,
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ) {
+                                Text("Delete")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NewGitProjectDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String, String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var defaultBranch by remember { mutableStateOf("main") }
+    val validBranch = GitWorktreeSpec.isValidBranchName(defaultBranch.trim().ifEmpty { "main" })
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = TermVrControlShape,
+        title = { Text("New Shared Git Project") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Project Name") },
+                    placeholder = { Text("e.g. Core Backend") },
+                    singleLine = true,
+                    shape = TermVrControlShape,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = defaultBranch,
+                    onValueChange = { defaultBranch = it },
+                    label = { Text("Default Branch") },
+                    singleLine = true,
+                    shape = TermVrControlShape,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TermVrButton(
+                onClick = { onCreate(name, defaultBranch.trim().ifEmpty { "main" }) },
+                enabled = name.isNotBlank() && validBranch,
+            ) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TermVrTextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun MountVolumeDialog(
     volume: ManagedVolumeItem,
     profiles: List<SandboxProfile>,
     initialProfileId: String?,
-    onMount: (String, String) -> Unit,
+    initialMode: VolumeMountMode = VolumeMountMode.EXCLUSIVE_RW,
+    onMount: (String, String, VolumeMountMode, String?) -> Unit,
     onUnmount: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var selectedProfileId by remember {
         mutableStateOf(initialProfileId ?: profiles.firstOrNull()?.id)
     }
+    val selectedProfile = profiles.firstOrNull { it.id == selectedProfileId }
     var mountPath by remember { mutableStateOf("/data") }
+    var mountMode by remember { mutableStateOf(initialMode) }
+    var upperVolumeName by remember(volume.name, selectedProfileId) {
+        val label = selectedProfile?.displayName ?: selectedProfileId ?: "sandbox"
+        mutableStateOf(VolumeMountSpec.suggestOverlayUpperVolumeName(volume.name, label))
+    }
     val selectedAttachment = volume.mounts.firstOrNull { it.profileId == selectedProfileId }
+    val validUpper = mountMode != VolumeMountMode.COW_PERSISTENT ||
+        (VolumeMountSpec.isValidVolumeName(upperVolumeName.trim()) && upperVolumeName.trim() != volume.name)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = TermVrControlShape,
-        title = { Text("Mount ${volume.name}") },
+        title = {
+            Text(
+                if (mountMode == VolumeMountMode.COW_PERSISTENT) {
+                    "Branch ${volume.name}"
+                } else {
+                    "Mount ${volume.name}"
+                },
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (profiles.isEmpty()) {
@@ -1239,6 +1608,42 @@ private fun MountVolumeDialog(
                                 onClick = { selectedProfileId = profile.id },
                             )
                         }
+                    }
+                    Text("Mount Mode", style = MaterialTheme.typography.labelMedium)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        TermVrSelectableChip(
+                            label = "Exclusive Read-Write",
+                            selected = mountMode == VolumeMountMode.EXCLUSIVE_RW,
+                            onClick = { mountMode = VolumeMountMode.EXCLUSIVE_RW },
+                        )
+                        TermVrSelectableChip(
+                            label = "Shared Read-Only",
+                            selected = mountMode == VolumeMountMode.SHARED_RO,
+                            onClick = { mountMode = VolumeMountMode.SHARED_RO },
+                        )
+                        TermVrSelectableChip(
+                            label = "CoW Branch (Persistent)",
+                            selected = mountMode == VolumeMountMode.COW_PERSISTENT,
+                            onClick = { mountMode = VolumeMountMode.COW_PERSISTENT },
+                        )
+                        TermVrSelectableChip(
+                            label = "CoW Scratch (RAM)",
+                            selected = mountMode == VolumeMountMode.COW_EPHEMERAL,
+                            onClick = { mountMode = VolumeMountMode.COW_EPHEMERAL },
+                        )
+                    }
+                    if (mountMode == VolumeMountMode.COW_PERSISTENT) {
+                        OutlinedTextField(
+                            value = upperVolumeName,
+                            onValueChange = { upperVolumeName = it },
+                            label = { Text("Persistent Upper Volume") },
+                            singleLine = true,
+                            shape = TermVrControlShape,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                     OutlinedTextField(
                         value = mountPath,
@@ -1261,10 +1666,17 @@ private fun MountVolumeDialog(
                         }
                     }
                     TermVrButton(
-                        onClick = { onMount(pid, mountPath) },
-                        enabled = mountPath.startsWith("/"),
+                        onClick = {
+                            onMount(
+                                pid,
+                                mountPath,
+                                mountMode,
+                                if (mountMode == VolumeMountMode.COW_PERSISTENT) upperVolumeName.trim() else null,
+                            )
+                        },
+                        enabled = mountPath.startsWith("/") && validUpper,
                     ) {
-                        Text("Mount")
+                        Text(if (mountMode == VolumeMountMode.COW_PERSISTENT) "Branch & Mount" else "Mount")
                     }
                 }
             }

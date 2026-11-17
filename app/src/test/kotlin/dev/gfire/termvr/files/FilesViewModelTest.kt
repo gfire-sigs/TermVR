@@ -6,12 +6,15 @@ import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.data.RungvVolumeLsEntry
 import dev.gfire.termvr.core.data.SecretStore
 import dev.gfire.termvr.core.model.HostReadinessReport
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.OutboundProxyConfig
 import dev.gfire.termvr.core.model.PortForwardRule
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
 import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeLockMode
+import dev.gfire.termvr.core.model.VolumeMountMode
 import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.core.runtime.HostPtyHandle
 import dev.gfire.termvr.core.runtime.MuxSessionClient
@@ -393,6 +396,157 @@ class FilesViewModelTest {
         }
         return ProfileRepository(dataStore, tempDir, secretStore) to TestRuntimeGateway(tempDir)
     }
+
+    @Test
+    fun displaysPhysicalAllocatedSizeLockBadgesCompactsStoppedVolumesAndBranchesOverlayMounts() =
+        runTest(testDispatcher) {
+            // Property: Sparse volumes display allocatedBytes alongside logical sizeBytes, lockMode distinguishes
+            // Shared (RO) from Active (RW), compactNamedVolume runs only on unlocked stopped volumes and reports
+            // reclaimed bytes, and mountVolumeToProfile supports CoW overlay branching with suggested upper names.
+            // Seam: FilesViewModel.uiState, compactNamedVolume, mountVolumeToProfile.
+            // Fault: Hiding sparse savings, blocking CoW branching on Shared (RO) volumes, or compacting locked volumes.
+            val (repo, gateway) = createFixtures()
+            val readerBox = SandboxProfile(
+                id = "reader-box",
+                displayName = "Reader Box",
+                imageRef = "debian:trixie-slim",
+                volumes = listOf(
+                    VolumeMountSpec(
+                        sourceName = "shared-sdk",
+                        guestMountPath = "/opt/sdk",
+                        kind = VolumeKind.NAMED_EXT4LITE,
+                        readOnly = true,
+                    ),
+                ),
+            )
+            val branchTarget = SandboxProfile(
+                id = "worker-two",
+                displayName = "Worker Two",
+                imageRef = "debian:trixie-slim",
+            )
+            repo.upsertProfile(readerBox)
+            repo.upsertProfile(branchTarget)
+
+            gateway.putVolume(
+                RungvVolumeLsEntry(
+                    name = "sparse-vol",
+                    driver = "ext4lite",
+                    sizeBytes = 1500L * 1024L * 1024L,
+                    allocatedBytes = 512L * 1024L * 1024L,
+                    inUse = false,
+                    rawLockMode = "none",
+                ),
+            )
+            gateway.putVolume(
+                RungvVolumeLsEntry(
+                    name = "shared-sdk",
+                    driver = "ext4lite",
+                    sizeBytes = 256L * 1024L * 1024L,
+                    allocatedBytes = 256L * 1024L * 1024L,
+                    inUse = true,
+                    rawLockMode = "shared",
+                ),
+            )
+            gateway.runStates.value = mapOf("reader-box" to SandboxRunState.RUNNING)
+            gateway.nextCompactedAllocatedBytes["sparse-vol"] = 128L * 1024L * 1024L
+
+            val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+            val vm = FilesViewModel(repo, gateway, scope = vmScope, ioDispatcher = testDispatcher)
+            vm.refreshVolumeList()
+            advanceUntilIdle()
+
+            val sparseBefore = vm.uiState.value.volumes.first { it.name == "sparse-vol" }
+            assertEquals("512 MB on disk (1.46 GB logical)", sparseBefore.diskUsageLabel)
+            assertEquals(VolumeLockMode.NONE, sparseBefore.lockMode)
+            assertTrue(sparseBefore.canCompact)
+
+            val sharedSdk = vm.uiState.value.volumes.first { it.name == "shared-sdk" }
+            assertEquals("256 MB", sharedSdk.diskUsageLabel)
+            assertEquals(VolumeLockMode.SHARED, sharedSdk.lockMode)
+            assertFalse(sharedSdk.canCompact)
+
+            // Compacting locked shared-sdk must fail with clear error
+            vm.compactNamedVolume("shared-sdk")
+            advanceUntilIdle()
+            assertNotNull(vm.uiState.value.errorMessage)
+
+            // Compacting stopped sparse-vol reclaims 384 MB and reports reclaimed bytes!
+            vm.compactNamedVolume("sparse-vol")
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.errorMessage)
+            assertTrue(vm.uiState.value.statusMessage?.contains("384 MB") == true)
+            val sparseAfter = vm.uiState.value.volumes.first { it.name == "sparse-vol" }
+            assertEquals(128L * 1024L * 1024L, sparseAfter.allocatedBytes)
+
+            // Branching shared-sdk onto worker-two creates OVERLAY_EXT4LITE with deterministic suggested upper name!
+            vm.mountVolumeToProfile(
+                volumeName = "shared-sdk",
+                profileId = "worker-two",
+                guestMountPath = "/opt/sdk",
+                mode = VolumeMountMode.COW_PERSISTENT,
+            )
+            advanceUntilIdle()
+            val updatedWorker = vm.uiState.value.profiles.first { it.id == "worker-two" }
+            val overlayMount = updatedWorker.volumes.first { it.guestMountPath == "/opt/sdk" }
+            assertEquals(VolumeKind.OVERLAY_EXT4LITE, overlayMount.kind)
+            assertEquals("shared-sdk-wt-worker-two", overlayMount.overlayUpperVolumeName)
+
+            vmScope.cancel()
+        }
+
+    @Test
+    fun managesSharedGitProjectsWorktreeWorkspaceBrowsingAndBlocksDeletingAttachedProjects() =
+        runTest(testDispatcher) {
+            // Property: Git projects can be created and browsed from FilesViewModel; profiles attached to a Git worktree
+            // browse <filesDir>/git-projects/<id>/worktrees/<profileId> while hiding .git and .gvx_meta.lock;
+            // deleteGitProject fails while attached and succeeds after detachment.
+            // Seam: FilesViewModel Git project actions + Workspace browsing.
+            // Fault: Browsing empty workspaces/<id> instead of Git worktree dir, exposing .git pointer file, or deleting active repo.git.
+            val (repo, gateway) = createFixtures()
+            val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+            val vm = FilesViewModel(repo, gateway, scope = vmScope, ioDispatcher = testDispatcher)
+            advanceUntilIdle()
+
+            vm.createGitProject(name = "Platform Service", defaultBranch = "main")
+            advanceUntilIdle()
+            assertEquals(1, vm.uiState.value.gitProjects.size)
+            val projectId = vm.uiState.value.gitProjects.single().summary.id
+            assertEquals("platform-service", projectId)
+
+            val wtProfile = SandboxProfile(
+                id = "svc-dev",
+                displayName = "Service Dev",
+                imageRef = "debian:trixie-slim",
+                gitWorktree = GitWorktreeSpec(projectId = projectId, branchName = "wt/svc-dev"),
+            )
+            val wtDir = gateway.gitWorktreeManager().provisionWorktreeForContainer(wtProfile.id, wtProfile.gitWorktree!!)
+            File(wtDir, ".gvx_meta.lock").writeText("")
+            File(wtDir, "server.kt").writeText("fun main() {}\n")
+            repo.upsertProfile(wtProfile)
+            vm.selectProfile("svc-dev")
+            vm.refreshGitProjects()
+            advanceUntilIdle()
+
+            // Workspace entries list server.kt from the Git worktree while hiding .git and .gvx_meta.lock!
+            assertEquals(listOf("server.kt"), vm.uiState.value.workspaceEntries.map { it.name })
+            assertEquals(1, vm.uiState.value.gitProjects.single().worktrees.size)
+
+            // Deleting while svc-dev is attached must fail!
+            vm.deleteGitProject(projectId)
+            advanceUntilIdle()
+            assertNotNull(vm.uiState.value.errorMessage)
+            assertEquals(1, vm.uiState.value.gitProjects.size)
+
+            // Detaching profile allows clean project deletion
+            repo.deleteProfile("svc-dev")
+            gateway.gitWorktreeManager().detachWorktree(projectId, "svc-dev", deleteWorktreeFiles = true)
+            vm.deleteGitProject(projectId)
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.errorMessage)
+            assertTrue(vm.uiState.value.gitProjects.isEmpty())
+
+            vmScope.cancel()
+        }
 }
 
 private class TestRuntimeGateway(private val rootDir: File) : SandboxRuntimeGateway {
@@ -416,7 +570,13 @@ private class TestRuntimeGateway(private val rootDir: File) : SandboxRuntimeGate
 
     val activeCheckpoints = mutableSetOf<String>()
     private val volumes = mutableListOf<RungvVolumeLsEntry>()
+    val nextCompactedAllocatedBytes = mutableMapOf<String, Long>()
     val volumeHelperCalls = AtomicInteger(0)
+
+    fun putVolume(entry: RungvVolumeLsEntry) {
+        volumes.removeAll { it.name == entry.name }
+        volumes.add(entry)
+    }
 
     override fun refreshHostReadiness() = Unit
     override fun setNotificationsPermissionGranted(granted: Boolean) = Unit
@@ -469,6 +629,15 @@ private class TestRuntimeGateway(private val rootDir: File) : SandboxRuntimeGate
 
     override suspend fun removeVolume(name: String, force: Boolean) {
         volumes.removeAll { it.name == name }
+    }
+
+    override suspend fun compactVolume(name: String): Result<Unit> = runCatching {
+        val idx = volumes.indexOfFirst { it.name == name }
+        check(idx >= 0) { "Volume not found: $name" }
+        val existing = volumes[idx]
+        check(existing.lockMode == VolumeLockMode.NONE) { "Volume $name is in use" }
+        val targetAllocated = nextCompactedAllocatedBytes[name] ?: existing.allocatedBytes
+        volumes[idx] = existing.copy(allocatedBytes = targetAllocated)
     }
 
     override suspend fun <T> withVolumeClient(

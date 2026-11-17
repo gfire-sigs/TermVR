@@ -4,6 +4,8 @@ import dev.gfire.termvr.core.data.CatalogRepository
 import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.model.ColorPalette
 import dev.gfire.termvr.core.model.DistributionCatalogEntry
+import dev.gfire.termvr.core.model.GitProjectSummary
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.GlobalAppSettings
 import dev.gfire.termvr.core.model.HostReadinessReport
 import dev.gfire.termvr.core.model.MuxMode
@@ -12,6 +14,7 @@ import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
 import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeMountMode
 import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.runtime.SandboxRuntimeGateway
 import dev.gfire.termvr.ui.terminal.TerminalSessionCoordinator
@@ -39,6 +42,7 @@ data class HomeUiState(
     val telemetry: Map<String, SandboxTelemetrySnapshot> = emptyMap(),
     val hostReadiness: HostReadinessReport = HostReadinessReport(hostSdkInt = 31, hostAbi = "arm64-v8a"),
     val availableVolumes: List<String> = emptyList(),
+    val gitProjects: List<GitProjectSummary> = emptyList(),
     val busyProfileIds: Set<String> = emptySet(),
     val serviceNotice: String? = null,
     val statusMessage: String? = null,
@@ -79,6 +83,7 @@ class HomeViewModel(
 ) {
     private val busyProfileIds = MutableStateFlow<Set<String>>(emptySet())
     private val availableVolumes = MutableStateFlow<List<String>>(emptyList())
+    private val gitProjects = MutableStateFlow<List<GitProjectSummary>>(emptyList())
     private val statusMessage = MutableStateFlow<String?>(null)
     private val errorMessage = MutableStateFlow<String?>(null)
 
@@ -101,11 +106,15 @@ class HomeViewModel(
         LocalHomeData(busyIds, volumes, notice, status, err)
     }
 
-    val uiState: StateFlow<HomeUiState> = combine(baseFlow, localFlow) { base, local ->
+    val uiState: StateFlow<HomeUiState> = combine(baseFlow, localFlow, gitProjects) { base, local, projects ->
         val profileVolumes = base.profiles.flatMap { profile ->
-            profile.volumes
-                .filter { it.kind == VolumeKind.NAMED_EXT4LITE }
-                .map { it.sourceName }
+            profile.volumes.flatMap { vol ->
+                when (vol.kind) {
+                    VolumeKind.WORKSPACE_HOSTFS -> emptyList()
+                    VolumeKind.NAMED_EXT4LITE -> listOf(vol.sourceName)
+                    VolumeKind.OVERLAY_EXT4LITE -> listOfNotNull(vol.sourceName, vol.overlayUpperVolumeName)
+                }
+            }
         }
         val mergedVolumes = (local.volumes + profileVolumes).distinct().sorted()
         HomeUiState(
@@ -114,6 +123,7 @@ class HomeViewModel(
             telemetry = base.telemetry,
             hostReadiness = base.readiness,
             availableVolumes = mergedVolumes,
+            gitProjects = projects,
             busyProfileIds = local.busyIds,
             serviceNotice = local.notice,
             statusMessage = local.status,
@@ -125,6 +135,10 @@ class HomeViewModel(
         initialValue = HomeUiState(hostReadiness = runtimeGateway.hostReadiness.value),
     )
 
+    init {
+        refreshGitProjects()
+    }
+
     fun clearNotice() {
         runtimeGateway.clearNotice()
         statusMessage.value = null
@@ -135,6 +149,13 @@ class HomeViewModel(
         scope.launch {
             runCatching { runtimeGateway.listVolumes().map { it.name } }
                 .onSuccess { names -> availableVolumes.value = names }
+        }
+    }
+
+    fun refreshGitProjects() {
+        scope.launch {
+            runCatching { runtimeGateway.gitWorktreeManager().listProjects() }
+                .onSuccess { list -> gitProjects.value = list }
         }
     }
 
@@ -296,6 +317,8 @@ class HomeViewModel(
         cpuCores: Double = SandboxProfile.UNLIMITED_CPU_CORES,
         muxMode: MuxMode = MuxMode.STDIO_MUX,
         persistentRootfs: Boolean = false,
+        gitWorktree: GitWorktreeSpec? = null,
+        gitProjectDisplayName: String? = null,
     ) {
         scope.launch {
             errorMessage.value = null
@@ -304,7 +327,7 @@ class HomeViewModel(
                 val cleanName = displayName.trim().ifEmpty { "Debian" }
                 val cleanImage = imageRef.trim().ifEmpty { DEFAULT_DEBIAN_IMAGE_REF }
                 val baseSlug = cleanName.lowercase()
-                    .replace(Regex("""[^a-z0-9._-]+"""), "-")
+                    .replace(Regex("""[^a-z0-9-]+"""), "-")
                     .trim('-')
                     .ifEmpty { "container" }
                     .take(24)
@@ -315,6 +338,26 @@ class HomeViewModel(
                     candidateId = "$baseSlug-$suffix"
                     suffix++
                 }
+                if (gitWorktree != null) {
+                    val wtMgr = runtimeGateway.gitWorktreeManager()
+                    wtMgr.createOrEnsureProject(
+                        projectId = gitWorktree.projectId,
+                        name = gitProjectDisplayName?.trim()?.takeIf { it.isNotEmpty() } ?: gitWorktree.projectId,
+                    )
+                    wtMgr.provisionWorktreeForContainer(candidateId, gitWorktree)
+                }
+                val defaultVolumes = if (gitWorktree != null) {
+                    emptyList()
+                } else {
+                    listOf(
+                        VolumeMountSpec(
+                            sourceName = candidateId,
+                            guestMountPath = "/workspace",
+                            kind = VolumeKind.WORKSPACE_HOSTFS,
+                            readOnly = false,
+                        ),
+                    )
+                }
                 val profile = SandboxProfile(
                     id = candidateId,
                     displayName = cleanName,
@@ -323,19 +366,82 @@ class HomeViewModel(
                     defaultShellArgv = emptyList(),
                     memoryMiB = SandboxProfile.clampMemoryMiB(memoryMiB),
                     cpuCores = SandboxProfile.clampCpuCores(cpuCores),
-                    volumes = listOf(
-                        VolumeMountSpec(
-                            sourceName = candidateId,
-                            guestMountPath = "/workspace",
-                            kind = VolumeKind.WORKSPACE_HOSTFS,
-                            readOnly = false,
-                        ),
-                    ),
+                    volumes = defaultVolumes,
                     persistentRootfs = persistentRootfs,
+                    gitWorktree = gitWorktree,
                 )
                 profileRepository.upsertProfile(profile)
+                gitProjects.value = runtimeGateway.gitWorktreeManager().listProjects()
             }.onFailure { err ->
                 errorMessage.value = err.message ?: "Failed to create container"
+            }
+        }
+    }
+
+    fun updateProfileConfig(
+        profileId: String,
+        displayName: String,
+        memoryMiB: Int,
+        cpuCores: Double,
+        persistentRootfs: Boolean,
+        gitWorktree: GitWorktreeSpec?,
+        gitProjectDisplayName: String? = null,
+    ) {
+        scope.launch {
+            errorMessage.value = null
+            statusMessage.value = null
+            runCatching {
+                val existing = profileRepository.getProfile(profileId)
+                    ?: error("Container not found")
+                val wtMgr = runtimeGateway.gitWorktreeManager()
+                val prevGit = existing.gitWorktree
+                if (gitWorktree != null) {
+                    wtMgr.createOrEnsureProject(
+                        projectId = gitWorktree.projectId,
+                        name = gitProjectDisplayName?.trim()?.takeIf { it.isNotEmpty() } ?: gitWorktree.projectId,
+                    )
+                    wtMgr.provisionWorktreeForContainer(profileId, gitWorktree)
+                    if (prevGit != null && prevGit.projectId != gitWorktree.projectId) {
+                        wtMgr.detachWorktree(prevGit.projectId, profileId, deleteWorktreeFiles = false)
+                    }
+                } else if (prevGit != null) {
+                    wtMgr.detachWorktree(prevGit.projectId, profileId, deleteWorktreeFiles = false)
+                }
+                val cleanedVolumes = if (gitWorktree != null) {
+                    existing.volumes.filterNot {
+                        it.guestMountPath.trimEnd('/') == "/workspace" &&
+                            it.kind == VolumeKind.WORKSPACE_HOSTFS &&
+                            it.sourceName == profileId &&
+                            !it.readOnly
+                    }
+                } else if (existing.volumes.none { it.guestMountPath.trimEnd('/') == "/workspace" }) {
+                    existing.volumes + VolumeMountSpec(
+                        sourceName = profileId,
+                        guestMountPath = "/workspace",
+                        kind = VolumeKind.WORKSPACE_HOSTFS,
+                        readOnly = false,
+                    )
+                } else {
+                    existing.volumes
+                }
+                val updated = existing.copy(
+                    displayName = displayName.trim().ifEmpty { existing.displayName },
+                    memoryMiB = SandboxProfile.clampMemoryMiB(memoryMiB),
+                    cpuCores = SandboxProfile.clampCpuCores(cpuCores),
+                    persistentRootfs = persistentRootfs,
+                    volumes = cleanedVolumes,
+                    gitWorktree = gitWorktree,
+                )
+                profileRepository.upsertProfile(updated)
+                gitProjects.value = wtMgr.listProjects()
+                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
+                statusMessage.value = if (isRunning) {
+                    "Saved ${updated.displayName}. Restart container to apply changes."
+                } else {
+                    "Saved ${updated.displayName}."
+                }
+            }.onFailure { err ->
+                errorMessage.value = err.message ?: "Failed to update container"
             }
         }
     }
@@ -344,6 +450,8 @@ class HomeViewModel(
         profileId: String,
         volumeName: String,
         guestMountPath: String = "/data",
+        mode: VolumeMountMode = VolumeMountMode.EXCLUSIVE_RW,
+        overlayUpperVolumeName: String? = null,
     ) {
         scope.launch {
             errorMessage.value = null
@@ -356,19 +464,30 @@ class HomeViewModel(
                 if (cleanVol !in availableVolumes.value) {
                     runCatching { runtimeGateway.createVolume(cleanVol) }
                 }
-                val mount = VolumeMountSpec(
-                    sourceName = cleanVol,
+                val resolvedUpper = if (mode == VolumeMountMode.COW_PERSISTENT) {
+                    overlayUpperVolumeName?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: VolumeMountSpec.suggestOverlayUpperVolumeName(cleanVol, profile.displayName)
+                } else {
+                    null
+                }
+                val mount = VolumeMountSpec.forMode(
+                    baseVolumeName = cleanVol,
                     guestMountPath = cleanPath,
-                    kind = VolumeKind.NAMED_EXT4LITE,
-                    readOnly = false,
+                    mode = mode,
+                    overlayUpperVolumeName = resolvedUpper,
                 )
                 val updatedVolumes = profile.volumes
-                    .filterNot {
-                        it.kind == VolumeKind.NAMED_EXT4LITE &&
-                            (it.sourceName == cleanVol || it.guestMountPath == cleanPath)
+                    .filterNot { existing ->
+                        existing.guestMountPath == cleanPath ||
+                            (mode == VolumeMountMode.EXCLUSIVE_RW &&
+                                (existing.sourceName == cleanVol || existing.overlayUpperVolumeName == cleanVol)) ||
+                            (existing.kind == VolumeKind.NAMED_EXT4LITE &&
+                                !existing.readOnly &&
+                                existing.sourceName == cleanVol)
                     } + mount
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
-                availableVolumes.value = (availableVolumes.value + cleanVol).distinct().sorted()
+                val addedNames = listOfNotNull(cleanVol, resolvedUpper)
+                availableVolumes.value = (availableVolumes.value + addedNames).distinct().sorted()
                 val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
                 statusMessage.value = if (isRunning) {
                     "Attached $cleanVol at $cleanPath. Restart container to apply."
@@ -381,15 +500,21 @@ class HomeViewModel(
         }
     }
 
-    fun detachVolumeFromProfile(profileId: String, volumeName: String) {
+    fun detachVolumeFromProfile(
+        profileId: String,
+        volumeName: String,
+        guestMountPath: String? = null,
+    ) {
         scope.launch {
             errorMessage.value = null
             statusMessage.value = null
             runCatching {
                 val profile = profileRepository.getProfile(profileId)
                     ?: error("Container not found")
-                val updatedVolumes = profile.volumes.filterNot {
-                    it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == volumeName
+                val updatedVolumes = profile.volumes.filterNot { vol ->
+                    (vol.kind == VolumeKind.NAMED_EXT4LITE || vol.kind == VolumeKind.OVERLAY_EXT4LITE) &&
+                        vol.sourceName == volumeName &&
+                        (guestMountPath == null || vol.guestMountPath == guestMountPath)
                 }
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
                 val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
@@ -412,6 +537,17 @@ class HomeViewModel(
                 runtimeGateway.stopSandbox(profileId)
                 sessionCoordinator.closeProfileTabs(profileId)
                 profileRepository.deleteProfile(profileId)
+                val prevGit = existingProfile?.gitWorktree
+                if (prevGit != null) {
+                    runCatching {
+                        runtimeGateway.gitWorktreeManager().detachWorktree(
+                            projectId = prevGit.projectId,
+                            profileId = profileId,
+                            deleteWorktreeFiles = true,
+                        )
+                    }
+                    gitProjects.value = runtimeGateway.gitWorktreeManager().listProjects()
+                }
                 if (existingProfile?.persistentRootfs == true) {
                     val rootVol = existingProfile.rootfsVolumeName
                     runCatching { runtimeGateway.removeVolume(rootVol, force = false) }

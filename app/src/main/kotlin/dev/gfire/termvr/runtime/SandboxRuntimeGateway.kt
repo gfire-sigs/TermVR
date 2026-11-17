@@ -9,6 +9,7 @@ import android.net.LinkProperties
 import android.net.NetworkCapabilities
 import android.os.IBinder
 import dev.gfire.termvr.core.data.CatalogRepository
+import dev.gfire.termvr.core.data.GitWorktreeManager
 import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.data.RungvCommandExecutor
 import dev.gfire.termvr.core.data.RungvCommandResult
@@ -86,6 +87,7 @@ interface SandboxRuntimeGateway {
     suspend fun listVolumes(): List<RungvVolumeLsEntry>
     suspend fun createVolume(name: String)
     suspend fun removeVolume(name: String, force: Boolean = false)
+    suspend fun compactVolume(name: String): Result<Unit> = Result.success(Unit)
     suspend fun <T> withVolumeClient(
         profile: SandboxProfile,
         volumeName: String,
@@ -101,6 +103,19 @@ interface SandboxRuntimeGateway {
     fun resolveClipboardPrompt(allow: Boolean)
     fun buildRungvHostEnv(trustHostCaCerts: Boolean = false, includeProxyVars: Boolean = true): Map<String, String>
     fun workspaceDir(profileId: String): File
+    fun gitWorktreeManager(): GitWorktreeManager {
+        val baseFilesDir = workspaceDir("probe-default").parentFile?.parentFile ?: File(".")
+        return GitWorktreeManager(baseFilesDir)
+    }
+
+    fun effectiveWorkspaceDir(profile: SandboxProfile): File {
+        val spec = profile.gitWorktree
+        return if (spec != null) {
+            gitWorktreeManager().containerWorktreeDir(spec.projectId, profile.id)
+        } else {
+            workspaceDir(profile.id)
+        }
+    }
     fun activeWifiIpv4(): String?
     fun openUrl(url: String)
     fun shareText(text: String)
@@ -119,6 +134,7 @@ class AndroidSandboxRuntimeGateway(
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val commandBuilder = GvxCommandBuilder(appContext.filesDir, appContext.cacheDir)
+    private val worktreeManager = GitWorktreeManager(appContext.filesDir)
     private val checkpointController = CheckpointController(appContext.filesDir)
     private val readinessInspector = HostReadinessInspector.create(appContext)
     private val catalogProxyBridge = LoopbackProxyBridge(
@@ -358,6 +374,14 @@ class AndroidSandboxRuntimeGateway(
         }
     }
 
+    override suspend fun compactVolume(name: String): Result<Unit> = runCatching {
+        val gvxCacheDir = File(appContext.filesDir, "gvx-store/gvx")
+        val result = executeRungvCommand(CatalogRepository.buildVolumeCompactArgs(name, gvxCacheDir))
+        check(result.exitCode == 0) {
+            result.stderr.trim().ifEmpty { "rungv volume compact failed (${result.exitCode})" }
+        }
+    }
+
     override suspend fun <T> withVolumeClient(
         profile: SandboxProfile,
         volumeName: String,
@@ -402,6 +426,10 @@ class AndroidSandboxRuntimeGateway(
     }
 
     override fun workspaceDir(profileId: String): File = commandBuilder.workspaceDir(profileId)
+
+    override fun gitWorktreeManager(): GitWorktreeManager = worktreeManager
+
+    override fun effectiveWorkspaceDir(profile: SandboxProfile): File = commandBuilder.effectiveWorkspaceDir(profile)
 
     override fun activeWifiIpv4(): String? {
         val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null

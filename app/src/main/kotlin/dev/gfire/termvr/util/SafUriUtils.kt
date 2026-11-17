@@ -29,6 +29,7 @@ object SafUriUtils {
     const val DEFAULT_FALLBACK_NAME: String = "imported-file"
     const val STREAM_CHUNK_BYTES: Int = 64 * 1024
     const val MAX_FILENAME_BYTES: Int = 255
+    const val HIDDEN_META_LOCK_FILE: String = ".gvx_meta.lock"
     const val HIDDEN_META_TEMP_FILE: String = ".gvx_meta.tmp"
     internal const val MAX_STAGING_STEM_BYTES: Int = 200
 
@@ -167,7 +168,9 @@ object SafUriUtils {
             return true
         }
         return trimmed.equals(WorkspaceDocumentsEngine.HIDDEN_META_DIR, ignoreCase = true) ||
+            trimmed.equals(HIDDEN_META_LOCK_FILE, ignoreCase = true) ||
             trimmed.equals(HIDDEN_META_TEMP_FILE, ignoreCase = true) ||
+            trimmed.startsWith("$HIDDEN_META_TEMP_FILE.", ignoreCase = true) ||
             trimmed.endsWith(WorkspaceDocumentsEngine.TEMP_WRITE_SUFFIX, ignoreCase = true)
     }
 

@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -35,11 +37,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.gfire.termvr.core.model.GitProjectSummary
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.MuxMode
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
 import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeMountMode
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.ui.theme.LocalTermVrMonoFontFamily
 import dev.gfire.termvr.ui.theme.LocalTermVrPaletteTokens
 import dev.gfire.termvr.ui.theme.TermVrBadge
@@ -56,6 +62,7 @@ import dev.gfire.termvr.ui.theme.TermVrTextButton
 import dev.gfire.termvr.ui.theme.runStateColor
 import dev.gfire.termvr.ui.theme.runStateLabel
 import dev.gfire.termvr.ui.theme.shortImageRef
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -70,6 +77,7 @@ fun HomeScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var showCreateDialog by remember { mutableStateOf(false) }
+    var editTargetProfileId by remember { mutableStateOf<String?>(null) }
     var volumesTargetProfileId by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(
@@ -89,7 +97,10 @@ fun HomeScreen(
                     style = MaterialTheme.typography.headlineSmall,
                 )
                 TermVrOutlinedButton(
-                    onClick = { showCreateDialog = true },
+                    onClick = {
+                        viewModel.refreshGitProjects()
+                        showCreateDialog = true
+                    },
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     Icon(
@@ -184,6 +195,10 @@ fun HomeScreen(
                     onOpenNewShell = { viewModel.openNewShellForProfile(profile, onOpenTerminal) },
                     onFreeze = { viewModel.freezeProfile(profile.id) },
                     onStop = { viewModel.stopProfile(profile.id) },
+                    onEdit = {
+                        viewModel.refreshGitProjects()
+                        editTargetProfileId = profile.id
+                    },
                     onOpenVolumes = {
                         viewModel.refreshAvailableVolumes()
                         volumesTargetProfileId = profile.id
@@ -196,10 +211,44 @@ fun HomeScreen(
 
     if (showCreateDialog) {
         CreateContainerDialog(
+            gitProjects = state.gitProjects,
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, image, memMiB, cpu, muxMode, persistentRootfs ->
-                viewModel.createProfile(name, image, memMiB, cpu, muxMode, persistentRootfs)
+            onCreate = { name, image, memMiB, cpu, muxMode, persistentRootfs, gitWorktree, gitProjectDisplayName ->
+                viewModel.createProfile(
+                    displayName = name,
+                    imageRef = image,
+                    memoryMiB = memMiB,
+                    cpuCores = cpu,
+                    muxMode = muxMode,
+                    persistentRootfs = persistentRootfs,
+                    gitWorktree = gitWorktree,
+                    gitProjectDisplayName = gitProjectDisplayName,
+                )
                 showCreateDialog = false
+            },
+        )
+    }
+
+    val editProfile = editTargetProfileId?.let { id ->
+        state.profiles.firstOrNull { it.id == id }
+    }
+    if (editProfile != null) {
+        EditContainerDialog(
+            profile = editProfile,
+            isRunning = state.runStates[editProfile.id] == SandboxRunState.RUNNING,
+            gitProjects = state.gitProjects,
+            onDismiss = { editTargetProfileId = null },
+            onSave = { name, memMiB, cpu, persistentRootfs, gitWorktree, gitProjectDisplayName ->
+                viewModel.updateProfileConfig(
+                    profileId = editProfile.id,
+                    displayName = name,
+                    memoryMiB = memMiB,
+                    cpuCores = cpu,
+                    persistentRootfs = persistentRootfs,
+                    gitWorktree = gitWorktree,
+                    gitProjectDisplayName = gitProjectDisplayName,
+                )
+                editTargetProfileId = null
             },
         )
     }
@@ -212,11 +261,17 @@ fun HomeScreen(
             profile = targetProfile,
             isRunning = state.runStates[targetProfile.id] == SandboxRunState.RUNNING,
             availableVolumes = state.availableVolumes,
-            onAttach = { volumeName, guestPath ->
-                viewModel.attachVolumeToProfile(targetProfile.id, volumeName, guestPath)
+            onAttach = { volumeName, guestPath, mode, upperVolumeName ->
+                viewModel.attachVolumeToProfile(
+                    profileId = targetProfile.id,
+                    volumeName = volumeName,
+                    guestMountPath = guestPath,
+                    mode = mode,
+                    overlayUpperVolumeName = upperVolumeName,
+                )
             },
-            onDetach = { volumeName ->
-                viewModel.detachVolumeFromProfile(targetProfile.id, volumeName)
+            onDetach = { volumeName, guestPath ->
+                viewModel.detachVolumeFromProfile(targetProfile.id, volumeName, guestPath)
             },
             onDismiss = { volumesTargetProfileId = null },
         )
@@ -344,12 +399,16 @@ private fun ContainerCard(
     onOpenNewShell: () -> Unit,
     onFreeze: () -> Unit,
     onStop: () -> Unit,
+    onEdit: () -> Unit,
     onOpenVolumes: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val mono = LocalTermVrMonoFontFamily.current
     val stateColor = runStateColor(runState)
-    val namedVolumes = profile.volumes.filter { it.kind == VolumeKind.NAMED_EXT4LITE }
+    val attachedVolumes = profile.volumes.filter {
+        it.kind == VolumeKind.NAMED_EXT4LITE || it.kind == VolumeKind.OVERLAY_EXT4LITE
+    }
+    val gitWorktree = profile.gitWorktree
 
     TermVrCard(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -394,7 +453,12 @@ private fun ContainerCard(
                 )
             }
 
-            if (profile.persistentRootfs || namedVolumes.isNotEmpty() || (runState == SandboxRunState.RUNNING && telemetry != null)) {
+            if (
+                profile.persistentRootfs ||
+                gitWorktree != null ||
+                attachedVolumes.isNotEmpty() ||
+                (runState == SandboxRunState.RUNNING && telemetry != null)
+            ) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -405,6 +469,14 @@ private fun ContainerCard(
                             containerColor = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                             borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                        )
+                    }
+                    if (gitWorktree != null) {
+                        TermVrBadge(
+                            text = "Git: ${gitWorktree.projectId} (${gitWorktree.branchName})",
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            borderColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f),
                         )
                     }
                     if (runState == SandboxRunState.RUNNING && telemetry != null) {
@@ -422,8 +494,8 @@ private fun ContainerCard(
                             borderColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f),
                         )
                     }
-                    for (vol in namedVolumes) {
-                        TermVrBadge(text = "${vol.sourceName} -> ${vol.guestMountPath}")
+                    for (vol in attachedVolumes) {
+                        TermVrBadge(text = formatVolumeMountBadge(vol))
                     }
                 }
             }
@@ -488,6 +560,16 @@ private fun ContainerCard(
                     Text("Volumes")
                 }
 
+                TermVrOutlinedButton(onClick = onEdit, enabled = !busy) {
+                    Icon(
+                        imageVector = TermVrIcons.Settings,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit")
+                }
+
                 if (runState == SandboxRunState.STOPPED) {
                     TermVrTextButton(
                         onClick = onDelete,
@@ -504,8 +586,9 @@ private fun ContainerCard(
 
 @Composable
 private fun CreateContainerDialog(
+    gitProjects: List<GitProjectSummary>,
     onDismiss: () -> Unit,
-    onCreate: (String, String, Int, Double, MuxMode, Boolean) -> Unit,
+    onCreate: (String, String, Int, Double, MuxMode, Boolean, GitWorktreeSpec?, String?) -> Unit,
 ) {
     var name by remember { mutableStateOf("Debian") }
     var imageRef by remember { mutableStateOf(HomeViewModel.DEFAULT_DEBIAN_IMAGE_REF) }
@@ -515,15 +598,41 @@ private fun CreateContainerDialog(
     var muxMode by remember { mutableStateOf(MuxMode.STDIO_MUX) }
     var persistentRootfs by remember { mutableStateOf(false) }
 
+    var gitEnabled by remember { mutableStateOf(false) }
+    var createNewProject by remember(gitProjects) { mutableStateOf(gitProjects.isEmpty()) }
+    var selectedProjectId by remember(gitProjects) { mutableStateOf(gitProjects.firstOrNull()?.id.orEmpty()) }
+    var newProjectName by remember { mutableStateOf("") }
+    var branchCustomized by remember { mutableStateOf(false) }
+    var branchName by remember { mutableStateOf(GitWorktreeSpec.defaultBranchForProfile("Debian")) }
+
+    val resolvedProjectId = if (createNewProject || gitProjects.isEmpty()) {
+        GitWorktreeSpec.suggestProjectId(newProjectName)
+    } else {
+        selectedProjectId
+    }
+    val gitSpecValid = !gitEnabled || (
+        (if (createNewProject || gitProjects.isEmpty()) newProjectName.isNotBlank() else resolvedProjectId.isNotBlank()) &&
+            GitWorktreeSpec.isValidProjectId(resolvedProjectId) &&
+            GitWorktreeSpec.isValidBranchName(branchName.trim())
+        )
+
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = TermVrControlShape,
         title = { Text("New Container") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = { updated ->
+                        name = updated
+                        if (!branchCustomized) {
+                            branchName = GitWorktreeSpec.defaultBranchForProfile(updated)
+                        }
+                    },
                     label = { Text("Container Name") },
                     singleLine = true,
                     shape = TermVrControlShape,
@@ -575,6 +684,27 @@ private fun CreateContainerDialog(
                         )
                     }
                 }
+                GitWorktreeConfigSection(
+                    enabled = gitEnabled,
+                    onEnabledChange = { enabled ->
+                        gitEnabled = enabled
+                        if (enabled && !branchCustomized) {
+                            branchName = GitWorktreeSpec.defaultBranchForProfile(name)
+                        }
+                    },
+                    gitProjects = gitProjects,
+                    createNewProject = createNewProject || gitProjects.isEmpty(),
+                    onCreateNewProjectChange = { createNewProject = it },
+                    selectedProjectId = selectedProjectId,
+                    onSelectedProjectChange = { selectedProjectId = it },
+                    newProjectName = newProjectName,
+                    onNewProjectNameChange = { newProjectName = it },
+                    branchName = branchName,
+                    onBranchNameChange = {
+                        branchCustomized = true
+                        branchName = it
+                    },
+                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -619,20 +749,222 @@ private fun CreateContainerDialog(
             }
         },
         confirmButton = {
-            TermVrButton(onClick = {
-                val mem = if (showLimits) {
-                    memoryText.trim().toIntOrNull() ?: SandboxProfile.UNLIMITED_MEMORY_MIB
-                } else {
-                    SandboxProfile.UNLIMITED_MEMORY_MIB
-                }
-                val cpu = if (showLimits) {
-                    cpuText.trim().toDoubleOrNull() ?: SandboxProfile.UNLIMITED_CPU_CORES
-                } else {
-                    SandboxProfile.UNLIMITED_CPU_CORES
-                }
-                onCreate(name, imageRef, mem, cpu, muxMode, persistentRootfs)
-            }) {
+            TermVrButton(
+                enabled = gitSpecValid,
+                onClick = {
+                    val mem = if (showLimits) {
+                        memoryText.trim().toIntOrNull() ?: SandboxProfile.UNLIMITED_MEMORY_MIB
+                    } else {
+                        SandboxProfile.UNLIMITED_MEMORY_MIB
+                    }
+                    val cpu = if (showLimits) {
+                        cpuText.trim().toDoubleOrNull() ?: SandboxProfile.UNLIMITED_CPU_CORES
+                    } else {
+                        SandboxProfile.UNLIMITED_CPU_CORES
+                    }
+                    val gitSpec = if (gitEnabled) {
+                        GitWorktreeSpec(
+                            projectId = resolvedProjectId,
+                            branchName = branchName.trim(),
+                        )
+                    } else {
+                        null
+                    }
+                    val projectDisplayName = if (gitEnabled && (createNewProject || gitProjects.isEmpty())) {
+                        newProjectName.trim()
+                    } else {
+                        null
+                    }
+                    onCreate(name, imageRef, mem, cpu, muxMode, persistentRootfs, gitSpec, projectDisplayName)
+                },
+            ) {
                 Text("Create")
+            }
+        },
+        dismissButton = {
+            TermVrTextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+@Composable
+private fun EditContainerDialog(
+    profile: SandboxProfile,
+    isRunning: Boolean,
+    gitProjects: List<GitProjectSummary>,
+    onDismiss: () -> Unit,
+    onSave: (String, Int, Double, Boolean, GitWorktreeSpec?, String?) -> Unit,
+) {
+    val existingGit = profile.gitWorktree
+    var name by remember(profile.id) { mutableStateOf(profile.displayName) }
+    var persistentRootfs by remember(profile.id) { mutableStateOf(profile.persistentRootfs) }
+    val hasCustomLimits = profile.memoryMiB > 0 || profile.cpuCores > 0.0
+    var showLimits by remember(profile.id) { mutableStateOf(hasCustomLimits) }
+    var memoryText by remember(profile.id) {
+        mutableStateOf(if (profile.memoryMiB > 0) profile.memoryMiB.toString() else "")
+    }
+    var cpuText by remember(profile.id) {
+        mutableStateOf(if (profile.cpuCores > 0.0) profile.cpuCores.toString() else "")
+    }
+
+    var gitEnabled by remember(profile.id) { mutableStateOf(existingGit != null) }
+    var createNewProject by remember(profile.id, gitProjects) {
+        mutableStateOf(existingGit == null && gitProjects.isEmpty())
+    }
+    var selectedProjectId by remember(profile.id, gitProjects) {
+        mutableStateOf(existingGit?.projectId ?: gitProjects.firstOrNull()?.id.orEmpty())
+    }
+    var newProjectName by remember(profile.id) { mutableStateOf("") }
+    var branchName by remember(profile.id) {
+        mutableStateOf(existingGit?.branchName ?: GitWorktreeSpec.defaultBranchForProfile(profile.id))
+    }
+
+    val resolvedProjectId = if (createNewProject || (gitProjects.isEmpty() && existingGit == null)) {
+        GitWorktreeSpec.suggestProjectId(newProjectName)
+    } else {
+        selectedProjectId
+    }
+    val gitSpecValid = !gitEnabled || (
+        (if (createNewProject || (gitProjects.isEmpty() && existingGit == null)) newProjectName.isNotBlank() else resolvedProjectId.isNotBlank()) &&
+            GitWorktreeSpec.isValidProjectId(resolvedProjectId) &&
+            GitWorktreeSpec.isValidBranchName(branchName.trim())
+        )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = TermVrControlShape,
+        title = { Text("Edit ${profile.displayName}") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (isRunning) {
+                    Text(
+                        text = "Configuration changes apply after container restart.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Container Name") },
+                    singleLine = true,
+                    shape = TermVrControlShape,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { persistentRootfs = !persistentRootfs },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = persistentRootfs,
+                        onCheckedChange = { persistentRootfs = it },
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Persistent root (ext4lite)",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = "Keep installed packages and system files across restarts",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                GitWorktreeConfigSection(
+                    enabled = gitEnabled,
+                    onEnabledChange = { gitEnabled = it },
+                    gitProjects = gitProjects,
+                    createNewProject = createNewProject || (gitProjects.isEmpty() && existingGit == null),
+                    onCreateNewProjectChange = { createNewProject = it },
+                    selectedProjectId = selectedProjectId,
+                    onSelectedProjectChange = { selectedProjectId = it },
+                    newProjectName = newProjectName,
+                    onNewProjectNameChange = { newProjectName = it },
+                    branchName = branchName,
+                    onBranchNameChange = { branchName = it },
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showLimits = !showLimits }
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Resource limits (optional)",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = if (showLimits) "Hide" else "Unlimited",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (showLimits) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = memoryText,
+                            onValueChange = { memoryText = it },
+                            label = { Text("RAM MiB") },
+                            placeholder = { Text("Unlimited") },
+                            singleLine = true,
+                            shape = TermVrControlShape,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = cpuText,
+                            onValueChange = { cpuText = it },
+                            label = { Text("CPU Cores") },
+                            placeholder = { Text("Unlimited") },
+                            singleLine = true,
+                            shape = TermVrControlShape,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TermVrButton(
+                enabled = gitSpecValid,
+                onClick = {
+                    val mem = if (showLimits) {
+                        memoryText.trim().toIntOrNull() ?: SandboxProfile.UNLIMITED_MEMORY_MIB
+                    } else {
+                        SandboxProfile.UNLIMITED_MEMORY_MIB
+                    }
+                    val cpu = if (showLimits) {
+                        cpuText.trim().toDoubleOrNull() ?: SandboxProfile.UNLIMITED_CPU_CORES
+                    } else {
+                        SandboxProfile.UNLIMITED_CPU_CORES
+                    }
+                    val gitSpec = if (gitEnabled) {
+                        GitWorktreeSpec(
+                            projectId = resolvedProjectId,
+                            branchName = branchName.trim(),
+                        )
+                    } else {
+                        null
+                    }
+                    val projectDisplayName = if (gitEnabled && (createNewProject || (gitProjects.isEmpty() && existingGit == null))) {
+                        newProjectName.trim()
+                    } else {
+                        null
+                    }
+                    onSave(name, mem, cpu, persistentRootfs, gitSpec, projectDisplayName)
+                },
+            ) {
+                Text("Save")
             }
         },
         dismissButton = {
@@ -645,25 +977,145 @@ private fun CreateContainerDialog(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun GitWorktreeConfigSection(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    gitProjects: List<GitProjectSummary>,
+    createNewProject: Boolean,
+    onCreateNewProjectChange: (Boolean) -> Unit,
+    selectedProjectId: String,
+    onSelectedProjectChange: (String) -> Unit,
+    newProjectName: String,
+    onNewProjectNameChange: (String) -> Unit,
+    branchName: String,
+    onBranchNameChange: (String) -> Unit,
+) {
+    val mono = LocalTermVrMonoFontFamily.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onEnabledChange(!enabled) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(
+                checked = enabled,
+                onCheckedChange = onEnabledChange,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Shared Git Worktree",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "Mount a dedicated branch worktree backed by a shared host Git repo",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (enabled) {
+            if (gitProjects.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (project in gitProjects) {
+                        TermVrSelectableChip(
+                            label = project.name,
+                            selected = !createNewProject && selectedProjectId == project.id,
+                            onClick = {
+                                onCreateNewProjectChange(false)
+                                onSelectedProjectChange(project.id)
+                            },
+                        )
+                    }
+                    TermVrSelectableChip(
+                        label = "+ New Project",
+                        selected = createNewProject,
+                        onClick = { onCreateNewProjectChange(true) },
+                    )
+                }
+            }
+            if (createNewProject) {
+                OutlinedTextField(
+                    value = newProjectName,
+                    onValueChange = onNewProjectNameChange,
+                    label = { Text("New Git Project Name") },
+                    placeholder = { Text("termvr-app") },
+                    singleLine = true,
+                    shape = TermVrControlShape,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (newProjectName.isNotBlank()) {
+                    val suggestedId = GitWorktreeSpec.suggestProjectId(newProjectName)
+                    Text(
+                        text = "Guest repo path: /git/$suggestedId.git",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = mono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (selectedProjectId.isNotBlank()) {
+                Text(
+                    text = "Guest repo path: /git/$selectedProjectId.git",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = mono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedTextField(
+                value = branchName,
+                onValueChange = onBranchNameChange,
+                label = { Text("Worktree Branch") },
+                singleLine = true,
+                isError = branchName.isNotBlank() && !GitWorktreeSpec.isValidBranchName(branchName.trim()),
+                shape = TermVrControlShape,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun ContainerVolumesDialog(
     profile: SandboxProfile,
     isRunning: Boolean,
     availableVolumes: List<String>,
-    onAttach: (String, String) -> Unit,
-    onDetach: (String) -> Unit,
+    onAttach: (String, String, VolumeMountMode, String?) -> Unit,
+    onDetach: (String, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val mono = LocalTermVrMonoFontFamily.current
-    val mounted = profile.volumes.filter { it.kind == VolumeKind.NAMED_EXT4LITE }
+    val mounted = profile.volumes.filter {
+        it.kind == VolumeKind.NAMED_EXT4LITE || it.kind == VolumeKind.OVERLAY_EXT4LITE
+    }
     var volumeName by remember { mutableStateOf("data") }
     var guestPath by remember { mutableStateOf("/data") }
+    var mountMode by remember { mutableStateOf(VolumeMountMode.EXCLUSIVE_RW) }
+    var upperCustomized by remember { mutableStateOf(false) }
+    var upperVolumeName by remember {
+        mutableStateOf(VolumeMountSpec.suggestOverlayUpperVolumeName("data", profile.displayName))
+    }
+
+    val cleanVol = volumeName.trim()
+    val cleanGuest = guestPath.trim()
+    val cleanUpper = upperVolumeName.trim()
+    val canMount = VolumeMountSpec.isValidVolumeName(cleanVol) &&
+        cleanGuest.startsWith("/") &&
+        (mountMode != VolumeMountMode.COW_PERSISTENT ||
+            (VolumeMountSpec.isValidVolumeName(cleanUpper) && cleanUpper != cleanVol))
 
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = TermVrControlShape,
         title = { Text("${profile.displayName} Volumes") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 if (isRunning) {
                     Text(
                         text = "Mount changes apply after container restart.",
@@ -675,18 +1127,35 @@ private fun ContainerVolumesDialog(
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (vol in mounted) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        volumeName = vol.sourceName
+                                        guestPath = vol.guestMountPath
+                                        mountMode = vol.mountMode
+                                        val existingUpper = vol.overlayUpperVolumeName
+                                        if (existingUpper != null) {
+                                            upperCustomized = true
+                                            upperVolumeName = existingUpper
+                                        } else {
+                                            upperCustomized = false
+                                            upperVolumeName = VolumeMountSpec.suggestOverlayUpperVolumeName(
+                                                vol.sourceName,
+                                                profile.displayName,
+                                            )
+                                        }
+                                    },
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = "${vol.sourceName} -> ${vol.guestMountPath}",
+                                    text = formatVolumeMountBadge(vol),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontFamily = mono,
                                     modifier = Modifier.weight(1f),
                                 )
                                 IconButton(
-                                    onClick = { onDetach(vol.sourceName) },
+                                    onClick = { onDetach(vol.sourceName, vol.guestMountPath) },
                                     modifier = Modifier.size(28.dp),
                                 ) {
                                     Icon(
@@ -709,15 +1178,31 @@ private fun ContainerVolumesDialog(
                             TermVrSelectableChip(
                                 label = vol,
                                 selected = volumeName == vol,
-                                onClick = { volumeName = vol },
+                                onClick = {
+                                    volumeName = vol
+                                    if (!upperCustomized) {
+                                        upperVolumeName = VolumeMountSpec.suggestOverlayUpperVolumeName(
+                                            vol,
+                                            profile.displayName,
+                                        )
+                                    }
+                                },
                             )
                         }
                     }
                 }
                 OutlinedTextField(
                     value = volumeName,
-                    onValueChange = { volumeName = it },
-                    label = { Text("Volume Name") },
+                    onValueChange = { updated ->
+                        volumeName = updated
+                        if (!upperCustomized) {
+                            upperVolumeName = VolumeMountSpec.suggestOverlayUpperVolumeName(
+                                updated,
+                                profile.displayName,
+                            )
+                        }
+                    },
+                    label = { Text("Base Volume Name") },
                     singleLine = true,
                     shape = TermVrControlShape,
                     modifier = Modifier.fillMaxWidth(),
@@ -730,12 +1215,81 @@ private fun ContainerVolumesDialog(
                     shape = TermVrControlShape,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text("Mount Mode", style = MaterialTheme.typography.labelMedium)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    TermVrSelectableChip(
+                        label = "Exclusive Read-Write",
+                        selected = mountMode == VolumeMountMode.EXCLUSIVE_RW,
+                        onClick = { mountMode = VolumeMountMode.EXCLUSIVE_RW },
+                    )
+                    TermVrSelectableChip(
+                        label = "Shared Read-Only",
+                        selected = mountMode == VolumeMountMode.SHARED_RO,
+                        onClick = { mountMode = VolumeMountMode.SHARED_RO },
+                    )
+                    TermVrSelectableChip(
+                        label = "CoW Branch (Persistent)",
+                        selected = mountMode == VolumeMountMode.COW_PERSISTENT,
+                        onClick = {
+                            mountMode = VolumeMountMode.COW_PERSISTENT
+                            if (!upperCustomized || upperVolumeName.isBlank()) {
+                                upperVolumeName = VolumeMountSpec.suggestOverlayUpperVolumeName(
+                                    volumeName,
+                                    profile.displayName,
+                                )
+                            }
+                        },
+                    )
+                    TermVrSelectableChip(
+                        label = "CoW Scratch (RAM)",
+                        selected = mountMode == VolumeMountMode.COW_EPHEMERAL,
+                        onClick = { mountMode = VolumeMountMode.COW_EPHEMERAL },
+                    )
+                }
+                if (mountMode == VolumeMountMode.COW_PERSISTENT) {
+                    OutlinedTextField(
+                        value = upperVolumeName,
+                        onValueChange = {
+                            upperCustomized = true
+                            upperVolumeName = it
+                        },
+                        label = { Text("Persistent Upper Volume") },
+                        singleLine = true,
+                        isError = cleanUpper.isNotEmpty() &&
+                            (!VolumeMountSpec.isValidVolumeName(cleanUpper) || cleanUpper == cleanVol),
+                        shape = TermVrControlShape,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = "Reads base volume $cleanVol and writes container deltas to $cleanUpper.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (mountMode == VolumeMountMode.COW_EPHEMERAL) {
+                    Text(
+                        text = "Reads base volume $cleanVol and discards scratch writes on stop.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (mountMode == VolumeMountMode.SHARED_RO) {
+                    Text(
+                        text = "Shares $cleanVol read-only across concurrent containers.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         },
         confirmButton = {
             TermVrButton(
-                onClick = { onAttach(volumeName, guestPath) },
-                enabled = volumeName.isNotBlank() && guestPath.startsWith("/"),
+                onClick = {
+                    val upper = if (mountMode == VolumeMountMode.COW_PERSISTENT) cleanUpper else null
+                    onAttach(cleanVol, cleanGuest, mountMode, upper)
+                },
+                enabled = canMount,
                 colors = ButtonDefaults.buttonColors(),
             ) {
                 Text("Mount")
@@ -749,6 +1303,16 @@ private fun ContainerVolumesDialog(
     )
 }
 
+internal fun formatVolumeMountBadge(vol: VolumeMountSpec): String {
+    val suffix = when (vol.mountMode) {
+        VolumeMountMode.EXCLUSIVE_RW -> ""
+        VolumeMountMode.SHARED_RO -> " (RO)"
+        VolumeMountMode.COW_PERSISTENT -> " (CoW: ${vol.overlayUpperVolumeName})"
+        VolumeMountMode.COW_EPHEMERAL -> " (CoW RAM)"
+    }
+    return "${vol.sourceName}:${vol.guestMountPath}$suffix"
+}
+
 internal fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 B"
     if (bytes < 1024L) return "$bytes B"
@@ -757,5 +1321,5 @@ internal fun formatBytes(bytes: Long): String {
     val mib = kib / 1024.0
     if (mib < 1024.0) return "${mib.roundToInt()} MB"
     val gib = mib / 1024.0
-    return String.format("%.2f GB", gib)
+    return String.format(Locale.US, "%.2f GB", gib)
 }

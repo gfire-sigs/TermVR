@@ -1,6 +1,8 @@
 package dev.gfire.termvr.provider
 
 import android.provider.DocumentsContract.Document
+import dev.gfire.termvr.core.data.GitWorktreeManager
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.runtime.CheckpointController
 import dev.gfire.termvr.core.runtime.CheckpointSlotMetadata
@@ -431,5 +433,124 @@ class TermVrDocumentsProviderTest {
         val savedLongFile = File(workspace, maxUtf8Name)
         assertEquals("saved-255-utf8", savedLongFile.readText())
         assertTrue(workspace.listFiles().orEmpty().none { it.name.endsWith(".termvr.tmp") })
+    }
+
+    @Test
+    fun exposesSharedGitWorktreesWithCanonicalConfinementPosixModePreservationAndDotGitProtection() {
+        // Property: Shared Git worktrees under <filesDir>/git-projects/<projectId>/worktrees/<profileId>
+        // browse via git-root -> git-project -> git-worktree -> git-entry, support "r", "wt", "wa", "rw"
+        // atomic saves with 0755 POSIX mode preservation, hide/protect .git and .gvx_meta.lock/.gvx_meta.tmp.*,
+        // enforce FROZEN write locks, and reject .. or symlink escapes into repo.git or outside filesDir.
+        // Seam: WorkspaceDocumentsEngine Git worktree document operations.
+        // Oracle: Phase 3 SAF external editor specification and Section 17.2 confinement invariants.
+        // Fault detected: Symlink escape into ../../repo.git/config, overwriting worktree .git pointer, or dropping 0755 mode.
+        val manager = GitWorktreeManager(tempDir)
+        manager.createOrEnsureProject("mono-app", "Mono App", "main")
+        val wtDir = manager.provisionWorktreeForContainer(
+            profileId = "dev-worker",
+            spec = GitWorktreeSpec("mono-app", "wt/dev-worker"),
+        )
+        val dotGitOriginal = File(wtDir, ".git").readText()
+        File(wtDir, ".gvx_meta").writeText("meta")
+        File(wtDir, ".gvx_meta.lock").writeText("")
+        File(wtDir, ".gvx_meta.tmp.a1b2c3").writeText("tmp")
+        File(wtDir, ".gitignore").writeText("build/\n")
+
+        val posix755 = setOf(
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.OWNER_EXECUTE,
+            PosixFilePermission.GROUP_READ,
+            PosixFilePermission.GROUP_EXECUTE,
+            PosixFilePermission.OTHERS_READ,
+            PosixFilePermission.OTHERS_EXECUTE,
+        )
+        val runSh = File(wtDir, "run.sh").apply { writeText("#!/bin/sh\necho v1\n") }
+        Files.setPosixFilePermissions(runSh.toPath(), posix755)
+
+        // Symlink attempting to escape into ../../repo.git/config
+        val repoConfig = File(tempDir, "git-projects/mono-app/repo.git/config")
+        Files.createSymbolicLink(File(wtDir, "repo-escape").toPath(), repoConfig.toPath())
+
+        var currentRunState = SandboxRunState.RUNNING
+        val engine = WorkspaceDocumentsEngine(
+            filesDir = tempDir,
+            liveRunStateProvider = { profileId ->
+                if (profileId == "dev-worker") currentRunState else null
+            },
+        )
+
+        val projectEntries = engine.listChildren(WorkspaceDocumentsEngine.GIT_ROOT_DOCUMENT_ID)
+        assertEquals(listOf("git-project:mono-app"), projectEntries.map { it.documentId })
+
+        val worktreeEntries = engine.listChildren("git-project:mono-app")
+        assertEquals(listOf("git-worktree:mono-app/dev-worker"), worktreeEntries.map { it.documentId })
+        assertTrue(engine.isChildDocument(WorkspaceDocumentsEngine.GIT_ROOT_DOCUMENT_ID, "git-project:mono-app"))
+        assertTrue(engine.isChildDocument("git-project:mono-app", "git-worktree:mono-app/dev-worker"))
+
+        // Listing hides .git, .gvx_meta, .gvx_meta.lock, .gvx_meta.tmp.*, and escaping symlinks, while keeping .gitignore!
+        val visibleChildren = engine.listChildren("git-worktree:mono-app/dev-worker").map { it.displayName }
+        assertEquals(listOf(".gitignore", "run.sh"), visibleChildren)
+
+        val scriptDocId = WorkspaceDocumentsEngine.buildWorktreeDocumentId("mono-app", "dev-worker", "run.sh")
+        assertEquals("git-entry:mono-app/dev-worker/run.sh", scriptDocId)
+        assertTrue(engine.isChildDocument("git-worktree:mono-app/dev-worker", scriptDocId))
+
+        // Mode "r": read resolved file
+        val readResolved = engine.resolveDocumentId(scriptDocId) as WorkspaceDocumentsEngine.ResolvedDocument.ProfileEntry
+        assertEquals("#!/bin/sh\necho v1\n", readResolved.targetFile.readText())
+
+        // Mode "wt": truncate write preserving 0755
+        val wtMode = WorkspaceDocumentsEngine.parseOpenMode("wt")
+        val wtTx = engine.beginWriteTransaction(scriptDocId, truncateExisting = wtMode.truncateExisting)
+        wtTx.stagingFile.writeText("#!/bin/sh\necho v2\n")
+        engine.finishWriteTransaction(wtTx, errorOccurred = false)
+        assertEquals("#!/bin/sh\necho v2\n", runSh.readText())
+        assertEquals(posix755, Files.getPosixFilePermissions(runSh.toPath()))
+
+        // Mode "wa": append preserving existing bytes and 0755
+        val waMode = WorkspaceDocumentsEngine.parseOpenMode("wa")
+        val waTx = engine.beginWriteTransaction(scriptDocId, truncateExisting = waMode.truncateExisting)
+        java.io.FileOutputStream(waTx.stagingFile, waMode.append).use { out ->
+            out.write("echo v3\n".toByteArray(Charsets.UTF_8))
+        }
+        engine.finishWriteTransaction(waTx, errorOccurred = false)
+        assertEquals("#!/bin/sh\necho v2\necho v3\n", runSh.readText())
+        assertEquals(posix755, Files.getPosixFilePermissions(runSh.toPath()))
+
+        // Mode "rw": in-place read-write preserving 0755
+        val rwMode = WorkspaceDocumentsEngine.parseOpenMode("rw")
+        val rwTx = engine.beginWriteTransaction(scriptDocId, truncateExisting = rwMode.truncateExisting)
+        assertEquals("#!/bin/sh\necho v2\necho v3\n", rwTx.stagingFile.readText())
+        rwTx.stagingFile.writeText("#!/bin/sh\necho final\n")
+        engine.finishWriteTransaction(rwTx, errorOccurred = false)
+        assertEquals("#!/bin/sh\necho final\n", runSh.readText())
+        assertEquals(posix755, Files.getPosixFilePermissions(runSh.toPath()))
+
+        // Confinement & reserved metadata rejections
+        for (badDocId in listOf(
+            "git-entry:mono-app/dev-worker/../../repo.git/config",
+            "git-entry:../escape/dev-worker/run.sh",
+            "git-entry:mono-app/../escape/run.sh",
+            "git-entry:mono-app/dev-worker/repo-escape",
+            "git-entry:mono-app/dev-worker/.git",
+            "git-entry:mono-app/dev-worker/.gvx_meta.lock",
+            "git-entry:mono-app/dev-worker/.gvx_meta.tmp.a1b2c3",
+        )) {
+            assertThrows(SecurityException::class.java, {
+                engine.resolveDocumentId(badDocId)
+            }, "Expected '$badDocId' to fail")
+        }
+        assertThrows(SecurityException::class.java) {
+            engine.createEntry("git-worktree:mono-app/dev-worker", "text/plain", ".git")
+        }
+        assertEquals(dotGitOriginal, File(wtDir, ".git").readText())
+
+        // FROZEN lock blocks worktree writes
+        currentRunState = SandboxRunState.FROZEN
+        assertEquals(0, engine.statDocument(scriptDocId).flags)
+        assertThrows(SecurityException::class.java) {
+            engine.beginWriteTransaction(scriptDocId, truncateExisting = true)
+        }
     }
 }

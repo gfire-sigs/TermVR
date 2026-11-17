@@ -2,13 +2,18 @@ package dev.gfire.termvr.ui.files
 
 import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.data.RungvVolumeLsEntry
+import dev.gfire.termvr.core.model.GitProjectSummary
+import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeLockMode
+import dev.gfire.termvr.core.model.VolumeMountMode
 import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.core.runtime.VolumeDirEntry
 import dev.gfire.termvr.provider.WorkspaceDocumentsEngine
 import dev.gfire.termvr.runtime.SandboxRuntimeGateway
+import dev.gfire.termvr.ui.home.formatBytes
 import dev.gfire.termvr.util.SafUriUtils
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -35,6 +40,7 @@ import kotlinx.coroutines.withContext
 enum class FileRootTab {
     WORKSPACE,
     VOLUME,
+    GIT,
 }
 
 enum class VolumePauseKind {
@@ -63,11 +69,16 @@ data class VolumeMountAttachment(
     val guestMountPath: String,
     val isRunning: Boolean,
     val runState: SandboxRunState = if (isRunning) SandboxRunState.RUNNING else SandboxRunState.STOPPED,
+    val mountMode: VolumeMountMode = VolumeMountMode.EXCLUSIVE_RW,
+    val isUpperOverlay: Boolean = false,
 )
 
 data class ManagedVolumeItem(
     val name: String,
+    val driver: String = "ext4lite",
     val sizeBytes: Long = 0L,
+    val allocatedBytes: Long = sizeBytes,
+    val lockMode: VolumeLockMode = VolumeLockMode.NONE,
     val mounts: List<VolumeMountAttachment> = emptyList(),
 ) {
     val hasRunningMount: Boolean
@@ -78,7 +89,28 @@ data class ManagedVolumeItem(
 
     val activeProfileNames: List<String>
         get() = mounts.filter { it.isRunning }.map { it.profileDisplayName }.distinct()
+
+    val diskUsageLabel: String
+        get() = FilesViewModel.formatVolumeDiskUsage(allocatedBytes = allocatedBytes, sizeBytes = sizeBytes)
+
+    val canCompact: Boolean
+        get() = lockMode == VolumeLockMode.NONE &&
+            !hasRunningMount &&
+            !hasFrozenMount &&
+            !driver.equals("hostfs", ignoreCase = true)
 }
+
+data class GitWorktreeAttachment(
+    val profileId: String,
+    val profileDisplayName: String,
+    val branchName: String,
+    val runState: SandboxRunState,
+)
+
+data class GitProjectItem(
+    val summary: GitProjectSummary,
+    val worktrees: List<GitWorktreeAttachment> = emptyList(),
+)
 
 data class FilesUiState(
     val profiles: List<SandboxProfile> = emptyList(),
@@ -90,6 +122,7 @@ data class FilesUiState(
     val workspacePath: String = "",
     val workspaceEntries: List<HostFileItem> = emptyList(),
     val volumes: List<ManagedVolumeItem> = emptyList(),
+    val gitProjects: List<GitProjectItem> = emptyList(),
     val selectedVolumeName: String? = null,
     val selectedVolumePause: VolumeAccessPauseState? = null,
     val volumePath: String = "/",
@@ -109,6 +142,7 @@ private data class FilesLocalState(
     val workspacePath: String = "",
     val workspaceEntries: List<HostFileItem> = emptyList(),
     val hostVolumes: List<RungvVolumeLsEntry> = emptyList(),
+    val gitProjectSummaries: List<GitProjectSummary> = emptyList(),
     val selectedVolumeName: String? = null,
     val selectedVolumePause: VolumeAccessPauseState? = null,
     val volumePath: String = "/",
@@ -140,7 +174,7 @@ class FilesViewModel(
         val runState = selected?.let { runStates[it.id] } ?: SandboxRunState.STOPPED
         val locked = runState.locksWorkspaceWrites || local.hasActiveCheckpoint
 
-        val hostSizeByName = local.hostVolumes.associate { it.name to it.sizeBytes }
+        val hostByName = local.hostVolumes.associateBy { it.name }
         val attachmentsByVol = LinkedHashMap<String, MutableList<VolumeMountAttachment>>()
         for (vol in local.hostVolumes) {
             attachmentsByVol.getOrPut(vol.name) { mutableListOf() }
@@ -156,32 +190,97 @@ class FilesViewModel(
                         guestMountPath = "/",
                         isRunning = holdsMount,
                         runState = profileRunState,
+                        mountMode = VolumeMountMode.EXCLUSIVE_RW,
                     ),
                 )
             }
             for (mount in profile.volumes) {
-                if (mount.kind == VolumeKind.NAMED_EXT4LITE) {
-                    attachmentsByVol.getOrPut(mount.sourceName) { mutableListOf() }.add(
-                        VolumeMountAttachment(
-                            profileId = profile.id,
-                            profileDisplayName = profile.displayName,
-                            guestMountPath = mount.guestMountPath,
-                            isRunning = holdsMount,
-                            runState = profileRunState,
-                        ),
-                    )
+                when (mount.kind) {
+                    VolumeKind.WORKSPACE_HOSTFS -> Unit
+                    VolumeKind.NAMED_EXT4LITE -> {
+                        attachmentsByVol.getOrPut(mount.sourceName) { mutableListOf() }.add(
+                            VolumeMountAttachment(
+                                profileId = profile.id,
+                                profileDisplayName = profile.displayName,
+                                guestMountPath = mount.guestMountPath,
+                                isRunning = holdsMount,
+                                runState = profileRunState,
+                                mountMode = mount.mountMode,
+                            ),
+                        )
+                    }
+                    VolumeKind.OVERLAY_EXT4LITE -> {
+                        attachmentsByVol.getOrPut(mount.sourceName) { mutableListOf() }.add(
+                            VolumeMountAttachment(
+                                profileId = profile.id,
+                                profileDisplayName = profile.displayName,
+                                guestMountPath = mount.guestMountPath,
+                                isRunning = holdsMount,
+                                runState = profileRunState,
+                                mountMode = mount.mountMode,
+                                isUpperOverlay = false,
+                            ),
+                        )
+                        val upper = mount.overlayUpperVolumeName
+                        if (upper != null) {
+                            attachmentsByVol.getOrPut(upper) { mutableListOf() }.add(
+                                VolumeMountAttachment(
+                                    profileId = profile.id,
+                                    profileDisplayName = profile.displayName,
+                                    guestMountPath = mount.guestMountPath,
+                                    isRunning = holdsMount,
+                                    runState = profileRunState,
+                                    mountMode = mount.mountMode,
+                                    isUpperOverlay = true,
+                                ),
+                            )
+                        }
+                    }
                 }
             }
         }
         val managedVolumes = attachmentsByVol.entries
             .sortedBy { it.key.lowercase() }
             .map { (name, mounts) ->
+                val hostEntry = hostByName[name]
+                val sizeBytes = hostEntry?.sizeBytes ?: 0L
+                val allocatedBytes = hostEntry?.allocatedBytes ?: sizeBytes
+                val hasExclusiveMount = mounts.any {
+                    it.isRunning && (it.isUpperOverlay || it.mountMode == VolumeMountMode.EXCLUSIVE_RW)
+                }
+                val hasSharedMount = mounts.any {
+                    it.isRunning && !it.isUpperOverlay && it.mountMode != VolumeMountMode.EXCLUSIVE_RW
+                }
+                val effectiveLockMode = when {
+                    hasExclusiveMount || hostEntry?.lockMode == VolumeLockMode.EXCLUSIVE -> VolumeLockMode.EXCLUSIVE
+                    hasSharedMount || hostEntry?.lockMode == VolumeLockMode.SHARED -> VolumeLockMode.SHARED
+                    else -> VolumeLockMode.NONE
+                }
                 ManagedVolumeItem(
                     name = name,
-                    sizeBytes = hostSizeByName[name] ?: 0L,
+                    driver = hostEntry?.driver?.ifBlank { "ext4lite" } ?: "ext4lite",
+                    sizeBytes = sizeBytes,
+                    allocatedBytes = allocatedBytes,
+                    lockMode = effectiveLockMode,
                     mounts = mounts,
                 )
             }
+
+        val gitProjectItems = local.gitProjectSummaries.map { summary ->
+            val profileWorktrees = profiles.mapNotNull { profile ->
+                val wt = profile.gitWorktree?.takeIf { it.projectId == summary.id } ?: return@mapNotNull null
+                GitWorktreeAttachment(
+                    profileId = profile.id,
+                    profileDisplayName = profile.displayName,
+                    branchName = wt.branchName,
+                    runState = runStates[profile.id] ?: SandboxRunState.STOPPED,
+                )
+            }
+            GitProjectItem(
+                summary = summary,
+                worktrees = profileWorktrees,
+            )
+        }
 
         val activeVolItem = local.selectedVolumeName?.let { selName ->
             managedVolumes.firstOrNull { it.name == selName }
@@ -201,6 +300,7 @@ class FilesViewModel(
             workspacePath = local.workspacePath,
             workspaceEntries = local.workspaceEntries,
             volumes = managedVolumes,
+            gitProjects = gitProjectItems,
             selectedVolumeName = local.selectedVolumeName,
             selectedVolumePause = effectiveVolumePause,
             volumePath = local.volumePath,
@@ -217,6 +317,7 @@ class FilesViewModel(
     )
 
     init {
+        refreshGitProjects()
         scope.launch {
             profileRepository.observeProfiles().collect { profiles ->
                 val current = localState.value.selectedProfileId
@@ -240,10 +341,10 @@ class FilesViewModel(
 
     fun selectRootTab(tab: FileRootTab) {
         localState.value = localState.value.copy(selectedRootTab = tab)
-        if (tab == FileRootTab.WORKSPACE) {
-            refreshWorkspace()
-        } else {
-            refreshVolumeList()
+        when (tab) {
+            FileRootTab.WORKSPACE -> refreshWorkspace()
+            FileRootTab.VOLUME -> refreshVolumeList()
+            FileRootTab.GIT -> refreshGitProjects()
         }
     }
 
@@ -306,7 +407,7 @@ class FilesViewModel(
 
     fun deleteNamedVolume(name: String) {
         val item = uiState.value.volumes.firstOrNull { it.name == name }
-        if (item != null && item.hasRunningMount) {
+        if (item != null && (item.hasRunningMount || item.hasFrozenMount || item.lockMode != VolumeLockMode.NONE)) {
             localState.value = localState.value.copy(
                 errorMessage = "Stop containers mounting $name before deleting.",
             )
@@ -317,10 +418,8 @@ class FilesViewModel(
             try {
                 runtimeGateway.removeVolume(name, force = false)
                 for (profile in uiState.value.profiles) {
-                    if (profile.volumes.any { it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == name }) {
-                        val cleaned = profile.volumes.filterNot {
-                            it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == name
-                        }
+                    if (profile.volumes.any { it.referencesVolume(name) }) {
+                        val cleaned = profile.volumes.filterNot { it.referencesVolume(name) }
                         profileRepository.upsertProfile(profile.copy(volumes = cleaned))
                     }
                 }
@@ -350,34 +449,102 @@ class FilesViewModel(
         }
     }
 
+    /**
+     * Replays dirty journal state and punches sparse holes on a stopped `ext4lite` volume.
+     */
+    fun compactNamedVolume(name: String) {
+        val item = uiState.value.volumes.firstOrNull { it.name == name }
+        if (item != null && !item.canCompact) {
+            localState.value = localState.value.copy(
+                errorMessage = "Stop containers using $name before compacting.",
+            )
+            return
+        }
+        scope.launch {
+            localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+            try {
+                val beforeAllocated = localState.value.hostVolumes
+                    .firstOrNull { it.name == name }
+                    ?.allocatedBytes
+                    ?: item?.allocatedBytes
+                    ?: 0L
+                runtimeGateway.compactVolume(name).getOrThrow()
+                val updated = runCatching { runtimeGateway.listVolumes() }
+                    .getOrDefault(localState.value.hostVolumes)
+                val afterAllocated = updated
+                    .firstOrNull { it.name == name }
+                    ?.allocatedBytes
+                    ?: beforeAllocated
+                val reclaimed = (beforeAllocated - afterAllocated).coerceAtLeast(0L)
+                val summary = if (reclaimed > 0L) {
+                    "Compacted $name and reclaimed ${formatBytes(reclaimed)}."
+                } else {
+                    "Compacted $name (0 B reclaimed, ${formatBytes(afterAllocated)} on disk)."
+                }
+                localState.value = localState.value.copy(
+                    hostVolumes = updated,
+                    statusMessage = summary,
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (err: Throwable) {
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "Failed to compact volume",
+                )
+            } finally {
+                localState.value = localState.value.copy(busy = false)
+            }
+        }
+    }
+
     fun mountVolumeToProfile(
         volumeName: String,
         profileId: String,
         guestMountPath: String = "/data",
+        mode: VolumeMountMode = VolumeMountMode.EXCLUSIVE_RW,
+        overlayUpperVolumeName: String? = null,
     ) {
         val profile = uiState.value.profiles.firstOrNull { it.id == profileId } ?: return
         val cleanPath = guestMountPath.trim().ifEmpty { "/data" }
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
             try {
-                val mount = VolumeMountSpec(
-                    sourceName = volumeName,
+                val resolvedUpper = if (mode == VolumeMountMode.COW_PERSISTENT) {
+                    overlayUpperVolumeName?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: VolumeMountSpec.suggestOverlayUpperVolumeName(volumeName, profile.displayName)
+                } else {
+                    null
+                }
+                val mount = VolumeMountSpec.forMode(
+                    baseVolumeName = volumeName,
                     guestMountPath = cleanPath,
-                    kind = VolumeKind.NAMED_EXT4LITE,
-                    readOnly = false,
+                    mode = mode,
+                    overlayUpperVolumeName = resolvedUpper,
                 )
-                val updatedVolumes = profile.volumes.filterNot {
-                    it.kind == VolumeKind.NAMED_EXT4LITE &&
-                        (it.sourceName == volumeName || it.guestMountPath == cleanPath)
+                val updatedVolumes = profile.volumes.filterNot { existing ->
+                    existing.guestMountPath == cleanPath ||
+                        (mode == VolumeMountMode.EXCLUSIVE_RW && existing.referencesVolume(volumeName)) ||
+                        (existing.kind == VolumeKind.NAMED_EXT4LITE &&
+                            !existing.readOnly &&
+                            existing.sourceName == volumeName)
                 } + mount
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
+                val updatedHostVolumes = runCatching { runtimeGateway.listVolumes() }
+                    .getOrDefault(localState.value.hostVolumes)
                 val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
+                val modeDesc = when (mode) {
+                    VolumeMountMode.EXCLUSIVE_RW -> "read-write"
+                    VolumeMountMode.SHARED_RO -> "shared read-only"
+                    VolumeMountMode.COW_PERSISTENT -> "CoW branch (${mount.overlayUpperVolumeName})"
+                    VolumeMountMode.COW_EPHEMERAL -> "CoW scratch"
+                }
                 localState.value = localState.value.copy(
+                    hostVolumes = updatedHostVolumes,
                     pendingRestartProfileId = if (isRunning) profileId else null,
                     statusMessage = if (isRunning) {
-                        "Mounted $volumeName at $cleanPath. Restart ${profile.displayName} to apply."
+                        "Mounted $volumeName ($modeDesc) at $cleanPath. Restart ${profile.displayName} to apply."
                     } else {
-                        "Mounted $volumeName at $cleanPath on ${profile.displayName}."
+                        "Mounted $volumeName ($modeDesc) at $cleanPath on ${profile.displayName}."
                     },
                 )
             } catch (ce: CancellationException) {
@@ -395,9 +562,7 @@ class FilesViewModel(
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
             try {
-                val updatedVolumes = profile.volumes.filterNot {
-                    it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == volumeName
-                }
+                val updatedVolumes = profile.volumes.filterNot { it.referencesVolume(volumeName) }
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
                 val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
                 localState.value = localState.value.copy(
@@ -416,6 +581,102 @@ class FilesViewModel(
                 localState.value = localState.value.copy(busy = false)
             }
         }
+    }
+
+    fun refreshGitProjects() {
+        scope.launch {
+            val summaries = withContext(ioDispatcher) {
+                runCatching { runtimeGateway.gitWorktreeManager().listProjects() }.getOrDefault(emptyList())
+            }
+            localState.value = localState.value.copy(gitProjectSummaries = summaries)
+        }
+    }
+
+    fun createGitProject(
+        name: String,
+        projectId: String? = null,
+        defaultBranch: String = GitProjectSummary.DEFAULT_BRANCH,
+    ) {
+        val cleanName = name.trim()
+        if (cleanName.isEmpty()) {
+            localState.value = localState.value.copy(errorMessage = "Project name cannot be blank.")
+            return
+        }
+        val resolvedId = projectId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: GitWorktreeSpec.suggestProjectId(cleanName)
+        val resolvedBranch = defaultBranch.trim().ifEmpty { GitProjectSummary.DEFAULT_BRANCH }
+        scope.launch {
+            localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+            try {
+                val created = withContext(ioDispatcher) {
+                    runtimeGateway.gitWorktreeManager().createOrEnsureProject(
+                        projectId = resolvedId,
+                        name = cleanName,
+                        defaultBranch = resolvedBranch,
+                    )
+                }
+                val summaries = withContext(ioDispatcher) {
+                    runtimeGateway.gitWorktreeManager().listProjects()
+                }
+                localState.value = localState.value.copy(
+                    gitProjectSummaries = summaries,
+                    statusMessage = "Created shared Git project ${created.name} (${created.id}).",
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (err: Throwable) {
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "Failed to create Git project",
+                )
+            } finally {
+                localState.value = localState.value.copy(busy = false)
+            }
+        }
+    }
+
+    fun deleteGitProject(projectId: String) {
+        scope.launch {
+            localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+            try {
+                val profiles = profileRepository.observeProfiles().first()
+                val attachedIds = profiles
+                    .filter { it.gitWorktree?.projectId == projectId }
+                    .map { it.id }
+                    .toSet()
+                withContext(ioDispatcher) {
+                    runtimeGateway.gitWorktreeManager().deleteProject(
+                        projectId = projectId,
+                        attachedProfileIds = attachedIds,
+                    )
+                }
+                val summaries = withContext(ioDispatcher) {
+                    runtimeGateway.gitWorktreeManager().listProjects()
+                }
+                localState.value = localState.value.copy(
+                    gitProjectSummaries = summaries,
+                    statusMessage = "Deleted Git project $projectId.",
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (err: Throwable) {
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "Failed to delete Git project",
+                )
+            } finally {
+                localState.value = localState.value.copy(busy = false)
+            }
+        }
+    }
+
+    fun openWorktreeInWorkspace(profileId: String) {
+        localState.value = localState.value.copy(
+            selectedProfileId = profileId,
+            selectedRootTab = FileRootTab.WORKSPACE,
+            workspacePath = "",
+            errorMessage = null,
+            statusMessage = null,
+        )
+        refreshWorkspace()
     }
 
     fun restartProfileForMount(profileId: String) {
@@ -561,8 +822,16 @@ class FilesViewModel(
             try {
                 val profile = resolveSelectedProfile() ?: return@launch
                 val hasCheckpoint = runtimeGateway.hasActiveCheckpoint(profile.id)
+                val forbidDotGit = profile.gitWorktree != null
                 val entries = withContext(ioDispatcher) {
-                    val root = runtimeGateway.workspaceDir(profile.id).apply { mkdirs() }
+                    val gitSpec = profile.gitWorktree
+                    val root = if (gitSpec != null) {
+                        runCatching {
+                            runtimeGateway.gitWorktreeManager().provisionWorktreeForContainer(profile.id, gitSpec)
+                        }.getOrElse { runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() } }
+                    } else {
+                        runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() }
+                    }
                     val rel = localState.value.workspacePath
                     val targetDir = if (rel.isEmpty()) root else File(root, rel)
                     val canonicalRoot = root.canonicalFile.toPath()
@@ -576,7 +845,7 @@ class FilesViewModel(
                             .orEmpty()
                             .asSequence()
                             .filter { child ->
-                                !SafUriUtils.isReservedWorkspaceName(child.name) &&
+                                !isReservedWorkspaceOrGitName(child.name, forbidDotGit = forbidDotGit) &&
                                     isPathConfinedToWorkspace(canonicalRoot, child)
                             }
                             .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
@@ -610,7 +879,9 @@ class FilesViewModel(
             localState.value = localState.value.copy(errorMessage = "Workspace is locked by an active checkpoint.")
             return
         }
-        val clean = sanitizeSingleName(name) ?: run {
+        val clean = sanitizeSingleName(name)
+        val forbidDotGit = state.selectedProfile?.gitWorktree != null
+        if (clean == null || isReservedWorkspaceOrGitName(clean, forbidDotGit = forbidDotGit)) {
             localState.value = localState.value.copy(errorMessage = "Invalid folder name.")
             return
         }
@@ -619,7 +890,7 @@ class FilesViewModel(
             try {
                 val profile = resolveSelectedProfile() ?: return@launch
                 withContext(ioDispatcher) {
-                    val root = runtimeGateway.workspaceDir(profile.id).apply { mkdirs() }
+                    val root = runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() }
                     val canonicalRoot = root.canonicalFile.toPath()
                     val parent = if (targetWorkspacePath.isEmpty()) root else File(root, targetWorkspacePath)
                     val dir = File(parent, clean)
@@ -646,14 +917,15 @@ class FilesViewModel(
         scope.launch {
             try {
                 val profile = resolveSelectedProfile() ?: return@launch
+                val forbidDotGit = profile.gitWorktree != null
                 withContext(ioDispatcher) {
-                    val root = runtimeGateway.workspaceDir(profile.id)
+                    val root = runtimeGateway.effectiveWorkspaceDir(profile)
                     val canonicalRoot = root.canonicalFile.toPath()
                     val target = File(root, item.relativePath)
                     if (!isPathConfinedToWorkspace(canonicalRoot, target)) {
                         throw SecurityException("Path escapes workspace")
                     }
-                    deleteConfinedWorkspacePath(target.toPath(), canonicalRoot)
+                    deleteConfinedWorkspacePath(target.toPath(), canonicalRoot, forbidDotGit = forbidDotGit)
                 }
                 refreshWorkspace()
             } catch (ce: CancellationException) {
@@ -682,6 +954,7 @@ class FilesViewModel(
             try {
                 val profile = resolveSelectedProfile()
                     ?: throw IllegalStateException("Select a container before importing files.")
+                val forbidDotGit = profile.gitWorktree != null
                 val importedName = withContext(ioDispatcher) {
                     if (
                         (runtimeGateway.runStates.value[profile.id]?.locksWorkspaceWrites == true) ||
@@ -691,8 +964,9 @@ class FilesViewModel(
                     }
                     val rawName = resolveDisplayName()
                     val clean = sanitizeSingleName(rawName)
+                        ?.takeUnless { isReservedWorkspaceOrGitName(it, forbidDotGit = forbidDotGit) }
                         ?: throw IllegalArgumentException("Invalid file name.")
-                    val root = runtimeGateway.workspaceDir(profile.id).apply { mkdirs() }
+                    val root = runtimeGateway.effectiveWorkspaceDir(profile).apply { mkdirs() }
                     val canonicalRoot = root.canonicalFile.toPath()
                     val parent = if (targetWorkspacePath.isEmpty()) root else File(root, targetWorkspacePath)
                     val target = File(parent, clean)
@@ -757,7 +1031,7 @@ class FilesViewModel(
             try {
                 val profile = resolveSelectedProfile() ?: return@launch
                 val bytes = withContext(ioDispatcher) {
-                    val root = runtimeGateway.workspaceDir(profile.id)
+                    val root = runtimeGateway.effectiveWorkspaceDir(profile)
                     val canonicalRoot = root.canonicalFile.toPath()
                     val target = File(root, item.relativePath)
                     if (Files.isSymbolicLink(target.toPath()) || !isPathConfinedToWorkspace(canonicalRoot, target)) {
@@ -943,9 +1217,15 @@ class FilesViewModel(
     fun createVolumeDirectory(name: String) {
         val state = uiState.value
         val volumeName = state.selectedVolumeName ?: return
-        if (state.writeLocked || state.selectedVolumePause != null) {
+        val volItem = state.volumes.firstOrNull { it.name == volumeName }
+        if (state.writeLocked || state.selectedVolumePause != null || volItem?.lockMode == VolumeLockMode.SHARED) {
             localState.value = localState.value.copy(
-                errorMessage = state.selectedVolumePause?.message ?: "Volume is locked while frozen.",
+                errorMessage = state.selectedVolumePause?.message
+                    ?: if (volItem?.lockMode == VolumeLockMode.SHARED) {
+                        SHARED_READER_VOLUME_LOCK_MESSAGE
+                    } else {
+                        "Volume is locked while frozen."
+                    },
             )
             return
         }
@@ -976,9 +1256,15 @@ class FilesViewModel(
     fun deleteVolumeEntry(entry: VolumeDirEntry) {
         val state = uiState.value
         val volumeName = state.selectedVolumeName ?: return
-        if (state.writeLocked || state.selectedVolumePause != null) {
+        val volItem = state.volumes.firstOrNull { it.name == volumeName }
+        if (state.writeLocked || state.selectedVolumePause != null || volItem?.lockMode == VolumeLockMode.SHARED) {
             localState.value = localState.value.copy(
-                errorMessage = state.selectedVolumePause?.message ?: "Volume is locked while frozen.",
+                errorMessage = state.selectedVolumePause?.message
+                    ?: if (volItem?.lockMode == VolumeLockMode.SHARED) {
+                        SHARED_READER_VOLUME_LOCK_MESSAGE
+                    } else {
+                        "Volume is locked while frozen."
+                    },
             )
             return
         }
@@ -1051,11 +1337,12 @@ class FilesViewModel(
             val mountPoint = if (candidate.persistentRootfs && candidate.rootfsVolumeName == volumeName) {
                 "/"
             } else {
-                candidate.volumes
-                    .firstOrNull { it.sourceName == volumeName && it.kind == VolumeKind.NAMED_EXT4LITE }
-                    ?.guestMountPath
-                    ?: "/data"
-            }
+                candidate.volumes.firstOrNull {
+                    it.sourceName == volumeName &&
+                        it.kind == VolumeKind.NAMED_EXT4LITE &&
+                        (readOnly || !it.readOnly)
+                }?.guestMountPath
+            } ?: continue
             return block(liveMux, mountPoint)
         }
 
@@ -1088,7 +1375,7 @@ class FilesViewModel(
                 attachedProfileNames = frozen.map { it.profileDisplayName }.distinct(),
             )
         }
-        if (activeVolItem.hasRunningMount) {
+        if (activeVolItem.hasRunningMount && activeVolItem.lockMode == VolumeLockMode.EXCLUSIVE) {
             val hasLiveMux = activeVolItem.mounts.any { mount ->
                 mount.runState == SandboxRunState.RUNNING &&
                     local.pendingRestartProfileId != mount.profileId &&
@@ -1132,17 +1419,18 @@ class FilesViewModel(
             )
         }
 
-        val active = attached.filter { profile ->
-            (runtimeGateway.runStates.value[profile.id] ?: SandboxRunState.STOPPED).holdsVolumeMount()
+        val activeExclusive = attached.filter { profile ->
+            val holds = (runtimeGateway.runStates.value[profile.id] ?: SandboxRunState.STOPPED).holdsVolumeMount()
+            holds && profileHoldsExclusiveLock(profile, volumeName)
         }
-        if (active.isNotEmpty()) {
-            val hasLiveMux = active.any { profile ->
+        if (activeExclusive.isNotEmpty()) {
+            val hasLiveMux = activeExclusive.any { profile ->
                 (runtimeGateway.runStates.value[profile.id] == SandboxRunState.RUNNING) &&
                     localState.value.pendingRestartProfileId != profile.id &&
                     runtimeGateway.getMuxClient(profile.id) != null
             }
             if (!hasLiveMux) {
-                return buildActiveSingleWriterPause(volumeName, active)
+                return buildActiveSingleWriterPause(volumeName, activeExclusive)
             }
         }
         return null
@@ -1164,8 +1452,23 @@ class FilesViewModel(
         volumeName: String,
     ): List<SandboxProfile> = profiles.filter { profile ->
         (profile.persistentRootfs && profile.rootfsVolumeName == volumeName) ||
-            profile.volumes.any { it.kind == VolumeKind.NAMED_EXT4LITE && it.sourceName == volumeName }
+            profile.volumes.any { it.referencesVolume(volumeName) }
     }
+
+    private fun profileHoldsExclusiveLock(profile: SandboxProfile, volumeName: String): Boolean {
+        if (profile.persistentRootfs && profile.rootfsVolumeName == volumeName) return true
+        return profile.volumes.any { mount ->
+            (mount.kind == VolumeKind.NAMED_EXT4LITE && !mount.readOnly && mount.sourceName == volumeName) ||
+                (mount.kind == VolumeKind.OVERLAY_EXT4LITE && mount.overlayUpperVolumeName == volumeName)
+        }
+    }
+
+    private fun VolumeMountSpec.referencesVolume(volumeName: String): Boolean =
+        when (kind) {
+            VolumeKind.WORKSPACE_HOSTFS -> false
+            VolumeKind.NAMED_EXT4LITE -> sourceName == volumeName
+            VolumeKind.OVERLAY_EXT4LITE -> sourceName == volumeName || overlayUpperVolumeName == volumeName
+        }
 
     private suspend fun currentProfilesSnapshot(): List<SandboxProfile> {
         val cached = uiState.value.profiles
@@ -1206,12 +1509,18 @@ class FilesViewModel(
         return canonicalCandidate == canonicalRoot || canonicalCandidate.startsWith(canonicalRoot)
     }
 
-    private fun deleteConfinedWorkspacePath(path: Path, canonicalRoot: Path) {
+    private fun isReservedWorkspaceOrGitName(name: String, forbidDotGit: Boolean): Boolean {
+        if (SafUriUtils.isReservedWorkspaceName(name)) return true
+        return forbidDotGit && name.trim().equals(WorkspaceDocumentsEngine.HIDDEN_GIT_LINK_FILE, ignoreCase = true)
+    }
+
+    private fun deleteConfinedWorkspacePath(
+        path: Path,
+        canonicalRoot: Path,
+        forbidDotGit: Boolean = false,
+    ) {
         val name = path.fileName?.toString().orEmpty()
-        if (
-            name.equals(WorkspaceDocumentsEngine.HIDDEN_META_DIR, ignoreCase = true) ||
-            name.equals(WorkspaceDocumentsEngine.HIDDEN_META_TEMP_FILE, ignoreCase = true)
-        ) {
+        if (isReservedWorkspaceOrGitName(name, forbidDotGit = forbidDotGit)) {
             throw SecurityException("Refusing to delete workspace metadata file: $name")
         }
         if (Files.isSymbolicLink(path)) {
@@ -1226,13 +1535,10 @@ class FilesViewModel(
             Files.newDirectoryStream(path).use { stream ->
                 for (child in stream) {
                     val childName = child.fileName?.toString().orEmpty()
-                    if (
-                        childName.equals(WorkspaceDocumentsEngine.HIDDEN_META_DIR, ignoreCase = true) ||
-                        childName.equals(WorkspaceDocumentsEngine.HIDDEN_META_TEMP_FILE, ignoreCase = true)
-                    ) {
+                    if (isReservedWorkspaceOrGitName(childName, forbidDotGit = forbidDotGit)) {
                         continue
                     }
-                    deleteConfinedWorkspacePath(child, canonicalRoot)
+                    deleteConfinedWorkspacePath(child, canonicalRoot, forbidDotGit = forbidDotGit)
                 }
             }
         }
@@ -1261,8 +1567,17 @@ class FilesViewModel(
 
     companion object {
         const val SINGLE_WRITER_VOLUME_LOCK_MESSAGE =
-            "Single-writer ext4lite protection keeps the live filesystem consistent while the container runs."
+            "Exclusive read-write ext4lite protection keeps the live filesystem consistent while the container runs."
+        const val SHARED_READER_VOLUME_LOCK_MESSAGE =
+            "Shared read-only lock active. Additional containers can mount this volume read-only or as a CoW Branch."
         const val FROZEN_VOLUME_LOCK_MESSAGE =
             "Checkpoint protection locks this ext4lite volume while the attached container is frozen."
+
+        fun formatVolumeDiskUsage(allocatedBytes: Long, sizeBytes: Long): String {
+            if (sizeBytes > allocatedBytes && sizeBytes > 0L) {
+                return "${formatBytes(allocatedBytes)} on disk (${formatBytes(sizeBytes)} logical)"
+            }
+            return formatBytes(allocatedBytes.coerceAtLeast(sizeBytes))
+        }
     }
 }
