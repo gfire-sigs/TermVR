@@ -27,29 +27,43 @@
 
 ## Screenshots
 
+These screenshots run unmodified `arm64` Linux containers on an Android 16 16 KB kernel. Every terminal view renders through `libghostty-vt` over OpenGL ES 3.0.
+
 <table>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-terminal.png" alt="TermVR terminal running fastfetch inside Debian 13 with touch key bar" width="100%">
+      <img src="docs/assets/gallery-terminal.png" alt="Split-pane Debian 13 terminal running fastfetch, git log, and HTTP health check with latched CTRL key" width="100%">
       <br>
-      <sub>Debian 13 shell running <code>fastfetch</code> with touch modifier keys.</sub>
+      <sub>Split-pane Debian 13 shell showing <code>fastfetch</code>, Git history, Hangul output, and latched <code>CTRL</code>.</sub>
     </td>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-containers.png" alt="Containers tab showing Debian quick launch and running Dev Shell container with Persistent badge" width="100%">
+      <img src="docs/assets/gallery-split-tui.png" alt="Split-pane terminal running htop system monitor above Vim editing Python server code" width="100%">
       <br>
-      <sub>Container dashboard showing live CPU, memory, freeze, and stop controls.</sub>
+      <sub>Concurrent <code>htop</code> process monitor and syntax-highlighted <code>vim</code> editor in one GPU surface.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-volumes.png" alt="Files Volumes tab browsing the rootfs-dev-shell ext4lite volume" width="100%">
+      <img src="docs/assets/gallery-containers.png" alt="Containers dashboard showing running Alpine and Debian sandboxes and a frozen Ubuntu checkpoint" width="100%">
       <br>
-      <sub>Named <code>ext4lite</code> volume browser inspecting a persistent container root.</sub>
+      <sub>Multi-container dashboard with live CPU and memory metrics, Git worktrees, CoW mounts, and frozen state.</sub>
     </td>
     <td width="50%" align="center">
-      <img src="docs/assets/gallery-network.png" alt="Network tab showing port forwarding rule and LAN QR code" width="100%">
+      <img src="docs/assets/gallery-volumes.png" alt="Files Volumes tab showing shared read-only and copy-on-write ext4lite volumes" width="100%">
       <br>
-      <sub>Port forwarding rules with <code>127.0.0.1</code> defaults, <code>0.0.0.0</code> confirmation, and QR link.</sub>
+      <sub>Named <code>ext4lite</code> volumes with sparse disk metrics, shared read-only locks, and CoW branches.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/assets/gallery-network.png" alt="Network Ports tab showing loopback and LAN port forwarding rules with QR codes" width="100%">
+      <br>
+      <sub>Inbound <code>127.0.0.1</code> and confirmed <code>0.0.0.0</code> LAN port forwards with inline QR links.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/assets/gallery-catalog.png" alt="Catalog Recipes tab showing Docker Engine DinD and single-node Kubernetes k3s with Calico VXLAN" width="100%">
+      <br>
+      <sub>Prebuilt <code>docker:28-dind</code> and single-node <code>k3s</code> recipes with Calico VXLAN and <code>kubeconfig</code> export.</sub>
     </td>
   </tr>
 </table>
