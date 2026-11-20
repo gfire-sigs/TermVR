@@ -1,0 +1,2 @@
+TermVR 0.17.10012026111600 aligns with upstream gvx v0.17.10012026111600.
+- Updated pinned gvx runtime commit to ba070f1608ca.
