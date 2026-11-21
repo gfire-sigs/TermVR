@@ -424,8 +424,13 @@ fun SettingsScreen(
                                 valueRange = 1f..120f,
                             )
 
+                            val wakeLockLabel = if (state.appSettings.defaultWakeLockMinutes <= 0) {
+                                "Default wake lock · Indefinite (until stopped)"
+                            } else {
+                                "Default wake lock · ${state.appSettings.defaultWakeLockMinutes} min"
+                            }
                             Text(
-                                text = "Default wake lock · ${state.appSettings.defaultWakeLockMinutes} min",
+                                text = wakeLockLabel,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontFamily = monoFont,
                             )

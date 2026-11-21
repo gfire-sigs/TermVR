@@ -927,17 +927,26 @@ private fun TerminalSessionDrawer(
                 Text("Wake Lock", style = MaterialTheme.typography.titleSmall)
                 val remaining = state.wakeLockRemainingSeconds
                 Text(
-                    text = if (remaining != null) {
-                        "${remaining / 60L}m ${remaining % 60L}s left"
-                    } else {
-                        "Inactive"
+                    text = when {
+                        remaining == null -> "Inactive"
+                        remaining <= 0L -> "Active (indefinite)"
+                        else -> "${remaining / 60L}m ${remaining % 60L}s left"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = mono,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    TermVrOutlinedButton(
+                        onClick = { onAcquireWakeLock(0) },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text("Indefinite", style = MaterialTheme.typography.labelSmall, fontFamily = mono)
+                    }
                     listOf(15, 30, 60).forEach { mins ->
                         TermVrOutlinedButton(
                             onClick = { onAcquireWakeLock(mins) },

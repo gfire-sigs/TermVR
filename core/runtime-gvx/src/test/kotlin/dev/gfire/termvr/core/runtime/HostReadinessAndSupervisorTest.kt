@@ -169,6 +169,13 @@ class HostReadinessAndSupervisorTest {
         assertTrue(text.contains("[Wake Lock 3m]"))
         assertTrue(text.contains("[Proxy: SOCKS5 10.0.0.1:1080]"))
         assertTrue(text.contains("[LAN 0.0.0.0]"))
+        val indefiniteText = SandboxForegroundService.formatStatusNotificationText(
+            activeCount = 1,
+            snapshots = emptyList(),
+            wakeLockRemainingSeconds = SandboxSupervisor.INDEFINITE_WAKE_LOCK_SECONDS,
+        )
+        assertTrue(indefiniteText.contains("[Wake Lock]"))
+        assertFalse(indefiniteText.contains("[Wake Lock 1m]"))
         assertEquals(
             "2 containers running",
             SandboxForegroundService.formatActiveNotificationTitle(2, listOf("prof-a", "prof-b")),
@@ -304,9 +311,29 @@ class HostReadinessAndSupervisorTest {
             Thread.sleep(50L)
             assertEquals(41234, supervisor.publishedPortsByProfile.value["devbox"]?.firstOrNull()?.hostPort)
 
-            // 2. Wake lock capped at 30 minutes when POST_NOTIFICATIONS denied.
+            // 2. Default wake lock is indefinite when notifications are granted, and clamps to 30 minutes when denied.
+            val hookCalls = CopyOnWriteArrayList<Int>()
+            supervisor.wakeLockAcquireHook = { hookCalls.add(it) }
+            supervisor.setNotificationsPermissionGranted(true)
+            val defaultMinutes = supervisor.acquireWakeLock()
+            assertEquals(SandboxSupervisor.INDEFINITE_WAKE_LOCK_MINUTES, defaultMinutes)
+            assertEquals(SandboxSupervisor.INDEFINITE_WAKE_LOCK_SECONDS, supervisor.wakeLockRemainingSeconds.value)
+            assertEquals(listOf(SandboxSupervisor.INDEFINITE_WAKE_LOCK_MINUTES), hookCalls.toList())
+
+            // Revoking POST_NOTIFICATIONS downgrades an active indefinite wake lock to 30 minutes.
             supervisor.setNotificationsPermissionGranted(false)
             assertTrue(supervisor.notificationsDeniedBanner.value)
+            assertEquals(
+                SandboxSupervisor.MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES * 60L,
+                supervisor.wakeLockRemainingSeconds.value,
+            )
+            assertEquals(SandboxSupervisor.MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES, hookCalls.last())
+
+            // Requesting indefinite or 90 minutes while denied stays capped at 30 minutes.
+            assertEquals(
+                SandboxSupervisor.MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES,
+                supervisor.acquireWakeLock(requestedMinutes = SandboxSupervisor.INDEFINITE_WAKE_LOCK_MINUTES),
+            )
             val grantedMinutes = supervisor.acquireWakeLock(requestedMinutes = 90)
             assertEquals(SandboxSupervisor.MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES, grantedMinutes)
 

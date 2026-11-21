@@ -1011,7 +1011,8 @@ data class GlobalAppSettings(
         const val DEFAULT_SCROLLBACK_LINES: Int = 10_000
         const val MIN_SCROLLBACK_LINES: Int = 1_000
         const val MAX_SCROLLBACK_LINES: Int = 100_000
-        const val DEFAULT_WAKE_LOCK_MINUTES: Int = 30
+        const val INDEFINITE_WAKE_LOCK_MINUTES: Int = 0
+        const val DEFAULT_WAKE_LOCK_MINUTES: Int = INDEFINITE_WAKE_LOCK_MINUTES
         const val DEFAULT_IDLE_FREEZE_TIMEOUT_MINUTES: Int = 5
         const val DEFAULT_MAX_ACTIVE_SANDBOXES: Int = 3
     }

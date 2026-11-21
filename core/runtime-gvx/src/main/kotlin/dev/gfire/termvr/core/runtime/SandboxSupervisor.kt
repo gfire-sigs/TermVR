@@ -280,9 +280,10 @@ class SandboxSupervisor(
         if (!granted) {
             val remainingSec = _wakeLockRemainingSeconds.value
             val maxSec = MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES * 60L
-            if (remainingSec != null && remainingSec > maxSec) {
-                wakeLockExpiresAtMs = clockMillis() + (maxSec * 1000L)
-                _wakeLockRemainingSeconds.value = maxSec
+            if (remainingSec != null &&
+                (remainingSec <= INDEFINITE_WAKE_LOCK_SECONDS || remainingSec > maxSec)
+            ) {
+                acquireWakeLock(MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES)
             }
         }
     }
@@ -945,17 +946,34 @@ class SandboxSupervisor(
     }
 
     fun acquireWakeLock(requestedMinutes: Int = DEFAULT_WAKE_LOCK_MINUTES): Int {
+        val requestedIndefinite = requestedMinutes <= INDEFINITE_WAKE_LOCK_MINUTES
         val effectiveMinutes = if (_notificationsDeniedBanner.value) {
-            requestedMinutes.coerceIn(1, MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES)
+            if (requestedIndefinite) {
+                MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES
+            } else {
+                requestedMinutes.coerceIn(1, MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES)
+            }
+        } else if (requestedIndefinite) {
+            INDEFINITE_WAKE_LOCK_MINUTES
         } else {
-            requestedMinutes.coerceAtLeast(1)
+            requestedMinutes
         }
+
+        wakeLockCountdownJob?.cancel()
+        wakeLockCountdownJob = null
+
+        if (effectiveMinutes <= INDEFINITE_WAKE_LOCK_MINUTES) {
+            wakeLockExpiresAtMs = null
+            _wakeLockRemainingSeconds.value = INDEFINITE_WAKE_LOCK_SECONDS
+            wakeLockAcquireHook?.invoke(INDEFINITE_WAKE_LOCK_MINUTES)
+            return INDEFINITE_WAKE_LOCK_MINUTES
+        }
+
         val expiresAt = clockMillis() + effectiveMinutes * 60_000L
         wakeLockExpiresAtMs = expiresAt
         _wakeLockRemainingSeconds.value = effectiveMinutes * 60L
         wakeLockAcquireHook?.invoke(effectiveMinutes)
 
-        wakeLockCountdownJob?.cancel()
         wakeLockCountdownJob = scope.launch {
             while (isActive) {
                 delay(1_000L)
@@ -1180,7 +1198,9 @@ class SandboxSupervisor(
     )
 
     companion object {
-        const val DEFAULT_WAKE_LOCK_MINUTES: Int = 30
+        const val INDEFINITE_WAKE_LOCK_MINUTES: Int = 0
+        const val INDEFINITE_WAKE_LOCK_SECONDS: Long = 0L
+        const val DEFAULT_WAKE_LOCK_MINUTES: Int = INDEFINITE_WAKE_LOCK_MINUTES
         const val MAX_NO_NOTIFICATION_WAKE_LOCK_MINUTES: Int = 30
         const val DEFAULT_IDLE_FREEZE_MINUTES: Int = 5
         const val COLD_BOOT_HELLO_TIMEOUT_MS: Long = 300_000L

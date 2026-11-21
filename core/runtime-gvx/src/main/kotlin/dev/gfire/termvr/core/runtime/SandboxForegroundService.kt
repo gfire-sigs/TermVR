@@ -1,6 +1,7 @@
 package dev.gfire.termvr.core.runtime
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -392,11 +393,16 @@ class SandboxForegroundService : LifecycleService() {
         }
     }
 
+    @SuppressLint("WakelockTimeout")
     private fun acquireOsWakeLock(durationMinutes: Int) {
         releaseOsWakeLock()
         val lock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TermVR:SandboxWakeLock")
         lock.setReferenceCounted(false)
-        lock.acquire(durationMinutes * 60_000L)
+        if (durationMinutes <= SandboxSupervisor.INDEFINITE_WAKE_LOCK_MINUTES) {
+            lock.acquire()
+        } else {
+            lock.acquire(durationMinutes * 60_000L)
+        }
         wakeLock = lock
     }
 
@@ -575,8 +581,12 @@ class SandboxForegroundService : LifecycleService() {
 
             val badges = ArrayList<String>(3)
             if (wakeLockRemainingSeconds != null) {
-                val mins = ((wakeLockRemainingSeconds + 59L) / 60L).coerceAtLeast(1L)
-                badges.add("[Wake Lock ${mins}m]")
+                if (wakeLockRemainingSeconds <= SandboxSupervisor.INDEFINITE_WAKE_LOCK_SECONDS) {
+                    badges.add("[Wake Lock]")
+                } else {
+                    val mins = ((wakeLockRemainingSeconds + 59L) / 60L).coerceAtLeast(1L)
+                    badges.add("[Wake Lock ${mins}m]")
+                }
             }
             val proxyLabel = snapshots.firstNotNullOfOrNull { it.activeProxyLabel }
             if (proxyLabel != null) {
