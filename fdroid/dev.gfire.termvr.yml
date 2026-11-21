@@ -14,9 +14,9 @@ Repo: https://github.com/gfire-sigs/TermVR.git
 Binaries: https://github.com/gfire-sigs/TermVR/releases/download/v%v/TermVR-v%v-arm64-v8a.apk
 
 Builds:
-  - versionName: 0.18.10022026111600
-    versionCode: 301800020
-    commit: v0.18.10022026111600
+  - versionName: 0.18.10022026111600.1
+    versionCode: 301800021
+    commit: v0.18.10022026111600.1
     subdir: app
     sudo:
       - apt-get update
@@ -33,5 +33,5 @@ Builds:
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$
-CurrentVersion: 0.18.10022026111600
-CurrentVersionCode: 301800020
+CurrentVersion: 0.18.10022026111600.1
+CurrentVersionCode: 301800021

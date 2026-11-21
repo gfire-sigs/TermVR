@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "termvr": {
-    "app_revision": 0,
-    "version_name": "0.18.10022026111600",
-    "version_code": 301800020
+    "app_revision": 1,
+    "version_name": "0.18.10022026111600.1",
+    "version_code": 301800021
   },
   "toolchains": {
     "jdk": "17",
@@ -13,7 +13,9 @@
     "android_ndk": "28.0.13004108",
     "cmake": "3.22.1",
     "go": "1.27.4",
-    "zig": "0.17.0"
+    "zig": "0.17.0",
+    "bundletool": "1.18.3",
+    "bundletool_sha256": "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29"
   },
   "sources": {
     "gvx": {

@@ -195,7 +195,7 @@ jobs:
           path: dist/TermVR-${{ github.ref_name }}-${{ matrix.abi }}.apk
 
   build-aab:
-    name: Build Universal Release AAB (arm64-v8a + x86_64)
+    name: Build Universal AAB and Accrescent APKS (arm64-v8a + x86_64)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout tag
@@ -246,20 +246,24 @@ jobs:
           test -n "${BUILT_AAB}"
           cp -f "${BUILT_AAB}" "/tmp/unsigned-universal.aab"
 
-      - name: Sign and verify release AAB
+      - name: Sign AAB and build signed Accrescent APKS
         env:
           TERMVR_RELEASE_KEYSTORE_B64: ${{ secrets.TERMVR_RELEASE_KEYSTORE_B64 }}
           TERMVR_RELEASE_KEY_ALIAS: ${{ secrets.TERMVR_RELEASE_KEY_ALIAS }}
           TERMVR_RELEASE_KEYSTORE_PASS: ${{ secrets.TERMVR_RELEASE_KEYSTORE_PASS }}
         run: |
           set -euo pipefail
+          umask 077
           TAG_NAME="${GITHUB_REF_NAME}"
           UNSIGNED_AAB="/tmp/unsigned-universal.aab"
           KEYSTORE_PATH="/tmp/termvr-release-aab.p12"
+          PASS_FILE="/tmp/termvr-release-aab.pass"
+          BUNDLETOOL_JAR="/tmp/bundletool-all.jar"
           OUT_AAB="dist/TermVR-${TAG_NAME}.aab"
+          OUT_APKS="dist/TermVR-${TAG_NAME}.apks"
 
           cleanup() {
-            rm -f "${KEYSTORE_PATH}" "${UNSIGNED_AAB}"
+            rm -f "${KEYSTORE_PATH}" "${PASS_FILE}" "${UNSIGNED_AAB}" "${BUNDLETOOL_JAR}"
           }
           trap cleanup EXIT
 
@@ -285,6 +289,7 @@ jobs:
               -storepass "${SIGNING_PASS}" \
               -keypass "${SIGNING_PASS}"
           fi
+          printf '%s' "${SIGNING_PASS}" > "${PASS_FILE}"
 
           jarsigner \
             -keystore "${KEYSTORE_PATH}" \
@@ -305,15 +310,47 @@ jobs:
           printf '%s\n' "${VERIFY_OUT}"
           printf '%s\n' "${VERIFY_OUT}" | grep -Fq "jar verified."
 
-      - name: Verify 16 KB ELF alignment inside AAB
+          BUNDLETOOL_VER="$(jq -r '.toolchains.bundletool' scripts/source-lock.json)"
+          BUNDLETOOL_SHA256="$(jq -r '.toolchains.bundletool_sha256' scripts/source-lock.json)"
+          curl -fsSL "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VER}/bundletool-all-${BUNDLETOOL_VER}.jar" \
+            -o "${BUNDLETOOL_JAR}"
+          printf '%s  %s\n' "${BUNDLETOOL_SHA256}" "${BUNDLETOOL_JAR}" | sha256sum -c -
+
+          java -jar "${BUNDLETOOL_JAR}" build-apks \
+            --bundle="${UNSIGNED_AAB}" \
+            --output="${OUT_APKS}" \
+            --ks="${KEYSTORE_PATH}" \
+            --ks-key-alias="${KEY_ALIAS}" \
+            --ks-pass="file:${PASS_FILE}" \
+            --key-pass="file:${PASS_FILE}"
+
+          # Verify every split APK inside the Accrescent APKS archive.
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+          APKSIGNER="${SDK_ROOT}/build-tools/36.1.0/apksigner"
+          SPLIT_TMP="$(mktemp -d /tmp/termvr-apks-verify.XXXXXX)"
+          unzip -q "${OUT_APKS}" 'splits/*.apk' -d "${SPLIT_TMP}"
+          for split_apk in "${SPLIT_TMP}"/splits/*.apk; do
+            "${APKSIGNER}" verify --min-sdk-version 31 "${split_apk}"
+          done
+          rm -rf "${SPLIT_TMP}"
+
+      - name: Verify 16 KB ELF alignment inside AAB and APKS
         run: |
-          ./scripts/verify-16kb-alignment.sh "dist/TermVR-${GITHUB_REF_NAME}.aab"
+          ./scripts/verify-16kb-alignment.sh \
+            "dist/TermVR-${GITHUB_REF_NAME}.aab" \
+            "dist/TermVR-${GITHUB_REF_NAME}.apks"
 
       - name: Upload release AAB artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-aab
           path: dist/TermVR-${{ github.ref_name }}.aab
+
+      - name: Upload release APKS artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-apks
+          path: dist/TermVR-${{ github.ref_name }}.apks
 
   attest-and-release:
     name: Attest SLSA Provenance and Publish Release
@@ -347,6 +384,12 @@ jobs:
           name: release-aab
           path: release-assets
 
+      - name: Download Accrescent APKS
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-apks
+          path: release-assets
+
       - name: Generate SHA256SUMS
         run: |
           set -euo pipefail
@@ -354,6 +397,7 @@ jobs:
           sha256sum \
             "TermVR-${GITHUB_REF_NAME}-arm64-v8a.apk" \
             "TermVR-${GITHUB_REF_NAME}-x86_64.apk" \
+            "TermVR-${GITHUB_REF_NAME}.apks" \
             "TermVR-${GITHUB_REF_NAME}.aab" > SHA256SUMS
           cat SHA256SUMS
 
@@ -385,14 +429,37 @@ jobs:
           fi
 
       - name: Attest SLSA v1.0 Build Level 2 provenance
+        id: attest
         if: github.event.repository.private != true
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             release-assets/TermVR-${{ github.ref_name }}-arm64-v8a.apk
             release-assets/TermVR-${{ github.ref_name }}-x86_64.apk
+            release-assets/TermVR-${{ github.ref_name }}.apks
             release-assets/TermVR-${{ github.ref_name }}.aab
             release-assets/SHA256SUMS
+
+      - name: Append SLSA attestation links to release notes
+        env:
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          REPO_FULL: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            printf '\n## Build provenance attestation\n\n'
+            printf 'GitHub Actions generated SLSA v1.0 Build Level 2 provenance for every release artifact.\n\n'
+            if [ -n "${ATTESTATION_URL}" ]; then
+              printf -- '- **Release attestation record**: %s\n' "${ATTESTATION_URL}"
+            fi
+            printf -- '- **All repository attestations**: https://github.com/%s/attestations\n\n' "${REPO_FULL}"
+            printf '```bash\n'
+            printf 'gh attestation verify TermVR-%s-arm64-v8a.apk \\\n' "${TAG_NAME}"
+            printf '  --repo %s \\\n' "${REPO_FULL}"
+            printf '  --signer-workflow %s/.github/workflows/release-slsa.yml\n' "${REPO_FULL}"
+            printf '```\n'
+          } >> /tmp/release-notes.md
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -403,5 +470,104 @@ jobs:
           files: |
             release-assets/TermVR-${{ github.ref_name }}-arm64-v8a.apk
             release-assets/TermVR-${{ github.ref_name }}-x86_64.apk
+            release-assets/TermVR-${{ github.ref_name }}.apks
             release-assets/TermVR-${{ github.ref_name }}.aab
             release-assets/SHA256SUMS
+
+  publish-fdroid-repo:
+    name: Publish Self-Hosted F-Droid Repo (gh-pages)
+    needs:
+      - attest-and-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download arm64-v8a APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-apk-arm64-v8a
+          path: release-assets
+
+      - name: Install fdroidserver and signing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends aapt apksigner fdroidserver openjdk-17-jdk-headless openssl
+
+      - name: Build and push F-Droid repo to gh-pages
+        env:
+          FDROID_REPO_KEYSTORE_B64: ${{ secrets.FDROID_REPO_KEYSTORE_B64 }}
+          FDROID_REPO_KEY_ALIAS: ${{ secrets.FDROID_REPO_KEY_ALIAS }}
+          FDROID_REPO_KEYSTORE_PASS: ${{ secrets.FDROID_REPO_KEYSTORE_PASS }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          if [ -z "${FDROID_REPO_KEYSTORE_B64}" ]; then
+            echo "FDROID_REPO_KEYSTORE_B64 is not configured; skipping self-hosted F-Droid repo publish."
+            exit 0
+          fi
+          if [ -z "${FDROID_REPO_KEY_ALIAS}" ] || [ -z "${FDROID_REPO_KEYSTORE_PASS}" ]; then
+            echo "FDROID_REPO_KEY_ALIAS and FDROID_REPO_KEYSTORE_PASS must be set when FDROID_REPO_KEYSTORE_B64 is present" >&2
+            exit 1
+          fi
+
+          KEYSTORE_PATH="/tmp/termvr-fdroid-repo.p12"
+          PREV_DIR="/tmp/termvr-prev-gh-pages"
+          SITE_DIR="/tmp/termvr-gh-pages-site"
+          PUSH_DIR="/tmp/termvr-gh-pages-push"
+          cleanup() {
+            rm -rf "${KEYSTORE_PATH}" "${PREV_DIR}" "${SITE_DIR}" "${PUSH_DIR}"
+          }
+          trap cleanup EXIT
+
+          printf '%s' "${FDROID_REPO_KEYSTORE_B64}" | base64 --decode > "${KEYSTORE_PATH}"
+          chmod 600 "${KEYSTORE_PATH}"
+
+          EXTRA_HEADER="$(git config --local --get http.https://github.com/.extraheader || true)"
+          REPO_GIT_URL="$(git remote get-url origin)"
+
+          # Preserve previous gh-pages APKs if the branch already exists.
+          if [ -n "${EXTRA_HEADER}" ]; then
+            if git -c "http.https://github.com/.extraheader=${EXTRA_HEADER}" ls-remote --exit-code --heads "${REPO_GIT_URL}" gh-pages >/dev/null 2>&1; then
+              git -c "http.https://github.com/.extraheader=${EXTRA_HEADER}" clone --depth 1 --branch gh-pages "${REPO_GIT_URL}" "${PREV_DIR}"
+            fi
+          elif git ls-remote --exit-code --heads "${REPO_GIT_URL}" gh-pages >/dev/null 2>&1; then
+            git clone --depth 1 --branch gh-pages "${REPO_GIT_URL}" "${PREV_DIR}"
+          fi
+
+          REPO_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}/fdroid/repo"
+          ./scripts/publish-fdroid-repo.sh \
+            --apk "release-assets/TermVR-${TAG_NAME}-arm64-v8a.apk" \
+            --site-dir "${SITE_DIR}" \
+            --prev-site-dir "${PREV_DIR}" \
+            --keystore "${KEYSTORE_PATH}" \
+            --key-alias "${FDROID_REPO_KEY_ALIAS}" \
+            --repo-url "${REPO_URL}"
+
+          if [ -d "${PREV_DIR}/.git" ]; then
+            mv "${PREV_DIR}" "${PUSH_DIR}"
+            find "${PUSH_DIR}" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          else
+            mkdir -p "${PUSH_DIR}"
+            git -C "${PUSH_DIR}" init -b gh-pages
+            git -C "${PUSH_DIR}" remote add origin "${REPO_GIT_URL}"
+          fi
+
+          cp -a "${SITE_DIR}/." "${PUSH_DIR}/"
+          git -C "${PUSH_DIR}" config user.name "github-actions[bot]"
+          git -C "${PUSH_DIR}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "${PUSH_DIR}" add -A
+          if ! git -C "${PUSH_DIR}" diff --cached --quiet; then
+            git -C "${PUSH_DIR}" commit -m "chore(fdroid-repo): publish TermVR ${TAG_NAME}"
+            if [ -n "${EXTRA_HEADER}" ]; then
+              git -C "${PUSH_DIR}" -c "http.https://github.com/.extraheader=${EXTRA_HEADER}" push origin gh-pages
+            else
+              git -C "${PUSH_DIR}" push origin gh-pages
+            fi
+          fi

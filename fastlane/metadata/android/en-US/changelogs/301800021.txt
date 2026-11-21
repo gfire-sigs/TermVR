@@ -1,0 +1,5 @@
+TermVR 0.18.10022026111600.1 (gvx v0.18.10022026111600):
+- Switched to the permanent release signing key (uninstall prior sideloaded APKs once).
+- Added signed Accrescent .apks split archives with 16 KB ELF verification.
+- Launched the self-hosted F-Droid repository on GitHub Pages and Obtainium support.
+- Added SLSA provenance attestation links to GitHub Release notes.

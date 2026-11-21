@@ -18,7 +18,11 @@
 <p align="center">
   <strong><a href="https://github.com/gfire-sigs/TermVR/releases/latest">Download Latest APK</a></strong>
   &nbsp;&middot;&nbsp;
-  <strong><a href="docs/releases/v0.18.10022026111600.md">Release Notes</a></strong>
+  <strong><a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR">Install via Obtainium</a></strong>
+  &nbsp;&middot;&nbsp;
+  <strong><a href="https://gfire-sigs.github.io/TermVR/">F-Droid Repo</a></strong>
+  &nbsp;&middot;&nbsp;
+  <strong><a href="docs/releases/v0.18.10022026111600.1.md">Release Notes</a></strong>
   &nbsp;&middot;&nbsp;
   <strong><a href="https://github.com/gfire-sigs/TermVR-Fonts">TermVR Mono NF</a></strong>
 </p>
@@ -88,14 +92,23 @@ Check **Persistent root (`ext4lite`)** when creating a container if you want `ap
 
 ## Install
 
-Download the APK for your device architecture from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest) and verify its digest against `SHA256SUMS`. Each `arm64-v8a` APK works on both 4 KB and 16 KB page-size kernels on Android 12 and newer.
+Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest), [Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR), or the [self-hosted F-Droid repository](https://gfire-sigs.github.io/TermVR/). Verify downloads against `SHA256SUMS` and [SLSA build attestations](https://github.com/gfire-sigs/TermVR/attestations). Each `arm64-v8a` APK works on both 4 KB and 16 KB page-size kernels on Android 12 and newer.
 
 | Release file | Target devices | Notes |
 | :--- | :--- | :--- |
 | `TermVR-<tag>-arm64-v8a.apk` | 64-bit ARM phones, foldables, and tablets | Supports 4 KB and 16 KB Android kernels. |
 | `TermVR-<tag>-x86_64.apk` | 64-bit x86 tablets, Chromebooks, and emulators | Matches `linux/amd64` container images. |
-| `TermVR-<tag>.aab` | Android App Bundle (`arm64-v8a` and `x86_64`) | Signed bundle for App Bundle distribution stores. |
+| `TermVR-<tag>.apks` | Accrescent and split-APK distribution | Developer-signed split APK set built with `bundletool`. |
+| `TermVR-<tag>.aab` | Android App Bundle (`arm64-v8a` and `x86_64`) | Signed universal App Bundle archive. |
 | `SHA256SUMS` | All downloads | Contains SHA-256 digests for all release artifacts. |
+
+Add this URL in F-Droid, Droid-ify, or Neo Store to track signed `arm64-v8a` updates automatically:
+
+```text
+https://gfire-sigs.github.io/TermVR/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3
+```
+
+Official app signing certificate SHA-256 fingerprint: `23FAEDB73343D4AE06DD849FCF803B39DA420A11B32AF8EF4EA1F63E1A5AC257`.
 
 1. Install the APK matching your device architecture.
 2. Open `TermVR` and tap `New Container`.

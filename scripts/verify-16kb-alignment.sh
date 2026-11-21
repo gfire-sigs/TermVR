@@ -13,7 +13,7 @@ TARGETS=()
 
 usage() {
   cat <<'EOF'
-Usage: verify-16kb-alignment.sh [--readelf <path>] <so-file|directory|apk-file|aab-file>...
+Usage: verify-16kb-alignment.sh [--readelf <path>] <so-file|directory|apk-file|aab-file|apks-file>...
 
 Inspect every ELF .so target with llvm-readelf and fail if zero .so files are
 found, zero LOAD segments are parsed, or any LOAD segment alignment is below
@@ -264,6 +264,52 @@ PY
 
         if [ "${APK_SO_COUNT}" -eq 0 ]; then
           die "Archive contains zero lib/**/*.so native libraries: ${target}"
+        fi
+        ;;
+      *.apks)
+        APK_INDEX=$((APK_INDEX + 1))
+        APKS_OUT="${TMP_EXTRACT_ROOT}/apks-${APK_INDEX}"
+        mkdir -p "${APKS_OUT}/nested" "${APKS_OUT}/so"
+        python3 - "${target}" "${APKS_OUT}/nested" "${APKS_OUT}/so" <<'PY'
+import os
+import sys
+import zipfile
+
+apks_path, nested_dir, so_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+with zipfile.ZipFile(apks_path, "r") as outer:
+    apk_members = [m for m in outer.namelist() if m.endswith(".apk")]
+    if not apk_members:
+        raise RuntimeError(f"APKS archive contains zero .apk splits: {apks_path}")
+    for member in apk_members:
+        nested_dest = os.path.realpath(os.path.join(nested_dir, member))
+        if not nested_dest.startswith(os.path.realpath(nested_dir) + os.sep):
+            raise RuntimeError(f"Unsafe zip member: {member}")
+        os.makedirs(os.path.dirname(nested_dest), exist_ok=True)
+        with outer.open(member) as src, open(nested_dest, "wb") as dst:
+            dst.write(src.read())
+        split_label = member.replace("/", "_")
+        with zipfile.ZipFile(nested_dest, "r") as inner:
+            for inner_member in inner.namelist():
+                if (inner_member.startswith("lib/") or "/lib/" in inner_member) and inner_member.endswith(".so"):
+                    so_dest = os.path.realpath(os.path.join(so_dir, split_label, inner_member))
+                    if not so_dest.startswith(os.path.realpath(so_dir) + os.sep):
+                        raise RuntimeError(f"Unsafe nested zip member: {inner_member}")
+                    os.makedirs(os.path.dirname(so_dest), exist_ok=True)
+                    with inner.open(inner_member) as src, open(so_dest, "wb") as dst:
+                        dst.write(src.read())
+PY
+        APKS_SO_COUNT=0
+        while IFS= read -r -d '' apks_so; do
+          APKS_SO_COUNT=$((APKS_SO_COUNT + 1))
+          TOTAL_CHECKED=$((TOTAL_CHECKED + 1))
+          REL_IN_APKS="${apks_so#${APKS_OUT}/so/}"
+          if ! check_so_file "${RESOLVED_READELF}" "${apks_so}" "${target}!/${REL_IN_APKS}"; then
+            FAILURES=$((FAILURES + 1))
+          fi
+        done < <(find "${APKS_OUT}/so" -type f -name '*.so' -print0 | LC_ALL=C sort -z)
+
+        if [ "${APKS_SO_COUNT}" -eq 0 ]; then
+          die "APKS archive contains zero lib/**/*.so native libraries: ${target}"
         fi
         ;;
       *)
