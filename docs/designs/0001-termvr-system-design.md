@@ -330,7 +330,7 @@ Five quantitative resource budgets govern rendering latency, background battery 
 | **Dirty Frame Latency (`120 Hz`)** | `<= 4.0 ms` P95 GL render time on reference `arm64` hardware | Dirty-row partial vertex uploads plus two-pass instanced OpenGL ES 3.0 drawing. |
 | **Idle Render & Screen-Off Power** | `0` render-thread wakeups when terminal output and cursor blink are idle; `0` telemetry polls when screen is off | Unregister display-sync callback when clean; pause telemetry sampler while display is non-interactive. |
 | **Host Subprocess Cap** | Default warning above `3` concurrent running sandboxes (`<= 12` `TermVR` child processes) | Track live `TermVR` child processes and inspect Android historical exit reasons for phantom-killer diagnostics. |
-| **Wake Lock Safety** | `30 min` default expiry (`2 hr` or `Until Stopped` when notifications are permitted) | Auto-release wake lock on timer expiry or when all sandboxes freeze or stop. |
+| **Wake Lock Safety** | Indefinite (`Until Stopped`) default when notifications are permitted (`30 min` cap if denied) | Auto-release wake lock on timer expiry or when all sandboxes freeze or stop. |
 | **APK Size (`arm64-v8a`)** | `<= 45 MiB` compressed release APK | Enable R8 code/resource shrinking and symbol-stripped native binaries compressed for install-time extraction. |
 
 ### 8.3 Accessibility and Device Adaptability
@@ -410,7 +410,7 @@ The table below lists all structural, build, metadata, and governance files comm
 | `core/runtime-gvx/src/main/AndroidManifest.xml` | `:core:runtime-gvx` | Minimal manifest for the `:core:runtime-gvx` supervisor namespace. |
 | `guest/termvr-agent/go.mod` | `guest/termvr-agent` | Standalone zero-dependency Go `1.27.4` module (`dev.gfire.termvr/guest/termvr-agent`). |
 | `scripts/source-lock.json` | Build & Provenance | Exact commit SHAs and SPDX licenses for `gvx`, `ghostty`, `freetype`, `harfbuzz`, and bundled fonts. |
-| `fdroid/dev.gfire.termvr.yml` | F-Droid Metadata | Source-built F-Droid recipe with 5 `srclibs`, `init:` prefetch, `prebuild:` native build, and `arm64-v8a` ABI. |
+| `fdroid/dev.gfire.termvr.yml` | F-Droid Metadata | Source-built F-Droid recipe with `prebuild:` external toolchain prefetch, `build:` offline native compilation, and `arm64-v8a` ABI. |
 | `fastlane/metadata/android/en-US/*.txt` | Store Metadata | F-Droid title, 80-character summary, and plain-text long description. |
 | `AGENTS.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `README.md` | Governance | Agent rules, contributor workflow, release log, and repository overview. |
 | `docs/designs/SITEMAP.md`, `docs/designs/0001-termvr-system-design.md` | Design Docs | `EGM` design index and this master architecture and implementation specification. |
@@ -960,7 +960,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 `SandboxForegroundService` runs in `:app`'s main process with `android:foregroundServiceType="specialUse"` and manifest subtype property `android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE` documenting user-initiated interactive Linux container sessions.
 
-- **Status notification & `POST_NOTIFICATIONS` fallback**: Channel `sandbox_status` (`IMPORTANCE_LOW`) renders `"2 active • CPU 14% • 612 MiB PSS"` plus `[Wake Lock 24m]`, `[Proxy: SOCKS5]`, and `[LAN 0.0.0.0]` badges and three action buttons (`Wake Lock`, `Freeze`, `Stop All`). Telemetry polls guest `TELEMETRY_REQ` plus `/proc/<pid>/stat`, `/proc/<pid>/task/*/children`, and `Debug.getMemoryInfo` every `2000 ms` strictly while `PowerManager.isInteractive` is `true` (`0` polls when screen is off). If Android 13+ notification permission is denied, `TermVR` shows a persistent in-app status banner and restricts `WakeLock` to a maximum `30 min` timer.
+- **Status notification & `POST_NOTIFICATIONS` fallback**: Channel `sandbox_status` (`IMPORTANCE_LOW`) renders `"2 active • CPU 14% • 612 MiB PSS"` plus `[Wake Lock]` (or `[Wake Lock 24m]` for timed locks), `[Proxy: SOCKS5]`, and `[LAN 0.0.0.0]` badges and three action buttons (`Wake Lock`, `Freeze`, `Stop All`). Telemetry polls guest `TELEMETRY_REQ` plus `/proc/<pid>/stat`, `/proc/<pid>/task/*/children`, and `Debug.getMemoryInfo` every `2000 ms` strictly while `PowerManager.isInteractive` is `true` (`0` polls when screen is off). Wake locks default to indefinite (`Until Stopped`) when notifications are permitted; if Android 13+ notification permission is denied, `TermVR` shows a persistent in-app status banner and restricts `WakeLock` to a maximum `30 min` timer.
 - **Atomic dual-slot checkpoints (`CheckpointController`)**: `<filesDir>/checkpoints/<profileId>/` maintains `slot-a/`, `slot-b/`, and `active-slot.json`. Before freezing, `CheckpointController` checks `Os.statvfs` to verify free disk space exceeds `1.2 * currentPssBytes`. It connects to `<filesDir>/ctl/<profileId>.sock` via `android.net.LocalSocket` (`2000 ms` connect/write timeout; `60_000 ms` read timeout), sends `{"op":"checkpoint","dir":"<inactiveSlot>"}\n`, awaits `"ok\n"` and process exit `0`, atomically renames `active-slot.json.tmp` to `active-slot.json`, and then deletes the older slot.
 - **Idle background freeze policy**: On `TRIM_MEMORY_UI_HIDDEN` or `TRIM_MEMORY_BACKGROUND`, idle sandboxes (`>= 5 min`, `autoCheckpointOnLowMemory == true`, no `WakeLock`) checkpoint automatically. This prevents Android's cached-app freezer (`API 34+`) or LMKD from killing open editor buffers. When zero sandboxes remain `RUNNING`, `SandboxForegroundService` calls `stopForeground(STOP_FOREGROUND_REMOVE)` and posts a passive `"Frozen Sandboxes"` notification with one-tap `Resume`.
 
@@ -1037,12 +1037,12 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 `TermVR` builds 100% from pinned open-source commits with zero proprietary SDKs, producing bit-for-bit reproducible APKs across F-Droid builders and GitHub Actions.
 
-### 18.1 Two-Phase Offline F-Droid Build (`init:` vs `prebuild:`)
+### 18.1 Two-Phase Offline F-Droid Build (`prebuild:` vs `build:`)
 
-`fdroid/dev.gfire.termvr.yml` sets `subdir: app`, `gradleProps: termvrAbis=arm64-v8a`, and pins five `srclibs` matching `scripts/source-lock.json`. It separates network prefetching from offline compilation:
+`fdroid/dev.gfire.termvr.yml` sets `subdir: app`, `gradleProps: termvrAbis=arm64-v8a`, and resolves all five upstream commits from `scripts/source-lock.json` without unregistered `srclibs`. It separates network prefetching from offline compilation so F-Droid's `scanner` inspects a binary-free source tree:
 
-- **Phase 1 (`init: ../scripts/provision-toolchains-and-vendor.sh`)**: Runs before F-Droid disables network access (or uses pre-populated CI caches). Verifies `git rev-parse HEAD` of `$$gvx$$`, `$$ghostty$$`, `$$freetype$$`, `$$harfbuzz$$`, and `$$termvr_fonts$$` against `scripts/source-lock.json`; downloads `SHA-256`-pinned Go `1.27.4`, Zig `0.17.0`, and `TermVRMonoNF-TTF.zip` archives if absent; verifies `TermVRMonoNF-Regular.ttf` against `ttf_sha256`; populates `$$gvx$$/vendor` via `go mod vendor`; and populates Zig's package cache via `zig build --fetch`.
-- **Phase 2 (`prebuild: ../scripts/build-native-deps.sh`)**: Runs completely offline:
+- **Phase 1 (`prebuild: ../scripts/provision-toolchains-and-vendor.sh --all-sources --toolchains-dir /tmp/termvr-toolchains`)**: Runs before F-Droid's `scanner` step and writes all caches outside the repository tree. Verifies `git rev-parse HEAD` of `gvx`, `ghostty`, `freetype`, `harfbuzz`, and `termvr_fonts` against `scripts/source-lock.json`; downloads `SHA-256`-pinned Go `1.27.4`, Zig `0.17.0`, and `TermVRMonoNF-TTF.zip` archives if absent; verifies `TermVRMonoNF-Regular.ttf` against `ttf_sha256`; populates `gvx/vendor` via `go mod vendor`; and populates Zig's package cache via `zig build --fetch`.
+- **Phase 2 (`build: ../scripts/build-native-deps.sh --abi arm64-v8a --toolchains-dir /tmp/termvr-toolchains`)**: Runs after `scanner` and compiles completely offline:
   - Compiles `librungv.so` into `core/runtime-gvx/src/main/jniLibs/<abi>/librungv.so`:
     - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -mod=vendor -trimpath -buildvcs=false -buildmode=pie -ldflags="-s -w -buildid=" ./cmd/rungv`.
     - On `x86_64` (emulator/CI): `CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$NDK_CLANG_X86_64 go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" ./cmd/rungv`.
@@ -1071,7 +1071,7 @@ Four packaging controls guarantee identical unsigned APK bytes across independen
 - **Zero Google Play metadata blocks**: `dependenciesInfo { includeInApk = false; includeInBundle = false }` strips Google's encrypted signing-block blob.
 - **Deterministic archives and R8 maps**: `AbstractArchiveTask` sets `isPreserveFileTimestamps = false` and `isReproducibleFileOrder = true`; C/C++ builds pass `-Wl,--build-id=none` and `-ffile-prefix-map`; Go builds pass `-trimpath -buildvcs=false -buildid=`.
 - **Signature-transfer verification (`apksigcopier`)**: `scripts/verify-reproducible-apk.sh` rebuilds the tag in a clean Debian container and transfers the v2/v3 signing block via `apksigcopier`. It asserts an exact `SHA-256` match and runs `diffoscope` on any mismatch.
-- **GitHub Actions `SLSA` attestation**: `.github/workflows/release-slsa.yml` generates `SLSA` v1.0 Build Level 2 provenance bundles via `actions/attest-build-provenance` alongside `SHA256SUMS` for both `TermVR-v<ver>-arm64-v8a.apk` and `TermVR-v<ver>-x86_64.apk`.
+- **GitHub Actions `SLSA` attestation**: `.github/workflows/release-slsa.yml` generates `SLSA` v1.0 Build Level 2 provenance bundles via `actions/attest-build-provenance` alongside `SHA256SUMS` for `TermVR-v<ver>-arm64-v8a.apk`, `TermVR-v<ver>-x86_64.apk`, and the universal `TermVR-v<ver>.aab` bundle.
 
 ### 18.4 `gvx`-Aligned Versioning and Automated Sync (`scripts/sync-gvx-version.sh`)
 
@@ -1089,7 +1089,7 @@ Four packaging controls guarantee identical unsigned APK bytes across independen
 > Run every verification step below from the repository root before tagging a release or updating `fdroid/dev.gfire.termvr.yml`.
 
 1. Run `./scripts/sync-gvx-version.sh --check` to confirm `gvx` commit, tag, `versionName`, and `versionCode` parity across all manifests.
-2. Verify `scripts/source-lock.json` syntax and confirm all five commit SHAs match `fdroid/dev.gfire.termvr.yml`.
+2. Verify `scripts/source-lock.json` syntax and confirm `fdroid/dev.gfire.termvr.yml` uses `prebuild:` external toolchain staging and `build:` offline native compilation without unregistered `srclibs`.
 3. Run `scripts/provision-toolchains-and-vendor.sh` to populate verified Go, Zig, and upstream source caches.
 4. Run `scripts/build-native-deps.sh` with network disabled (`unshare -r -n`) for `arm64-v8a` and `x86_64`.
 5. Assemble the unsigned release APKs with `./gradlew :app:assembleRelease -PtermvrAbis=arm64-v8a`.

@@ -277,6 +277,7 @@ def update_versions_toml(toml_text: str, gvx_tag: str, gvx_commit: str, version_
 
 
 def update_fdroid_yml(yml_text: str, gvx_commit: str, version_name: str, version_code: int) -> str:
+    del gvx_commit
     yml_text = replace_exact_once(
         yml_text, r"^(\s*-\s*versionName:\s*).*$", rf"\g<1>{version_name}", "fdroid Builds versionName"
     )
@@ -285,9 +286,6 @@ def update_fdroid_yml(yml_text: str, gvx_commit: str, version_name: str, version
     )
     yml_text = replace_exact_once(
         yml_text, r"^(\s*commit:\s*).*$", rf"\g<1>v{version_name}", "fdroid Builds commit"
-    )
-    yml_text = replace_exact_once(
-        yml_text, r"^(\s*-\s*gvx@)[0-9a-fA-F]{40}\s*$", rf"\g<1>{gvx_commit}", "fdroid srclibs gvx"
     )
     yml_text = replace_exact_once(
         yml_text,
@@ -445,11 +443,14 @@ def run_check(repo_root: Path, expect_tag: str | None) -> None:
         raise SyncError("app/build.gradle.kts contains hardcoded string versionName")
 
     fdroid_text = fdroid_path.read_text(encoding="utf-8")
+    if re.search(r"^\s*srclibs:\s*$", fdroid_text, re.M):
+        raise SyncError("fdroid/dev.gfire.termvr.yml must not declare unregistered srclibs")
     fdroid_checks = [
         (rf"^\s*-\s*versionName:\s*{re.escape(version_name)}\s*$", f"versionName: {version_name}"),
         (rf"^\s*versionCode:\s*{version_code}\s*$", f"versionCode: {version_code}"),
         (rf"^\s*commit:\s*v{re.escape(version_name)}\s*$", f"commit: v{version_name}"),
-        (rf"^\s*-\s*gvx@{re.escape(gvx_commit)}\s*$", f"gvx@{gvx_commit}"),
+        (r"^\s*prebuild:\s*\n\s*-\s*\.\./scripts/provision-toolchains-and-vendor\.sh\b.*--all-sources\b.*--toolchains-dir\s+/tmp/", "prebuild external toolchain provisioning"),
+        (r"^\s*build:\s*\n\s*-\s*\.\./scripts/build-native-deps\.sh\b.*--abi\s+arm64-v8a\b.*--toolchains-dir\s+/tmp/", "build-stage offline native compilation"),
         (rf"^\s*UpdateCheckMode:\s*{re.escape(EXPECTED_UPDATE_CHECK_MODE)}\s*$", f"UpdateCheckMode: {EXPECTED_UPDATE_CHECK_MODE}"),
         (rf"^\s*CurrentVersion:\s*{re.escape(version_name)}\s*$", f"CurrentVersion: {version_name}"),
         (rf"^\s*CurrentVersionCode:\s*{version_code}\s*$", f"CurrentVersionCode: {version_code}"),

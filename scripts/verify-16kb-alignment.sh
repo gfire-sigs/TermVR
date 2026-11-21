@@ -13,7 +13,7 @@ TARGETS=()
 
 usage() {
   cat <<'EOF'
-Usage: verify-16kb-alignment.sh [--readelf <path>] <so-file|directory|apk-file>...
+Usage: verify-16kb-alignment.sh [--readelf <path>] <so-file|directory|apk-file|aab-file>...
 
 Inspect every ELF .so target with llvm-readelf and fail if zero .so files are
 found, zero LOAD segments are parsed, or any LOAD segment alignment is below
@@ -225,22 +225,22 @@ for target in "${TARGETS[@]}"; do
     fi
   elif [ -f "${target}" ]; then
     case "${target}" in
-      *.apk)
+      *.apk|*.aab)
         APK_INDEX=$((APK_INDEX + 1))
-        APK_OUT="${TMP_EXTRACT_ROOT}/apk-${APK_INDEX}"
+        APK_OUT="${TMP_EXTRACT_ROOT}/archive-${APK_INDEX}"
         mkdir -p "${APK_OUT}"
         if command -v unzip >/dev/null 2>&1; then
-          unzip -q "${target}" 'lib/*.so' -d "${APK_OUT}" || true
+          unzip -q "${target}" 'lib/*.so' '*/lib/*.so' -d "${APK_OUT}" 2>/dev/null || true
         elif command -v python3 >/dev/null 2>&1; then
           python3 - "${target}" "${APK_OUT}" <<'PY'
 import os
 import sys
 import zipfile
 
-apk_path, out_dir = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(apk_path, "r") as archive:
+archive_path, out_dir = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(archive_path, "r") as archive:
     for member in archive.namelist():
-        if member.startswith("lib/") and member.endswith(".so"):
+        if (member.startswith("lib/") or "/lib/" in member) and member.endswith(".so"):
             dest = os.path.realpath(os.path.join(out_dir, member))
             if not dest.startswith(os.path.realpath(out_dir) + os.sep):
                 raise RuntimeError(f"Unsafe zip member: {member}")
@@ -249,7 +249,7 @@ with zipfile.ZipFile(apk_path, "r") as archive:
                 dst.write(src.read())
 PY
         else
-          die "Either unzip or python3 is required to inspect APK files"
+          die "Either unzip or python3 is required to inspect APK/AAB archives"
         fi
 
         APK_SO_COUNT=0
@@ -263,7 +263,7 @@ PY
         done < <(find "${APK_OUT}" -type f -name '*.so' -print0 | LC_ALL=C sort -z)
 
         if [ "${APK_SO_COUNT}" -eq 0 ]; then
-          die "APK contains zero lib/**/*.so native libraries: ${target}"
+          die "Archive contains zero lib/**/*.so native libraries: ${target}"
         fi
         ;;
       *)

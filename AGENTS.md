@@ -96,7 +96,7 @@ Run these deterministic checks from the repository root before creating a commit
 
 1. Verify zero em-dashes, spaced en-dashes, or prose arrows across documentation and metadata files.
 2. Verify zero banned AI-slop words or rhetorical filler across the repository.
-3. Verify that `scripts/source-lock.json` parses cleanly as valid JSON and matches `fdroid/dev.gfire.termvr.yml` commit SHAs.
+3. Verify that `scripts/source-lock.json` parses cleanly as valid JSON and passes `./scripts/sync-gvx-version.sh --check` against `fdroid/dev.gfire.termvr.yml`.
 
 ```bash
 rg -n "\x{2014}| \x{2013} |\x{2192}" README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md docs/ fastlane/ fdroid/

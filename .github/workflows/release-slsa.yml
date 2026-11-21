@@ -33,13 +33,18 @@ jobs:
           python3 -m json.tool scripts/source-lock.json >/dev/null
           python3 - <<'PY'
           import json
+          import re
           from pathlib import Path
 
           lock = json.loads(Path("scripts/source-lock.json").read_text(encoding="utf-8"))
           fdroid_text = Path("fdroid/dev.gfire.termvr.yml").read_text(encoding="utf-8")
           for key, meta in lock["sources"].items():
-              expected = f"{key}@{meta['commit']}"
-              assert expected in fdroid_text, f"Missing {expected} in fdroid/dev.gfire.termvr.yml"
+              assert re.fullmatch(r"[0-9a-f]{40}", meta["commit"]), f"Invalid commit for {key}"
+          assert not re.search(r"^\s*srclibs:\s*$", fdroid_text, re.M), "Unregistered srclibs present"
+          ndk_ver = lock["toolchains"]["android_ndk"]
+          assert re.search(rf"^\s*ndk:\s*{re.escape(ndk_ver)}\s*$", fdroid_text, re.M), (
+              f"NDK version {ndk_ver} mismatch in fdroid/dev.gfire.termvr.yml"
+          )
           PY
 
       - name: Verify gvx version alignment against release tag
@@ -189,10 +194,126 @@ jobs:
           name: release-apk-${{ matrix.abi }}
           path: dist/TermVR-${{ github.ref_name }}-${{ matrix.abi }}.apk
 
+  build-aab:
+    name: Build Universal Release AAB (arm64-v8a + x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install build packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates cmake curl git jq ninja-build python3 uidmap unzip xz-utils
+
+      - name: Verify gvx version alignment against release tag
+        run: ./scripts/sync-gvx-version.sh --check --expect-tag "${GITHUB_REF_NAME}"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: >
+            platforms;android-36
+            build-tools;36.1.0
+            ndk;28.0.13004108
+            cmake;3.22.1
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Provision toolchains and vendor caches
+        run: ./scripts/provision-toolchains-and-vendor.sh
+
+      - name: Build offline native dependencies and release AAB
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare -r -n ./scripts/build-native-deps.sh --abi arm64-v8a,x86_64
+          GRADLE_EXE="$(command -v gradle)"
+          if [ -x ./gradlew ]; then
+            GRADLE_EXE="./gradlew"
+          fi
+          "${GRADLE_EXE}" --no-daemon :app:bundleRelease -PtermvrAbis=arm64-v8a,x86_64
+          BUILT_AAB="$(find app/build/outputs/bundle/release -type f -name '*.aab' | head -n 1)"
+          test -n "${BUILT_AAB}"
+          cp -f "${BUILT_AAB}" "/tmp/unsigned-universal.aab"
+
+      - name: Sign and verify release AAB
+        env:
+          TERMVR_RELEASE_KEYSTORE_B64: ${{ secrets.TERMVR_RELEASE_KEYSTORE_B64 }}
+          TERMVR_RELEASE_KEY_ALIAS: ${{ secrets.TERMVR_RELEASE_KEY_ALIAS }}
+          TERMVR_RELEASE_KEYSTORE_PASS: ${{ secrets.TERMVR_RELEASE_KEYSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF_NAME}"
+          UNSIGNED_AAB="/tmp/unsigned-universal.aab"
+          KEYSTORE_PATH="/tmp/termvr-release-aab.p12"
+          OUT_AAB="dist/TermVR-${TAG_NAME}.aab"
+
+          cleanup() {
+            rm -f "${KEYSTORE_PATH}" "${UNSIGNED_AAB}"
+          }
+          trap cleanup EXIT
+
+          mkdir -p dist
+
+          if [ -n "${TERMVR_RELEASE_KEYSTORE_B64}" ]; then
+            if [ -z "${TERMVR_RELEASE_KEY_ALIAS}" ] || [ -z "${TERMVR_RELEASE_KEYSTORE_PASS}" ]; then
+              echo "TERMVR_RELEASE_KEY_ALIAS and TERMVR_RELEASE_KEYSTORE_PASS must be set when TERMVR_RELEASE_KEYSTORE_B64 is present" >&2
+              exit 1
+            fi
+            printf '%s' "${TERMVR_RELEASE_KEYSTORE_B64}" | base64 --decode > "${KEYSTORE_PATH}"
+            KEY_ALIAS="${TERMVR_RELEASE_KEY_ALIAS}"
+            export SIGNING_PASS="${TERMVR_RELEASE_KEYSTORE_PASS}"
+          else
+            echo "TERMVR_RELEASE_KEYSTORE_B64 is empty; generating ephemeral fallback keystore in /tmp"
+            KEY_ALIAS="termvr-ephemeral"
+            export SIGNING_PASS="termvr-ephemeral-$(date +%s)-$$"
+            keytool -genkeypair -noprompt -storetype PKCS12 \
+              -keystore "${KEYSTORE_PATH}" \
+              -alias "${KEY_ALIAS}" \
+              -keyalg RSA -keysize 4096 -validity 365 \
+              -dname "CN=TermVR Ephemeral Fork Build, OU=Android, O=gfire-sigs" \
+              -storepass "${SIGNING_PASS}" \
+              -keypass "${SIGNING_PASS}"
+          fi
+
+          jarsigner \
+            -keystore "${KEYSTORE_PATH}" \
+            -storetype PKCS12 \
+            -storepass:env SIGNING_PASS \
+            -keypass:env SIGNING_PASS \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -signedjar "${OUT_AAB}" \
+            "${UNSIGNED_AAB}" \
+            "${KEY_ALIAS}"
+
+          jarsigner -verify -strict "${OUT_AAB}"
+
+      - name: Verify 16 KB ELF alignment inside AAB
+        run: |
+          ./scripts/verify-16kb-alignment.sh "dist/TermVR-${GITHUB_REF_NAME}.aab"
+
+      - name: Upload release AAB artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-aab
+          path: dist/TermVR-${{ github.ref_name }}.aab
+
   attest-and-release:
     name: Attest SLSA Provenance and Publish Release
     needs:
       - build-apks
+      - build-aab
     runs-on: ubuntu-24.04
     permissions:
       id-token: write
@@ -214,11 +335,20 @@ jobs:
           name: release-apk-x86_64
           path: release-assets
 
+      - name: Download universal AAB
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-aab
+          path: release-assets
+
       - name: Generate SHA256SUMS
         run: |
           set -euo pipefail
           cd release-assets
-          sha256sum "TermVR-${GITHUB_REF_NAME}-arm64-v8a.apk" "TermVR-${GITHUB_REF_NAME}-x86_64.apk" > SHA256SUMS
+          sha256sum \
+            "TermVR-${GITHUB_REF_NAME}-arm64-v8a.apk" \
+            "TermVR-${GITHUB_REF_NAME}-x86_64.apk" \
+            "TermVR-${GITHUB_REF_NAME}.aab" > SHA256SUMS
           cat SHA256SUMS
 
       - name: Prepare release notes
@@ -255,6 +385,7 @@ jobs:
           subject-path: |
             release-assets/TermVR-${{ github.ref_name }}-arm64-v8a.apk
             release-assets/TermVR-${{ github.ref_name }}-x86_64.apk
+            release-assets/TermVR-${{ github.ref_name }}.aab
             release-assets/SHA256SUMS
 
       - name: Publish GitHub Release
@@ -266,4 +397,5 @@ jobs:
           files: |
             release-assets/TermVR-${{ github.ref_name }}-arm64-v8a.apk
             release-assets/TermVR-${{ github.ref_name }}-x86_64.apk
+            release-assets/TermVR-${{ github.ref_name }}.aab
             release-assets/SHA256SUMS

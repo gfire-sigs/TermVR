@@ -20,18 +20,12 @@ Builds:
     subdir: app
     sudo:
       - apt-get update
-      - apt-get install -y --no-install-recommends ca-certificates cmake curl git jq ninja-build python3 xz-utils
-    srclibs:
-      - gvx@a55326e735cb514d23dab7ec0b461c971298875f
-      - ghostty@108cacb17ed8990840cd14abfce43d8ed8503ca1
-      - freetype@42608f77f20749dd6ddc9e0536788eaad70ea4b5
-      - harfbuzz@3df40d9b98d6b32f0e4288d4ecfbb158ddb3a372
-      - termvr_fonts@e44630df622f2fcb50a066bf43ac00ae9c3b8ebd
+      - apt-get install -y --no-install-recommends ca-certificates cmake curl git jq ninja-build python3 unzip xz-utils
     ndk: 28.0.13004108
-    init:
-      - ../scripts/provision-toolchains-and-vendor.sh --gvx $$gvx$$ --ghostty $$ghostty$$
     prebuild:
-      - ../scripts/build-native-deps.sh --gvx $$gvx$$ --ghostty $$ghostty$$ --freetype $$freetype$$ --harfbuzz $$harfbuzz$$ --termvr-fonts $$termvr_fonts$$ --abi arm64-v8a
+      - ../scripts/provision-toolchains-and-vendor.sh --all-sources --toolchains-dir /tmp/termvr-toolchains
+    build:
+      - ../scripts/build-native-deps.sh --abi arm64-v8a --toolchains-dir /tmp/termvr-toolchains
     gradleProps:
       - termvrAbis=arm64-v8a
     gradle:

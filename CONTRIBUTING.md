@@ -22,7 +22,7 @@ Follow the Elephant-Goldfish Model (`EGM`) before implementing cross-module feat
 | Artifact | Pinned Source Repository | Toolchain | F-Droid Compliance Rule |
 | :--- | :--- | :--- | :--- |
 | `librungv.so` | `gfire-sigs/gvx` | Go `1.27.4` (+ NDK on `x86_64`) | Build from source with `-trimpath`, `-buildid=`, and `PT_LOAD` alignment `>= 16 KB`. |
-| `libghostty-vt.a` | `ghostty-org/ghostty` | Zig `0.17.0` | Build offline via `zig build -Demit-lib-vt --system` from pinned `srclibs` checkout. |
+| `libghostty-vt.a` | `ghostty-org/ghostty` | Zig `0.17.0` | Build offline via `zig build -Demit-lib-vt --system` from the pinned `source-lock.json` checkout. |
 | `libtermvr_vt.so` | `TermVR` + `freetype` + `harfbuzz` | Android NDK `r28`, CMake `3.22.1` | Link with `-Wl,-z,max-page-size=16384` and `-Wl,--build-id=none`. |
 | `termvr-agent` | `TermVR` (`guest/termvr-agent`) | Go `1.27.4` (`CGO_ENABLED=0`) | Build static Linux ELF64 (`arm64` and `amd64`) with zero external Go modules. |
 | `TermVR.apk` | `TermVR` (`:app`) | Android Gradle Plugin (`AGP`) `8.9.1`, JDK `17` | Set `dependenciesInfo.includeInApk = false` and enable deterministic R8 shrinking. |

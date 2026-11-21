@@ -53,14 +53,16 @@ jobs:
 
           for key, meta in lock["sources"].items():
               commit = meta["commit"]
-              expected = f"{key}@{commit}"
-              assert expected in fdroid_text, f"Missing {expected} in fdroid/dev.gfire.termvr.yml"
+              assert re.fullmatch(r"[0-9a-f]{40}", commit), f"Invalid 40-hex commit for {key}: {commit}"
 
+          assert not re.search(r"^\s*srclibs:\s*$", fdroid_text, re.M), (
+              "fdroid/dev.gfire.termvr.yml must not declare unregistered srclibs"
+          )
           ndk_ver = lock["toolchains"]["android_ndk"]
           assert re.search(rf"^\s*ndk:\s*{re.escape(ndk_ver)}\s*$", fdroid_text, re.M), (
               f"NDK version {ndk_ver} mismatch in fdroid/dev.gfire.termvr.yml"
           )
-          print("Lockfile and F-Droid metadata match across all 6 sources and NDK.")
+          print("Lockfile and F-Droid metadata verified across all 5 sources and NDK.")
           PY
 
       - name: Verify gvx version alignment
@@ -162,23 +164,26 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare -r -n ./scripts/build-native-deps.sh --abi arm64-v8a,x86_64
 
-      - name: Run unit tests, lint, and assemble APKs
+      - name: Run unit tests, lint, and assemble APKs and AAB
         run: |
           set -euo pipefail
           GRADLE_EXE="$(command -v gradle)"
           if [ -x ./gradlew ]; then
             GRADLE_EXE="./gradlew"
           fi
-          "${GRADLE_EXE}" --no-daemon :core:model:test testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease -PtermvrAbis=arm64-v8a,x86_64
+          "${GRADLE_EXE}" --no-daemon :core:model:test testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease :app:bundleRelease -PtermvrAbis=arm64-v8a,x86_64
+          test -n "$(find app/build/outputs/bundle/release -type f -name '*.aab' | head -n 1)"
 
-      - name: Verify 16 KB ELF segment alignment on packaged APKs
+      - name: Verify 16 KB ELF segment alignment on packaged APKs and AAB
         run: |
           set -euo pipefail
           DEBUG_APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -n 1)"
           RELEASE_APK="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
+          RELEASE_AAB="$(find app/build/outputs/bundle/release -type f -name '*.aab' | head -n 1)"
           test -n "${DEBUG_APK}"
           test -n "${RELEASE_APK}"
-          ./scripts/verify-16kb-alignment.sh "${DEBUG_APK}" "${RELEASE_APK}"
+          test -n "${RELEASE_AAB}"
+          ./scripts/verify-16kb-alignment.sh "${DEBUG_APK}" "${RELEASE_APK}" "${RELEASE_AAB}"
 
       - name: Upload debug APK for emulator smoke check
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

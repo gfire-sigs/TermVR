@@ -94,7 +94,8 @@ Download the APK for your device architecture from [GitHub Releases](https://git
 | :--- | :--- | :--- |
 | `TermVR-<tag>-arm64-v8a.apk` | 64-bit ARM phones, foldables, and tablets | Supports 4 KB and 16 KB Android kernels. |
 | `TermVR-<tag>-x86_64.apk` | 64-bit x86 tablets, Chromebooks, and emulators | Matches `linux/amd64` container images. |
-| `SHA256SUMS` | All downloads | Contains SHA-256 digests for the release APKs. |
+| `TermVR-<tag>.aab` | Android App Bundle (`arm64-v8a` and `x86_64`) | Signed bundle for App Bundle distribution stores. |
+| `SHA256SUMS` | All downloads | Contains SHA-256 digests for all release artifacts. |
 
 1. Install the APK matching your device architecture.
 2. Open `TermVR` and tap `New Container`.
@@ -117,6 +118,6 @@ gradle :app:assembleRelease -PtermvrAbis=arm64-v8a,x86_64
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for offline F-Droid build rules and [`docs/designs/SITEMAP.md`](docs/designs/SITEMAP.md) for architecture documents.
 
-## License
+## License and privacy
 
-`TermVR` uses the [Apache License, Version 2.0](LICENSE). The bundled `TermVR Mono NF` font uses the SIL Open Font License 1.1 (`OFL-1.1`). You can read full third-party license notices offline under `Settings > Licenses`.
+`TermVR` uses the [Apache License, Version 2.0](LICENSE). The bundled `TermVR Mono NF` font uses the SIL Open Font License 1.1 (`OFL-1.1`). Read [`PRIVACY.md`](PRIVACY.md) for the privacy policy, or open `Settings > Licenses` offline for full third-party notices.
