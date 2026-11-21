@@ -111,7 +111,7 @@ Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/rel
 | `TermVR-<tag>.aab` | Android App Bundle (`arm64-v8a` and `x86_64`) | Signed universal App Bundle archive. |
 | `SHA256SUMS` | All downloads | Contains SHA-256 digests for all release artifacts. |
 
-Add this URL in F-Droid, Droid-ify, or Neo Store to track signed `arm64-v8a` updates automatically. We plan to submit `TermVR` to the official F-Droid repository after two months:
+Add this URL in F-Droid, Droid-ify, or Neo Store to track signed `arm64-v8a` updates automatically:
 
 ```text
 https://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3
