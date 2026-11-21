@@ -175,7 +175,13 @@ if [ -n "${CUSTOM_DOMAIN}" ]; then
   printf '%s\n' "${CUSTOM_DOMAIN}" > "${SITE_DIR}/CNAME"
 fi
 
-cat > "${SITE_DIR}/index.html" <<EOF
+FULL_REPO_URL="${REPO_URL}?fingerprint=${REPO_FINGERPRINT}"
+FDROIDREPOS_URL="fdroidrepos://${REPO_URL#https://}?fingerprint=${REPO_FINGERPRINT}"
+
+write_landing_page() {
+  local target_file="$1"
+  local qr_src="$2"
+  cat > "${target_file}" <<EOF
 <!doctype html>
 <html lang="en">
 <head>
@@ -183,28 +189,76 @@ cat > "${SITE_DIR}/index.html" <<EOF
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TermVR Official F-Droid Repository</title>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 3rem auto; padding: 0 1.25rem; line-height: 1.6; color: #161b22; }
-    code, pre { background: #f3f4f6; border-radius: 6px; padding: 0.2rem 0.4rem; word-break: break-all; }
-    pre { padding: 1rem; overflow-x: auto; }
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 2.5rem auto; padding: 0 1.25rem; line-height: 1.6; color: #161b22; background: #ffffff; }
+    code, pre { background: #f3f4f6; border-radius: 8px; padding: 0.2rem 0.45rem; word-break: break-all; }
+    pre { padding: 0.9rem 1rem; overflow-x: auto; margin: 0.5rem 0 0.75rem; }
     a { color: #d9531e; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.65rem; margin: 1.25rem 0; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.65rem 1.05rem; border-radius: 8px; font-weight: 600; font-size: 0.95rem; text-decoration: none; border: 1px solid #d0d7de; background: #f6f8fa; color: #161b22; cursor: pointer; }
+    .btn-primary { background: #1976d2; border-color: #1976d2; color: #ffffff; }
+    .btn-primary:hover { background: #1565c0; }
+    .btn:hover { background: #eaeef2; }
+    .qr-wrap { margin: 1.25rem 0; padding: 1rem; border: 1px solid #d0d7de; border-radius: 12px; display: inline-block; background: #ffffff; }
+    .qr-wrap img { display: block; width: 200px; height: 200px; image-rendering: pixelated; }
+    .status { font-size: 0.85rem; color: #1a7f37; font-weight: 600; min-height: 1.2em; }
   </style>
 </head>
 <body>
   <h1>TermVR Official F-Droid Repository</h1>
   <p>Add this repository in F-Droid, Droid-ify, or Neo Store to receive signed, reproducible <code>arm64-v8a</code> releases of TermVR automatically.</p>
+
+  <div class="actions">
+    <a class="btn btn-primary" href="${FDROIDREPOS_URL}">Open in F-Droid / Droid-ify / Neo Store</a>
+    <button class="btn" type="button" onclick="copyText('repo-url', 'repo-status')">Copy Repo URL</button>
+    <button class="btn" type="button" onclick="copyText('repo-fp', 'fp-status')">Copy Fingerprint</button>
+  </div>
+
+  <div class="qr-wrap">
+    <img src="${qr_src}" alt="QR code for TermVR F-Droid repository">
+  </div>
+
   <h2>Repository URL</h2>
-  <pre>${REPO_URL}?fingerprint=${REPO_FINGERPRINT}</pre>
+  <pre id="repo-url">${FULL_REPO_URL}</pre>
+  <div id="repo-status" class="status" role="status" aria-live="polite"></div>
+
   <h2>SHA-256 Fingerprint</h2>
-  <pre>${REPO_FINGERPRINT}</pre>
+  <pre id="repo-fp">${REPO_FINGERPRINT}</pre>
+  <div id="fp-status" class="status" role="status" aria-live="polite"></div>
+
   <h2>Other install channels</h2>
   <ul>
     <li><a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR">Install with Obtainium (GitHub Releases)</a></li>
     <li><a href="https://github.com/gfire-sigs/TermVR/releases/latest">Download APK / APKS / AAB from GitHub Releases</a></li>
     <li><a href="https://github.com/gfire-sigs/TermVR/attestations">Verify SLSA Build Provenance Attestations</a></li>
   </ul>
+
+  <script>
+    async function copyText(elId, statusId) {
+      const text = document.getElementById(elId).textContent.trim();
+      const status = document.getElementById(statusId);
+      try {
+        await navigator.clipboard.writeText(text);
+        status.textContent = 'Copied to clipboard.';
+      } catch (err) {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById(elId));
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+        status.textContent = 'Copied to clipboard.';
+      }
+      setTimeout(() => { status.textContent = ''; }, 2500);
+    }
+  </script>
 </body>
 </html>
 EOF
+}
+
+write_landing_page "${SITE_DIR}/index.html" "fdroid/repo/index.png"
+write_landing_page "${SITE_DIR}/fdroid/repo/index.html" "index.png"
 
 chmod -R a+rX "${SITE_DIR}"
 printf '[fdroid-repo] Built F-Droid repo at %s (fingerprint: %s)\n' "${SITE_DIR}/fdroid/repo" "${REPO_FINGERPRINT}"

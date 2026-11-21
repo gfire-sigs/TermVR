@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://termvr.gfire.dev/">
+  <a href="https://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3">
     <img src="https://badge-api.gosuda.org/badge.svg?label=F-DROID&amp;message=REPO&amp;style=old-school&amp;size=200&amp;labelColor=24292f&amp;color=1976d2&amp;labelTextColor=ffffff&amp;textColor=ffffff" alt="F-Droid Repo">
   </a>
   <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR">
@@ -101,7 +101,7 @@ Check **Persistent root (`ext4lite`)** when creating a container if you want `ap
 
 ## Install
 
-Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest), [Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR), or the [self-hosted F-Droid repository](https://termvr.gfire.dev/). Verify downloads against `SHA256SUMS` and [SLSA build attestations](https://github.com/gfire-sigs/TermVR/attestations). Each `arm64-v8a` APK works on both 4 KB and 16 KB page-size kernels on Android 12 and newer.
+Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest), [Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR), or the [self-hosted F-Droid repository](https://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3) ([QR code and copy page](https://termvr.gfire.dev/)). Verify downloads against `SHA256SUMS` and [SLSA build attestations](https://github.com/gfire-sigs/TermVR/attestations). Each `arm64-v8a` APK works on both 4 KB and 16 KB page-size kernels on Android 12 and newer.
 
 | Release file | Target devices | Notes |
 | :--- | :--- | :--- |
