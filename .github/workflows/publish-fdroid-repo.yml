@@ -54,9 +54,11 @@ jobs:
           FDROID_REPO_KEYSTORE_B64: ${{ secrets.FDROID_REPO_KEYSTORE_B64 }}
           FDROID_REPO_KEY_ALIAS: ${{ secrets.FDROID_REPO_KEY_ALIAS }}
           FDROID_REPO_KEYSTORE_PASS: ${{ secrets.FDROID_REPO_KEYSTORE_PASS }}
+          GITHUB_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.tag }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
+          CUSTOM_DOMAIN: ${{ vars.FDROID_CUSTOM_DOMAIN }}
         run: |
           set -euo pipefail
           umask 077
@@ -82,26 +84,29 @@ jobs:
           printf '%s' "${FDROID_REPO_KEYSTORE_B64}" | base64 --decode > "${KEYSTORE_PATH}"
           chmod 600 "${KEYSTORE_PATH}"
 
-          EXTRA_HEADER="$(git config --local --get http.https://github.com/.extraheader || true)"
-          REPO_GIT_URL="$(git remote get-url origin)"
+          AUTH_B64="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w 0)"
+          AUTH_HEADER="AUTHORIZATION: basic ${AUTH_B64}"
+          REPO_GIT_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 
           # Preserve previous gh-pages APKs if the branch already exists.
-          if [ -n "${EXTRA_HEADER}" ]; then
-            if git -c "http.https://github.com/.extraheader=${EXTRA_HEADER}" ls-remote --exit-code --heads "${REPO_GIT_URL}" gh-pages >/dev/null 2>&1; then
-              git -c "http.https://github.com/.extraheader=${EXTRA_HEADER}" clone --depth 1 --branch gh-pages "${REPO_GIT_URL}" "${PREV_DIR}"
-            fi
-          elif git ls-remote --exit-code --heads "${REPO_GIT_URL}" gh-pages >/dev/null 2>&1; then
-            git clone --depth 1 --branch gh-pages "${REPO_GIT_URL}" "${PREV_DIR}"
+          if git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" ls-remote --exit-code --heads "${REPO_GIT_URL}" gh-pages >/dev/null 2>&1; then
+            git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" clone --depth 1 --branch gh-pages "${REPO_GIT_URL}" "${PREV_DIR}"
           fi
 
-          REPO_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}/fdroid/repo"
+          if [ -n "${CUSTOM_DOMAIN}" ]; then
+            REPO_URL="https://${CUSTOM_DOMAIN}/fdroid/repo"
+          else
+            REPO_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}/fdroid/repo"
+          fi
+
           ./scripts/publish-fdroid-repo.sh \
             --apk "release-assets/TermVR-${TAG_NAME}-arm64-v8a.apk" \
             --site-dir "${SITE_DIR}" \
             --prev-site-dir "${PREV_DIR}" \
             --keystore "${KEYSTORE_PATH}" \
             --key-alias "${FDROID_REPO_KEY_ALIAS}" \
-            --repo-url "${REPO_URL}"
+            --repo-url "${REPO_URL}" \
+            --custom-domain "${CUSTOM_DOMAIN}"
 
           if [ -d "${PREV_DIR}/.git" ]; then
             mv "${PREV_DIR}" "${PUSH_DIR}"
@@ -118,9 +123,5 @@ jobs:
           git -C "${PUSH_DIR}" add -A
           if ! git -C "${PUSH_DIR}" diff --cached --quiet; then
             git -C "${PUSH_DIR}" commit -m "chore(fdroid-repo): publish TermVR ${TAG_NAME}"
-            if [ -n "${EXTRA_HEADER}" ]; then
-              git -C "${PUSH_DIR}" -c "http.https://github.com/.extraheader=${EXTRA_HEADER}" push origin gh-pages
-            else
-              git -C "${PUSH_DIR}" push origin gh-pages
-            fi
+            git -C "${PUSH_DIR}" -c "http.https://github.com/.extraheader=${AUTH_HEADER}" push origin gh-pages
           fi

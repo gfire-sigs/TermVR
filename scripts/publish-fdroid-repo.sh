@@ -13,11 +13,12 @@ PREV_SITE_DIR=""
 KEYSTORE_PATH=""
 KEY_ALIAS=""
 REPO_URL="https://gfire-sigs.github.io/TermVR/fdroid/repo"
+CUSTOM_DOMAIN=""
 ARCHIVE_OLDER="3"
 
 usage() {
   cat <<'EOF'
-Usage: publish-fdroid-repo.sh --apk <path> --site-dir <dir> --keystore <path> --key-alias <alias> [--prev-site-dir <dir>] [--repo-url <url>]
+Usage: publish-fdroid-repo.sh --apk <path> --site-dir <dir> --keystore <path> --key-alias <alias> [--prev-site-dir <dir>] [--repo-url <url>] [--custom-domain <host>]
 
 Reads the keystore password from FDROID_REPO_KEYSTORE_PASS, updates the signed
 F-Droid index (v1 and v2), syncs Fastlane metadata, and writes the static
@@ -54,6 +55,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --repo-url)
       REPO_URL="$2"
+      shift 2
+      ;;
+    --custom-domain)
+      CUSTOM_DOMAIN="$2"
       shift 2
       ;;
     -h|--help)
@@ -166,6 +171,9 @@ if [ -d "${WORK_DIR}/archive" ]; then
   cp -a "${WORK_DIR}/archive" "${SITE_DIR}/fdroid/archive"
 fi
 touch "${SITE_DIR}/.nojekyll"
+if [ -n "${CUSTOM_DOMAIN}" ]; then
+  printf '%s\n' "${CUSTOM_DOMAIN}" > "${SITE_DIR}/CNAME"
+fi
 
 cat > "${SITE_DIR}/index.html" <<EOF
 <!doctype html>
