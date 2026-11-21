@@ -6,7 +6,30 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.17.10002026110900`.
+This section tracks changes staged on `main` after `0.18.10002026111600`.
+
+---
+
+## [0.18.10002026111600]
+
+This release (`versionCode` `301800000`) upgrades the bundled `gvx` runtime to `v0.18.10002026111600` (`a55326e735cb`) and syncs upstream gVisor to `release-20261116.0` (`83282de1f21f`). It adds guest loopback fallback for published ports, fixes an `ext4lite`/`hostfs` rename deadlock, and improves DNS relay and NAT TCP behavior.
+
+### Runtime networking and gVisor release-20261116.0
+
+Published container ports, guest DNS queries, and outbound NAT TCP connections now match Docker Engine behavior more closely inside `gvx`.
+
+- Added guest loopback fallback (`127.0.0.1`) for inbound `-p` port forwarders (`gvx#219`) so host clients reach guest services bound only to `localhost`.
+- Bundled opt-in `--auto-publish` dynamic loopback port publishing in `gvx` `v0.18.10002026111600` (`gvx#218`, `gvx#220`) under host lockdown.
+- Forwarded guest TCP DNS queries directly over upstream TCP, inherited sanitized search domains, answered internal names authoritatively, and returned empty `NOERROR` for `AAAA` without IPv6 (`gvx#208`, `gvx#215`).
+- Classified failed outbound NAT TCP host dials with `ECONNREFUSED`, `ETIMEDOUT`, `EHOSTUNREACH`, and `ENETUNREACH` ICMPv4 replies (`gvx#206`).
+
+### Storage stability and store metadata
+
+`ext4lite` and `hostfs` mounts now prevent mount-propagation deadlocks and avoid unnecessary volume growth during mapped write-backs.
+
+- Fixed a lock-order deadlock between mount propagation and renames on `ext4lite` and `hostfs` using a leaf `ancestryMu` lock (`gvx#209`).
+- Fixed `ext4lite` held-space allocation so mapped write-backs flush and reuse held blocks cleanly without extra sequential volume growth (`gvx#214`, `gvx#216`).
+- Refreshed gallery screenshots and added Fastlane F-Droid phone screenshot metadata.
 
 ---
 

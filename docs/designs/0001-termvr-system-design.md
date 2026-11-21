@@ -359,7 +359,7 @@ This section links authoritative upstream specifications and records post-`v1.0`
 
 Four upstream specifications define the external contracts consumed by `TermVR`.
 
-- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.17.10002026110900`)
+- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.18.10002026111600`)
 - `Ghostty` and `libghostty-vt` C API: `https://github.com/ghostty-org/ghostty` (`vt-1.0.1`)
 - Elephant-Goldfish Design Model (`EGM`): `https://github.com/google/elephant-goldfish-model`
 - F-Droid Reproducible Builds Guide: `https://f-droid.org/docs/Reproducible_Builds/`

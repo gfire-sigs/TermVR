@@ -1,0 +1,5 @@
+TermVR 0.18.10002026111600 (gvx v0.18.10002026111600):
+- Upgraded gvx to v0.18.10002026111600 (gVisor release-20261116.0).
+- Added guest loopback fallback for published ports and opt-in --auto-publish in gvx.
+- Fixed ext4lite/hostfs mount-rename deadlock (#209) and held-space write-backs (#214).
+- Improved DNS TCP forwarding, NAT dial errors, and refreshed F-Droid gallery screenshots.
