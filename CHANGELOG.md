@@ -6,7 +6,31 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.18.10002026111600`.
+This section tracks changes staged on `main` after `0.18.10022026111600`.
+
+---
+
+## [0.18.10022026111600]
+
+This release (`versionCode` `301800020`) upgrades the bundled `gvx` runtime to `v0.18.10022026111600` (`14ac125f1871`). It applies the `GHSA-424c-p5c6-jhhm` security fixes and `arm64`/`amd64` runtime hardening. It also defaults wake lock to indefinite until stopped and adds universal AAB packaging.
+
+### Security hardening and gvx v0.18.10022026111600
+
+The bundled `librungv.so` runtime applies 14 security fixes from `GHSA-424c-p5c6-jhhm` alongside `arm64` and `amd64` instruction decoding hardening from `gvx` `v0.18.10012026111600`.
+
+- Disabled guest-initiated `hostfs` and `erofs` `mount(2)` calls, blocked write opens on read-only `hostfs` mounts after guest remount, and rejected `.gvx_meta` traversal paths (`GHSA-424c-p5c6-jhhm`).
+- Hardened checkpoint bundle opens through `os.Root` regular-file checks, bounded OCI tar path length and sparse hole accounting, and capped VXLAN transmit recursion (`GHSA-424c-p5c6-jhhm`).
+- Rejected aliased extent, journal, and xattr blocks in `ext4lite` and updated `klauspost/compress` to `v1.20.5` to fix `GO-2026-6865` (`GHSA-424c-p5c6-jhhm`).
+- Hardened `arm64` 16 KB store emulation (`DC ZVA`, `CASP`, `STTR`) and `amd64` decoding and patching in `gvx` (`gvx#222`, `gvx#224`).
+
+### Wake lock, F-Droid recipe, and AAB packaging
+
+Container wake locks now stay active until all containers stop, and release pipelines ship a signed universal Android App Bundle alongside APKs.
+
+- Set default wake lock duration to indefinite (`0` minutes) when `POST_NOTIFICATIONS` is granted, falling back to 30 minutes when revoked.
+- Added an `Indefinite` quick action in `TerminalSessionDrawer` and updated wake lock unit tests.
+- Fixed `fdroid/dev.gfire.termvr.yml` to remove unregistered `srclibs` and stage toolchains outside the source tree in `/tmp/termvr-toolchains`.
+- Added `PRIVACY.md`, extended `verify-16kb-alignment.sh` to inspect `.aab` bundles, and packaged signed, SLSA-attested universal `TermVR-v0.18.10022026111600.aab` releases.
 
 ---
 

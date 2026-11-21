@@ -420,7 +420,7 @@ class CheckpointController(
     }
 
     companion object {
-        const val DEFAULT_GVX_VERSION: String = "v0.18.10002026111600"
+        const val DEFAULT_GVX_VERSION: String = "v0.18.10022026111600"
         const val CONNECT_WRITE_TIMEOUT_MS: Int = 2_000
         const val CHECKPOINT_READ_TIMEOUT_MS: Int = 60_000
         const val FREE_SPACE_SAFETY_MULTIPLIER: Double = 1.2

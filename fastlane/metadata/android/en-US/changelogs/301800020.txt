@@ -1,0 +1,4 @@
+TermVR 0.18.10022026111600 (gvx v0.18.10022026111600):
+- Upgraded gvx to v0.18.10022026111600 with GHSA-424c-p5c6-jhhm security fixes and arm64/amd64 hardening.
+- Defaulted wake lock to indefinite until containers stop and added an Indefinite quick action.
+- Fixed F-Droid recipe toolchain staging, added PRIVACY.md, and packaged a signed universal AAB.
