@@ -20,7 +20,7 @@
   &nbsp;&middot;&nbsp;
   <strong><a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR">Install via Obtainium</a></strong>
   &nbsp;&middot;&nbsp;
-  <strong><a href="https://gfire-sigs.github.io/TermVR/">F-Droid Repo</a></strong>
+  <strong><a href="https://termvr.gfire.dev/">F-Droid Repo</a></strong>
   &nbsp;&middot;&nbsp;
   <strong><a href="docs/releases/v0.18.10022026111600.1.md">Release Notes</a></strong>
   &nbsp;&middot;&nbsp;
@@ -92,7 +92,7 @@ Check **Persistent root (`ext4lite`)** when creating a container if you want `ap
 
 ## Install
 
-Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest), [Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR), or the [self-hosted F-Droid repository](https://gfire-sigs.github.io/TermVR/). Verify downloads against `SHA256SUMS` and [SLSA build attestations](https://github.com/gfire-sigs/TermVR/attestations). Each `arm64-v8a` APK works on both 4 KB and 16 KB page-size kernels on Android 12 and newer.
+Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/releases/latest), [Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR), or the [self-hosted F-Droid repository](https://termvr.gfire.dev/). Verify downloads against `SHA256SUMS` and [SLSA build attestations](https://github.com/gfire-sigs/TermVR/attestations). Each `arm64-v8a` APK works on both 4 KB and 16 KB page-size kernels on Android 12 and newer.
 
 | Release file | Target devices | Notes |
 | :--- | :--- | :--- |
@@ -105,7 +105,7 @@ Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/rel
 Add this URL in F-Droid, Droid-ify, or Neo Store to track signed `arm64-v8a` updates automatically:
 
 ```text
-https://gfire-sigs.github.io/TermVR/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3
+https://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3
 ```
 
 Official app signing certificate SHA-256 fingerprint: `23FAEDB73343D4AE06DD849FCF803B39DA420A11B32AF8EF4EA1F63E1A5AC257`.

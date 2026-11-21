@@ -20,7 +20,7 @@ This release (`versionCode` `301800021`) ships `TermVR` with the permanent relea
 
 - Added pinned `bundletool` `1.18.3` to `scripts/source-lock.json` and generated signed, 16 KB verified `TermVR-<tag>.apks` split APK sets alongside APKs and AABs.
 - Extended `scripts/verify-16kb-alignment.sh` to inspect every nested split APK inside `.apks` archives.
-- Added `scripts/publish-fdroid-repo.sh` and the `publish-fdroid-repo` release job to publish signed `arm64-v8a` builds to `https://gfire-sigs.github.io/TermVR/fdroid/repo`.
+- Added `scripts/publish-fdroid-repo.sh` and the `publish-fdroid-repo` release job to publish signed `arm64-v8a` builds to `https://termvr.gfire.dev/fdroid/repo`.
 - Appended direct SLSA v1.0 attestation URLs and `gh attestation verify` commands to published GitHub Release notes, and added Obtainium and F-Droid links to `README.md`.
 - Rotated to the permanent backed-up release signing certificate (`SHA-256: 23FAEDB73343D4AE06DD849FCF803B39DA420A11B32AF8EF4EA1F63E1A5AC257`); users upgrading from earlier pre-store APKs must uninstall and reinstall once.
 
