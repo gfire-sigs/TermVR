@@ -16,12 +16,21 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://github.com/gfire-sigs/TermVR/releases/latest">Download Latest APK</a></strong>
-  &nbsp;&middot;&nbsp;
-  <strong><a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR">Install via Obtainium</a></strong>
-  &nbsp;&middot;&nbsp;
-  <strong><a href="https://termvr.gfire.dev/">F-Droid Repo</a></strong>
-  &nbsp;&middot;&nbsp;
+  <a href="https://termvr.gfire.dev/">
+    <img src="https://badge-api.gosuda.org/badge.svg?label=F-DROID&amp;message=REPO&amp;style=old-school&amp;size=200&amp;labelColor=24292f&amp;color=1976d2&amp;labelTextColor=ffffff&amp;textColor=ffffff" alt="F-Droid Repo">
+  </a>
+  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR">
+    <img src="https://badge-api.gosuda.org/badge.svg?label=OBTAINIUM&amp;message=INSTALL&amp;style=old-school&amp;size=200&amp;labelColor=24292f&amp;color=7c4dff&amp;labelTextColor=ffffff&amp;textColor=ffffff" alt="Install via Obtainium">
+  </a>
+  <a href="https://github.com/gfire-sigs/TermVR/releases/latest">
+    <img src="https://badge-api.gosuda.org/badge.svg?label=GITHUB&amp;message=RELEASES&amp;style=old-school&amp;size=200&amp;labelColor=24292f&amp;color=f06e1e&amp;labelTextColor=ffffff&amp;textColor=ffffff" alt="GitHub Releases">
+  </a>
+  <a href="https://github.com/gfire-sigs/TermVR/attestations">
+    <img src="https://badge-api.gosuda.org/badge.svg?label=SLSA+L2&amp;message=ATTESTED&amp;style=old-school&amp;size=200&amp;labelColor=24292f&amp;color=1dc99a&amp;labelTextColor=ffffff&amp;textColor=161b22" alt="SLSA L2 Attested">
+  </a>
+</p>
+
+<p align="center">
   <strong><a href="docs/releases/v0.18.10022026111600.1.md">Release Notes</a></strong>
   &nbsp;&middot;&nbsp;
   <strong><a href="https://github.com/gfire-sigs/TermVR-Fonts">TermVR Mono NF</a></strong>
@@ -102,7 +111,7 @@ Install `TermVR` from [GitHub Releases](https://github.com/gfire-sigs/TermVR/rel
 | `TermVR-<tag>.aab` | Android App Bundle (`arm64-v8a` and `x86_64`) | Signed universal App Bundle archive. |
 | `SHA256SUMS` | All downloads | Contains SHA-256 digests for all release artifacts. |
 
-Add this URL in F-Droid, Droid-ify, or Neo Store to track signed `arm64-v8a` updates automatically:
+Add this URL in F-Droid, Droid-ify, or Neo Store to track signed `arm64-v8a` updates automatically. We plan to submit `TermVR` to the official F-Droid repository after two months:
 
 ```text
 https://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3
