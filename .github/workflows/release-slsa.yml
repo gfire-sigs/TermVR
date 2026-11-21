@@ -297,7 +297,13 @@ jobs:
             "${UNSIGNED_AAB}" \
             "${KEY_ALIAS}"
 
-          jarsigner -verify -strict "${OUT_AAB}"
+          VERIFY_OUT="$(jarsigner -verify -verbose:summary \
+            -keystore "${KEYSTORE_PATH}" \
+            -storetype PKCS12 \
+            -storepass:env SIGNING_PASS \
+            "${OUT_AAB}")"
+          printf '%s\n' "${VERIFY_OUT}"
+          printf '%s\n' "${VERIFY_OUT}" | grep -Fq "jar verified."
 
       - name: Verify 16 KB ELF alignment inside AAB
         run: |
