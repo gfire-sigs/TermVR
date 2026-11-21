@@ -1,56 +1,72 @@
-<!-- auto-generated - fdroid index updates will overwrite this file -->
-<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-<html>
-  <head>
-    <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
-    <meta content="width=device-width; initial-scale=1.0; minimum-scale=0.5; maximum-scale=2.0; user-scalable=1;" name="viewport">
-    <title>
-   TermVR Official F-Droid Repo
-    </title>
-    <base href="index.html">
-    <link href="index.css" rel="stylesheet" type="text/css">
-    <link href="icons/fdroid-icon.png" rel="icon" type="image/png">
-    <link href="icons/fdroid-icon.png" rel="shortcut icon" type="image/png">
-    <meta content="TermVR Official F-Droid Repo" property="og:site_name">
-    <meta content="TermVR Official F-Droid Repo" property="og:title">
-    <meta content property="og:determiner">
-    <meta content="Official self-hosted F-Droid repository for TermVR, an unrooted Android 12+ Linux container runtime powered by gvx and libghostty-vt." property="og:description">
-    <meta content="index,nofollow" name="robots">
-  </head>
-  <body>
-    <h2>
-      TermVR Official F-Droid Repo
-    </h2>
-    <div id="intro">
-      <p style="margin-bottom:.2em;">
-        <span style="float:right;width:100px;margin-left:.5em;">
-          <a href="index.png" title="QR: test">
-            <img alt="QR: test" src="index.png" width="100">
-          </a>
-        </span>
-        Official self-hosted F-Droid repository for TermVR, an unrooted Android 12+ Linux container runtime powered by gvx and libghostty-vt.
-        <br>
-        <br>
-        Currently it serves
-        <kbd>
-          1
-        </kbd>
-        apps. To add it to your F-Droid app, scan the QR code (click it to enlarge) or use this link:
-      </p>
-      <p class="center" style="margin-top:.5em">
-        <a href="https://fdroid.link/#https://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3">
-          <code style="color:#000000;font-weight:bold;">
-            https://termvr.gfire.dev/fdroid/repo
-          </code>
-        </a>
-      </p>
-      <p>
-        If you would like to manually verify the fingerprint (SHA-256) of the repository signing key, here it is:
-        <br>
-        <blockcode style="color:#000000;font-weight:bold;">
-          74 B6 DE 16 E1 5A 0F A8 33 0D 60 13 90 2E 5F 87 34 8E 69 EA 49 E1 9F EF 39 FF 7B 52 CD 91 20 D3
-        </blockcode>
-      </p>
-    </div>
-  </body>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TermVR Official F-Droid Repository</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 2.5rem auto; padding: 0 1.25rem; line-height: 1.6; color: #161b22; background: #ffffff; }
+    code, pre { background: #f3f4f6; border-radius: 8px; padding: 0.2rem 0.45rem; word-break: break-all; }
+    pre { padding: 0.9rem 1rem; overflow-x: auto; margin: 0.5rem 0 0.75rem; }
+    a { color: #d9531e; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.65rem; margin: 1.25rem 0; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.65rem 1.05rem; border-radius: 8px; font-weight: 600; font-size: 0.95rem; text-decoration: none; border: 1px solid #d0d7de; background: #f6f8fa; color: #161b22; cursor: pointer; }
+    .btn-primary { background: #1976d2; border-color: #1976d2; color: #ffffff; }
+    .btn-primary:hover { background: #1565c0; }
+    .btn:hover { background: #eaeef2; }
+    .qr-wrap { margin: 1.25rem 0; padding: 1rem; border: 1px solid #d0d7de; border-radius: 12px; display: inline-block; background: #ffffff; }
+    .qr-wrap img { display: block; width: 200px; height: 200px; image-rendering: pixelated; }
+    .status { font-size: 0.85rem; color: #1a7f37; font-weight: 600; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <h1>TermVR Official F-Droid Repository</h1>
+  <p>Add this repository in F-Droid, Droid-ify, or Neo Store to receive signed, reproducible <code>arm64-v8a</code> releases of TermVR automatically.</p>
+
+  <div class="actions">
+    <a class="btn btn-primary" href="fdroidrepos://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3">Open in F-Droid / Droid-ify / Neo Store</a>
+    <button class="btn" type="button" onclick="copyText('repo-url', 'repo-status')">Copy Repo URL</button>
+    <button class="btn" type="button" onclick="copyText('repo-fp', 'fp-status')">Copy Fingerprint</button>
+  </div>
+
+  <div class="qr-wrap">
+    <img src="index.png" alt="QR code for TermVR F-Droid repository">
+  </div>
+
+  <h2>Repository URL</h2>
+  <pre id="repo-url">https://termvr.gfire.dev/fdroid/repo?fingerprint=74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3</pre>
+  <div id="repo-status" class="status" role="status" aria-live="polite"></div>
+
+  <h2>SHA-256 Fingerprint</h2>
+  <pre id="repo-fp">74B6DE16E15A0FA8330D6013902E5F87348E69EA49E19FEF39FF7B52CD9120D3</pre>
+  <div id="fp-status" class="status" role="status" aria-live="polite"></div>
+
+  <h2>Other install channels</h2>
+  <ul>
+    <li><a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/gfire-sigs/TermVR">Install with Obtainium (GitHub Releases)</a></li>
+    <li><a href="https://github.com/gfire-sigs/TermVR/releases/latest">Download APK / APKS / AAB from GitHub Releases</a></li>
+    <li><a href="https://github.com/gfire-sigs/TermVR/attestations">Verify SLSA Build Provenance Attestations</a></li>
+  </ul>
+
+  <script>
+    async function copyText(elId, statusId) {
+      const text = document.getElementById(elId).textContent.trim();
+      const status = document.getElementById(statusId);
+      try {
+        await navigator.clipboard.writeText(text);
+        status.textContent = 'Copied to clipboard.';
+      } catch (err) {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById(elId));
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+        status.textContent = 'Copied to clipboard.';
+      }
+      setTimeout(() => { status.textContent = ''; }, 2500);
+    }
+  </script>
+</body>
 </html>
