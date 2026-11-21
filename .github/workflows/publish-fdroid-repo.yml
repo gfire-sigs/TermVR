@@ -89,8 +89,9 @@ jobs:
           REPO_GIT_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 
           # Preserve previous gh-pages APKs if the branch already exists.
-          if git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" ls-remote --exit-code --heads "${REPO_GIT_URL}" gh-pages >/dev/null 2>&1; then
-            git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" clone --depth 1 --branch gh-pages "${REPO_GIT_URL}" "${PREV_DIR}"
+          # Run outside the checked-out workspace so actions/checkout's extraheader is not duplicated.
+          if git -C /tmp -c "http.https://github.com/.extraheader=${AUTH_HEADER}" ls-remote --exit-code --heads "${REPO_GIT_URL}" gh-pages >/dev/null 2>&1; then
+            git -C /tmp -c "http.https://github.com/.extraheader=${AUTH_HEADER}" clone --depth 1 --branch gh-pages "${REPO_GIT_URL}" "${PREV_DIR}"
           fi
 
           if [ -n "${CUSTOM_DOMAIN}" ]; then
