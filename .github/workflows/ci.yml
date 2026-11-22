@@ -75,6 +75,7 @@ jobs:
             scripts/ci-emulator-smoke.sh \
             scripts/provision-toolchains-and-vendor.sh \
             scripts/build-native-deps.sh \
+            scripts/publish-fdroid-repo.sh \
             scripts/sync-gvx-version.sh \
             scripts/verify-16kb-alignment.sh \
             scripts/verify-reproducible-apk.sh

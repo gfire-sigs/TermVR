@@ -65,7 +65,7 @@ jobs:
 
       - name: Open or update pull request when gvx version changed
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "$(git status --porcelain)" ]; then
@@ -107,5 +107,12 @@ jobs:
           if [ -n "${EXISTING_PR}" ]; then
             gh pr edit "${EXISTING_PR}" --title "${PR_TITLE}" --body "${PR_BODY}"
           else
-            gh pr create --base main --head "${BRANCH_NAME}" --title "${PR_TITLE}" --body "${PR_BODY}"
+            if ! pr_err="$(gh pr create --base main --head "${BRANCH_NAME}" --title "${PR_TITLE}" --body "${PR_BODY}" 2>&1)"; then
+              if printf '%s' "${pr_err}" | grep -Fq "not permitted to create or approve pull requests"; then
+                echo "::warning::Pushed ${BRANCH_NAME} for ${GVX_TAG}, but repository Actions settings block PR creation. Configure SYNC_GH_PAT or open https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH_NAME}"
+                exit 0
+              fi
+              printf '%s\n' "${pr_err}" >&2
+              exit 1
+            fi
           fi
