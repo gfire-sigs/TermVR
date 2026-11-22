@@ -674,4 +674,51 @@ class GvxCommandBuilderTest {
         val customWsMounts = customArgs.filter { it.endsWith(":/workspace:rw") || it.endsWith(":/workspace:ro") }
         assertEquals(listOf("custom-ext4-ws:/workspace:rw"), customWsMounts)
     }
+
+    @Test
+    fun `emits gvx-ctrl v2 dynamic-ports, allow-volume-attach, pids-limit, auto-publish, and port remove specs`() {
+        val builder = newBuilder()
+        val profile = SandboxProfile(
+            id = "ctrl-box",
+            displayName = "Ctrl Box",
+            imageRef = "docker.io/library/debian:trixie-slim",
+            pidsLimit = 256,
+            network = NetworkModeConfig(
+                backend = NetBackend.NAT,
+                autoPublishPorts = true,
+            ),
+        )
+        val ctl = builder.controlSocketFile(profile.id)
+        val runArgs = builder.buildRunArgs(profile, 5353, ctl)
+        val restoreArgs = builder.buildRestoreArgs(profile, File(tempDir, "slot-a"), 5353, ctl)
+
+        for (args in listOf(runArgs, restoreArgs)) {
+            assertTrue(args.contains("--allow-volume-attach"))
+            assertTrue(args.contains("--dynamic-ports"))
+            assertTrue(args.contains("--auto-publish"))
+            val pidsIdx = args.indexOf("--pids-limit")
+            assertTrue(pidsIdx >= 0)
+            assertEquals("256", args[pidsIdx + 1])
+        }
+
+        val unlimitedArgs = builder.buildRunArgs(profile.copy(pidsLimit = 0, network = NetworkModeConfig(backend = NetBackend.NAT, autoPublishPorts = false)), 5353, ctl)
+        assertFalse(unlimitedArgs.contains("--pids-limit"))
+        assertFalse(unlimitedArgs.contains("--auto-publish"))
+        assertTrue(unlimitedArgs.contains("--dynamic-ports"))
+
+        assertEquals(
+            File(builder.gvxStoreDir, "gvx/volumes/work-vol.ext4"),
+            builder.volumeImageFile("work-vol"),
+        )
+        val tcpRule = PortForwardRule("r1", ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 8080, 8080, 80, 80)
+        assertEquals("127.0.0.1:8080:80/tcp", builder.formatPortRemoveSpec("ctrl-box", tcpRule))
+        val ephemRule = PortForwardRule("r2", ForwardProtocol.UDP, ListenHost.LOOPBACK_V6, 0, 0, 5300, 5300)
+        assertEquals("[::1]:45123:5300/udp", builder.formatPortRemoveSpec("ctrl-box", ephemRule, effectiveHostPort = 45123))
+        assertEquals(listOf("[::1]::5300/udp"), builder.formatPortRemoveSpecs("ctrl-box", ephemRule, effectiveHostPort = null))
+        val rangeRule = PortForwardRule("r3", ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 7000, 7002, 8000, 8002)
+        assertEquals(
+            listOf("127.0.0.1:7000:8000/tcp", "127.0.0.1:7001:8001/tcp", "127.0.0.1:7002:8002/tcp"),
+            builder.formatPortRemoveSpecs("ctrl-box", rangeRule),
+        )
+    }
 }

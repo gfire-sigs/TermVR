@@ -319,7 +319,7 @@ class NetworkViewModelResilienceTest {
             val vm = NetworkViewModel(repo, gateway, scope = vmScope)
             advanceUntilIdle()
 
-            vm.addPortRule(ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 9090, 90)
+            vm.addPortRule(ForwardProtocol.TCP, ListenHost.LAN_ALL_V4, 9090, 90)
             advanceUntilIdle()
             assertNotNull(vm.uiState.value.stagedPortApply)
 
@@ -331,6 +331,18 @@ class NetworkViewModelResilienceTest {
             assertTrue(err!!.contains("9090"))
             val persistedAfterFailure = repo.getProfile("app-srv")!!.portForwards
             assertEquals(listOf(existingRule), persistedAfterFailure)
+
+            // Live loopback port add failure keeps persisted rules intact without staging restart.
+            gateway.liveAddFailure = PortConflictException(
+                conflictingPort = 9091,
+                protocol = ForwardProtocol.TCP,
+                message = "Host port 9091 is already in use.",
+            )
+            vm.addPortRule(ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 9091, 91)
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.errorMessage.orEmpty().contains("9091"))
+            assertNull(vm.uiState.value.stagedPortApply)
+            assertEquals(listOf(existingRule), repo.getProfile("app-srv")!!.portForwards)
 
             vmScope.cancel()
         }
@@ -457,6 +469,16 @@ private class StubNetworkGateway(private val rootDir: File) : SandboxRuntimeGate
     override val dnsProxyPort: Int = 5353
 
     var applyFailure: Exception? = null
+    var liveAddFailure: Exception? = null
+
+    override suspend fun addPortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+        replace: Boolean,
+    ): List<PublishedPortMapping> {
+        liveAddFailure?.let { throw it }
+        return listOf(PublishedPortMapping(rule.listenHost.wireLiteral, rule.hostPortStart, rule.guestPortStart, rule.protocol))
+    }
 
     override fun refreshHostReadiness() = Unit
     override fun setNotificationsPermissionGranted(granted: Boolean) = Unit

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -141,10 +142,11 @@ fun HomeScreen(
             }
         }
 
-        if (state.runningCount >= 1) {
+        if (state.liveInMemoryCount >= 1) {
             item {
                 RunningStatusStrip(
                     runningCount = state.runningCount,
+                    pausedCount = state.pausedCount,
                     liveChildProcessCount = state.hostReadiness.liveChildProcessCount,
                     nearProcessLimit = state.hostReadiness.exceedsRecommendedProcessBudget ||
                         state.exceedsRecommendedSandboxCount,
@@ -193,7 +195,9 @@ fun HomeScreen(
                     busy = profile.id in state.busyProfileIds,
                     onOpenOrStart = { viewModel.startOrOpenProfile(profile, onOpenTerminal = onOpenTerminal) },
                     onOpenNewShell = { viewModel.openNewShellForProfile(profile, onOpenTerminal) },
+                    onPause = { viewModel.pauseProfile(profile.id) },
                     onFreeze = { viewModel.freezeProfile(profile.id) },
+                    onInspect = { viewModel.openInspector(profile.id) },
                     onStop = { viewModel.stopProfile(profile.id) },
                     onEdit = {
                         viewModel.refreshGitProjects()
@@ -213,12 +217,13 @@ fun HomeScreen(
         CreateContainerDialog(
             gitProjects = state.gitProjects,
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, image, memMiB, cpu, muxMode, persistentRootfs, gitWorktree, gitProjectDisplayName ->
+            onCreate = { name, image, memMiB, cpu, pidsLimit, muxMode, persistentRootfs, gitWorktree, gitProjectDisplayName ->
                 viewModel.createProfile(
                     displayName = name,
                     imageRef = image,
                     memoryMiB = memMiB,
                     cpuCores = cpu,
+                    pidsLimit = pidsLimit,
                     muxMode = muxMode,
                     persistentRootfs = persistentRootfs,
                     gitWorktree = gitWorktree,
@@ -235,15 +240,16 @@ fun HomeScreen(
     if (editProfile != null) {
         EditContainerDialog(
             profile = editProfile,
-            isRunning = state.runStates[editProfile.id] == SandboxRunState.RUNNING,
+            isLive = state.runStates[editProfile.id]?.isLiveInMemory == true,
             gitProjects = state.gitProjects,
             onDismiss = { editTargetProfileId = null },
-            onSave = { name, memMiB, cpu, persistentRootfs, gitWorktree, gitProjectDisplayName ->
+            onSave = { name, memMiB, cpu, pidsLimit, persistentRootfs, gitWorktree, gitProjectDisplayName ->
                 viewModel.updateProfileConfig(
                     profileId = editProfile.id,
                     displayName = name,
                     memoryMiB = memMiB,
                     cpuCores = cpu,
+                    pidsLimit = pidsLimit,
                     persistentRootfs = persistentRootfs,
                     gitWorktree = gitWorktree,
                     gitProjectDisplayName = gitProjectDisplayName,
@@ -259,7 +265,7 @@ fun HomeScreen(
     if (targetProfile != null) {
         ContainerVolumesDialog(
             profile = targetProfile,
-            isRunning = state.runStates[targetProfile.id] == SandboxRunState.RUNNING,
+            isLive = state.runStates[targetProfile.id]?.isLiveInMemory == true,
             availableVolumes = state.availableVolumes,
             onAttach = { volumeName, guestPath, mode, upperVolumeName ->
                 viewModel.attachVolumeToProfile(
@@ -276,11 +282,26 @@ fun HomeScreen(
             onDismiss = { volumesTargetProfileId = null },
         )
     }
+
+    val activeInspector = state.inspector
+    if (activeInspector != null) {
+        ContainerInspectorDialog(
+            inspector = activeInspector,
+            onSelectTab = viewModel::selectInspectorTab,
+            onRefresh = viewModel::refreshInspector,
+            onSignalProcess = viewModel::signalInspectorProcess,
+            onRemount = viewModel::remountInspectorMount,
+            onUnmount = { target -> viewModel.unmountInspectorMount(target, detach = false) },
+            onClearKernelLog = viewModel::clearInspectorKernelLog,
+            onDismiss = viewModel::closeInspector,
+        )
+    }
 }
 
 @Composable
 private fun RunningStatusStrip(
     runningCount: Int,
+    pausedCount: Int,
     liveChildProcessCount: Int,
     nearProcessLimit: Boolean,
     onFreezeAll: () -> Unit,
@@ -305,7 +326,11 @@ private fun RunningStatusStrip(
             ) {
                 TermVrStatusDot(color = dotColor, size = 8.dp)
                 Text(
-                    text = HomeViewModel.formatRunningStatusSummary(runningCount, liveChildProcessCount),
+                    text = HomeViewModel.formatRunningStatusSummary(
+                        runningCount = runningCount,
+                        liveChildProcessCount = liveChildProcessCount,
+                        pausedCount = pausedCount,
+                    ),
                     style = MaterialTheme.typography.titleSmall,
                     fontFamily = LocalTermVrMonoFontFamily.current,
                 )
@@ -397,7 +422,9 @@ private fun ContainerCard(
     busy: Boolean,
     onOpenOrStart: () -> Unit,
     onOpenNewShell: () -> Unit,
+    onPause: () -> Unit,
     onFreeze: () -> Unit,
+    onInspect: () -> Unit,
     onStop: () -> Unit,
     onEdit: () -> Unit,
     onOpenVolumes: () -> Unit,
@@ -457,7 +484,7 @@ private fun ContainerCard(
                 profile.persistentRootfs ||
                 gitWorktree != null ||
                 attachedVolumes.isNotEmpty() ||
-                (runState == SandboxRunState.RUNNING && telemetry != null)
+                (runState.isLiveInMemory && telemetry != null)
             ) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -479,9 +506,13 @@ private fun ContainerCard(
                             borderColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f),
                         )
                     }
-                    if (runState == SandboxRunState.RUNNING && telemetry != null) {
+                    if (runState.isLiveInMemory && telemetry != null) {
                         val metricsText = buildString {
-                            append("CPU ${telemetry.cpuPercent.roundToInt()}% · ${telemetry.pssMiB} MB")
+                            if (runState == SandboxRunState.PAUSED) {
+                                append("Paused · ${telemetry.pssMiB} MB")
+                            } else {
+                                append("CPU ${telemetry.cpuPercent.roundToInt()}% · ${telemetry.pssMiB} MB")
+                            }
                             if (telemetry.guestListenPorts.isNotEmpty()) {
                                 val count = telemetry.guestListenPorts.size
                                 append(" · $count port${if (count == 1) "" else "s"}")
@@ -507,7 +538,9 @@ private fun ContainerCard(
             ) {
                 val primaryLabel = when (runState) {
                     SandboxRunState.RUNNING -> "Open"
-                    SandboxRunState.FROZEN -> "Resume"
+                    SandboxRunState.PAUSED,
+                    SandboxRunState.FROZEN,
+                    -> "Resume"
                     else -> "Start"
                 }
                 TermVrButton(
@@ -527,14 +560,29 @@ private fun ContainerCard(
                         Spacer(Modifier.width(4.dp))
                         Text("Shell")
                     }
-                    TermVrOutlinedButton(onClick = onFreeze, enabled = !busy) {
+                    TermVrOutlinedButton(onClick = onPause, enabled = !busy) {
                         Icon(
                             imageVector = TermVrIcons.Pause,
                             contentDescription = null,
                             modifier = Modifier.size(14.dp),
                         )
                         Spacer(Modifier.width(4.dp))
+                        Text("Pause")
+                    }
+                }
+
+                if (runState.isLiveInMemory) {
+                    TermVrOutlinedButton(onClick = onFreeze, enabled = !busy) {
                         Text("Freeze")
+                    }
+                    TermVrOutlinedButton(onClick = onInspect, enabled = !busy) {
+                        Icon(
+                            imageVector = TermVrIcons.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Inspect")
                     }
                 }
 
@@ -588,13 +636,14 @@ private fun ContainerCard(
 private fun CreateContainerDialog(
     gitProjects: List<GitProjectSummary>,
     onDismiss: () -> Unit,
-    onCreate: (String, String, Int, Double, MuxMode, Boolean, GitWorktreeSpec?, String?) -> Unit,
+    onCreate: (String, String, Int, Double, Int, MuxMode, Boolean, GitWorktreeSpec?, String?) -> Unit,
 ) {
     var name by remember { mutableStateOf("Debian") }
     var imageRef by remember { mutableStateOf(HomeViewModel.DEFAULT_DEBIAN_IMAGE_REF) }
     var showLimits by remember { mutableStateOf(false) }
     var memoryText by remember { mutableStateOf("") }
     var cpuText by remember { mutableStateOf("") }
+    var pidsText by remember { mutableStateOf("") }
     var muxMode by remember { mutableStateOf(MuxMode.STDIO_MUX) }
     var persistentRootfs by remember { mutableStateOf(false) }
 
@@ -745,6 +794,15 @@ private fun CreateContainerDialog(
                             modifier = Modifier.weight(1f),
                         )
                     }
+                    OutlinedTextField(
+                        value = pidsText,
+                        onValueChange = { pidsText = it },
+                        label = { Text("PIDs Limit") },
+                        placeholder = { Text("Unlimited (8..65536)") },
+                        singleLine = true,
+                        shape = TermVrControlShape,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         },
@@ -762,6 +820,11 @@ private fun CreateContainerDialog(
                     } else {
                         SandboxProfile.UNLIMITED_CPU_CORES
                     }
+                    val pids = if (showLimits) {
+                        pidsText.trim().toIntOrNull() ?: SandboxProfile.UNLIMITED_PIDS_LIMIT
+                    } else {
+                        SandboxProfile.UNLIMITED_PIDS_LIMIT
+                    }
                     val gitSpec = if (gitEnabled) {
                         GitWorktreeSpec(
                             projectId = resolvedProjectId,
@@ -775,7 +838,7 @@ private fun CreateContainerDialog(
                     } else {
                         null
                     }
-                    onCreate(name, imageRef, mem, cpu, muxMode, persistentRootfs, gitSpec, projectDisplayName)
+                    onCreate(name, imageRef, mem, cpu, pids, muxMode, persistentRootfs, gitSpec, projectDisplayName)
                 },
             ) {
                 Text("Create")
@@ -792,21 +855,24 @@ private fun CreateContainerDialog(
 @Composable
 private fun EditContainerDialog(
     profile: SandboxProfile,
-    isRunning: Boolean,
+    isLive: Boolean,
     gitProjects: List<GitProjectSummary>,
     onDismiss: () -> Unit,
-    onSave: (String, Int, Double, Boolean, GitWorktreeSpec?, String?) -> Unit,
+    onSave: (String, Int, Double, Int, Boolean, GitWorktreeSpec?, String?) -> Unit,
 ) {
     val existingGit = profile.gitWorktree
     var name by remember(profile.id) { mutableStateOf(profile.displayName) }
     var persistentRootfs by remember(profile.id) { mutableStateOf(profile.persistentRootfs) }
-    val hasCustomLimits = profile.memoryMiB > 0 || profile.cpuCores > 0.0
+    val hasCustomLimits = profile.memoryMiB > 0 || profile.cpuCores > 0.0 || profile.pidsLimit > 0
     var showLimits by remember(profile.id) { mutableStateOf(hasCustomLimits) }
     var memoryText by remember(profile.id) {
         mutableStateOf(if (profile.memoryMiB > 0) profile.memoryMiB.toString() else "")
     }
     var cpuText by remember(profile.id) {
         mutableStateOf(if (profile.cpuCores > 0.0) profile.cpuCores.toString() else "")
+    }
+    var pidsText by remember(profile.id) {
+        mutableStateOf(if (profile.pidsLimit > 0) profile.pidsLimit.toString() else "")
     }
 
     var gitEnabled by remember(profile.id) { mutableStateOf(existingGit != null) }
@@ -841,9 +907,9 @@ private fun EditContainerDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (isRunning) {
+                if (isLive) {
                     Text(
-                        text = "Configuration changes apply after container restart.",
+                        text = "RAM, CPU, and PID limits apply live. Rootfs and Git changes require restart.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -931,6 +997,15 @@ private fun EditContainerDialog(
                             modifier = Modifier.weight(1f),
                         )
                     }
+                    OutlinedTextField(
+                        value = pidsText,
+                        onValueChange = { pidsText = it },
+                        label = { Text("PIDs Limit") },
+                        placeholder = { Text("Unlimited (8..65536)") },
+                        singleLine = true,
+                        shape = TermVrControlShape,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         },
@@ -948,6 +1023,11 @@ private fun EditContainerDialog(
                     } else {
                         SandboxProfile.UNLIMITED_CPU_CORES
                     }
+                    val pids = if (showLimits) {
+                        pidsText.trim().toIntOrNull() ?: SandboxProfile.UNLIMITED_PIDS_LIMIT
+                    } else {
+                        SandboxProfile.UNLIMITED_PIDS_LIMIT
+                    }
                     val gitSpec = if (gitEnabled) {
                         GitWorktreeSpec(
                             projectId = resolvedProjectId,
@@ -961,7 +1041,7 @@ private fun EditContainerDialog(
                     } else {
                         null
                     }
-                    onSave(name, mem, cpu, persistentRootfs, gitSpec, projectDisplayName)
+                    onSave(name, mem, cpu, pids, persistentRootfs, gitSpec, projectDisplayName)
                 },
             ) {
                 Text("Save")
@@ -1081,7 +1161,7 @@ private fun GitWorktreeConfigSection(
 @Composable
 private fun ContainerVolumesDialog(
     profile: SandboxProfile,
-    isRunning: Boolean,
+    isLive: Boolean,
     availableVolumes: List<String>,
     onAttach: (String, String, VolumeMountMode, String?) -> Unit,
     onDetach: (String, String) -> Unit,
@@ -1116,9 +1196,9 @@ private fun ContainerVolumesDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (isRunning) {
+                if (isLive) {
                     Text(
-                        text = "Mount changes apply after container restart.",
+                        text = "Named ext4lite mounts apply live. CoW overlays require restart.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -1296,6 +1376,324 @@ private fun ContainerVolumesDialog(
             }
         },
         dismissButton = {
+            TermVrTextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        },
+    )
+}
+
+private val PROTECTED_INSPECTOR_MOUNTS = setOf("/", "/workspace", "/run/termvr-agent", "/tmp", "/run")
+
+private fun isProtectedInspectorMount(target: String): Boolean {
+    val normalized = target.trim().trimEnd('/').ifEmpty { "/" }
+    return normalized in PROTECTED_INSPECTOR_MOUNTS || normalized.startsWith("/git/")
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ContainerInspectorDialog(
+    inspector: ContainerInspectorState,
+    onSelectTab: (InspectorTab) -> Unit,
+    onRefresh: () -> Unit,
+    onSignalProcess: (Int, String) -> Unit,
+    onRemount: (String, Boolean) -> Unit,
+    onUnmount: (String) -> Unit,
+    onClearKernelLog: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val mono = LocalTermVrMonoFontFamily.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = TermVrControlShape,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Inspect ${inspector.displayName}",
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(
+                    onClick = onRefresh,
+                    enabled = !inspector.loading,
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        imageVector = TermVrIcons.Refresh,
+                        contentDescription = "Refresh inspector",
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    InspectorTab.entries.forEach { tab ->
+                        TermVrSelectableChip(
+                            label = tab.label,
+                            selected = inspector.selectedTab == tab,
+                            onClick = { onSelectTab(tab) },
+                        )
+                    }
+                }
+
+                val notice = inspector.errorMessage ?: inspector.actionMessage
+                if (notice != null) {
+                    TermVrNoticeBanner(
+                        message = notice,
+                        isError = inspector.errorMessage != null,
+                    )
+                }
+
+                if (inspector.loading && inspector.inspect == null && inspector.stats == null) {
+                    Text(
+                        text = "Querying gvx-ctrl/2 socket...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                when (inspector.selectedTab) {
+                    InspectorTab.STATS -> {
+                        val snap = inspector.inspect
+                        val stats = inspector.stats
+                        if (snap != null) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                TermVrBadge(text = snap.state.ifBlank { "running" })
+                                if (snap.platform.isNotBlank()) {
+                                    TermVrBadge(text = "${snap.platform}/${snap.architecture}")
+                                }
+                                if (snap.lockdownApplied) {
+                                    TermVrBadge(text = "Lockdown")
+                                }
+                                if (snap.eth0Ip.isNotBlank()) {
+                                    TermVrBadge(text = "eth0 ${snap.eth0Ip}")
+                                }
+                            }
+                            val res = snap.resources
+                            val memLimitLabel = if (res.memoryBytes > 0L) formatBytes(res.memoryBytes) else "Unlimited"
+                            val cpuLimitLabel = if (res.cpuMillis > 0L) {
+                                String.format(Locale.US, "%.2f cores", res.cpuMillis / 1000.0)
+                            } else {
+                                "Unlimited"
+                            }
+                            val pidsLimitLabel = if (res.pidsLimit > 0L) res.pidsLimit.toString() else "Unlimited"
+                            Text(
+                                text = buildString {
+                                    appendLine("Limits: RAM $memLimitLabel · CPU $cpuLimitLabel · PIDs $pidsLimitLabel")
+                                    appendLine("Network: ${snap.networkMode.ifBlank { "nat" }} · LAN isolated=${res.isolateLan}")
+                                    append("Uptime: ${snap.uptimeNanos / 1_000_000_000L}s · PIDs: ${snap.pidCount}")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = mono,
+                            )
+                        }
+                        if (stats != null) {
+                            HorizontalDivider()
+                            val cpuSec = stats.totalCpuNanos / 1_000_000_000.0
+                            Text(
+                                text = buildString {
+                                    appendLine(String.format(Locale.US, "CPU Time: %.2fs (throttled %d periods)", cpuSec, stats.cpuThrottledPeriods))
+                                    appendLine("Memory: ${formatBytes(stats.memoryTotalBytes)} (anon ${formatBytes(stats.memoryAnonBytes)}, tmpfs ${formatBytes(stats.memoryTmpfsBytes)})")
+                                    append("Net I/O: RX ${formatBytes(stats.netRxBytes)} / TX ${formatBytes(stats.netTxBytes)}")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = mono,
+                            )
+                        }
+                        if (snap != null && snap.ports.isNotEmpty()) {
+                            HorizontalDivider()
+                            Text("Published Ports", style = MaterialTheme.typography.labelMedium)
+                            for (p in snap.ports) {
+                                val summary = if (p.hostSocket.isNotBlank()) {
+                                    "unix:${p.hostSocket} (${p.source})"
+                                } else {
+                                    "${p.proto.uppercase()} ${p.hostIp.ifBlank { "127.0.0.1" }}:${p.hostPort} -> :${p.guestPort} (${p.source})"
+                                }
+                                Text(
+                                    text = summary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = mono,
+                                )
+                            }
+                        }
+                    }
+
+                    InspectorTab.PROCESSES -> {
+                        if (inspector.processes.isEmpty()) {
+                            Text(
+                                text = "No guest processes reported.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            for (proc in inspector.processes) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = "PID ${proc.pid} · ${proc.state} · ${formatBytes(proc.rssBytes)}",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontFamily = mono,
+                                        )
+                                        if (proc.pid > 1) {
+                                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                TermVrTextButton(
+                                                    onClick = { onSignalProcess(proc.pid, "SIGTERM") },
+                                                    enabled = !inspector.loading,
+                                                ) {
+                                                    Text("TERM", style = MaterialTheme.typography.labelSmall)
+                                                }
+                                                TermVrTextButton(
+                                                    onClick = { onSignalProcess(proc.pid, "SIGKILL") },
+                                                    enabled = !inspector.loading,
+                                                    contentColor = MaterialTheme.colorScheme.error,
+                                                ) {
+                                                    Text("KILL", style = MaterialTheme.typography.labelSmall)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Text(
+                                        text = proc.displayCommand,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = mono,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            }
+                        }
+                    }
+
+                    InspectorTab.MOUNTS -> {
+                        if (inspector.mounts.isEmpty()) {
+                            Text(
+                                text = "No managed mounts reported.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            for (mnt in inspector.mounts) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = mnt.target,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontFamily = mono,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        TermVrBadge(text = if (mnt.readOnly) "RO" else "RW")
+                                    }
+                                    Text(
+                                        text = "${mnt.type} · ${mnt.source}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = mono,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    val protectedMount = isProtectedInspectorMount(mnt.target)
+                                    if (!protectedMount) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            val canToggleRo = mnt.type != "overlay" &&
+                                                mnt.type != "tmpfs" &&
+                                                (!mnt.readOnly || mnt.mutable)
+                                            if (canToggleRo) {
+                                                TermVrOutlinedButton(
+                                                    onClick = { onRemount(mnt.target, !mnt.readOnly) },
+                                                    enabled = !inspector.loading,
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                ) {
+                                                    Text(
+                                                        text = if (mnt.readOnly) "Remount RW" else "Remount RO",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                    )
+                                                }
+                                            }
+                                            TermVrTextButton(
+                                                onClick = { onUnmount(mnt.target) },
+                                                enabled = !inspector.loading,
+                                                contentColor = MaterialTheme.colorScheme.error,
+                                            ) {
+                                                Text("Unmount", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            }
+                        }
+                    }
+
+                    InspectorTab.KERNEL_LOG -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "${inspector.kernelLog.size} log records",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TermVrTextButton(
+                                onClick = onClearKernelLog,
+                                enabled = !inspector.loading && inspector.kernelLog.isNotEmpty(),
+                            ) {
+                                Text("Clear")
+                            }
+                        }
+                        if (inspector.kernelLog.isEmpty()) {
+                            Text(
+                                text = "Kernel log ring is empty.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            val rendered = inspector.kernelLog.joinToString("\n") { entry ->
+                                val sec = entry.usec / 1_000_000.0
+                                String.format(Locale.US, "[%8.3f] %s", sec, entry.text)
+                            }
+                            Text(
+                                text = rendered,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = mono,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
             TermVrTextButton(onClick = onDismiss) {
                 Text("Close")
             }

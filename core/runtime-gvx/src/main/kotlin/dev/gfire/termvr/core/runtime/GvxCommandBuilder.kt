@@ -220,6 +220,8 @@ class GvxCommandBuilder(
 
     fun controlSocketFile(profileId: String): File = File(filesDir, "ctl/$profileId.sock")
 
+    fun volumeImageFile(volumeName: String): File = File(gvxStoreDir, "gvx/volumes/$volumeName.ext4")
+
     fun forwardSocketFile(profileId: String, socketName: String): File =
         File(filesDir, "fwd/$profileId/$socketName.sock")
 
@@ -312,6 +314,7 @@ class GvxCommandBuilder(
         args.add(profile.id)
         args.add("-control-socket")
         args.add(controlSock.absolutePath)
+        args.add("--allow-volume-attach")
         if (checkpointDir != null) {
             args.add("-checkpoint-dir")
             args.add(checkpointDir.absolutePath)
@@ -386,6 +389,7 @@ class GvxCommandBuilder(
         args.add(slotDir.absolutePath)
         args.add("-control-socket")
         args.add(controlSock.absolutePath)
+        args.add("--allow-volume-attach")
         args.add("--host-dns")
         args.add("127.0.0.1:$dnsPort")
 
@@ -472,6 +476,10 @@ class GvxCommandBuilder(
             args.add("--cpus")
             args.add(formatCpuCores(SandboxProfile.clampCpuCores(profile.cpuCores, hostAvailableProcessors)))
         }
+        if (profile.hasPidsLimit) {
+            args.add("--pids-limit")
+            args.add(profile.pidsLimit.toString())
+        }
     }
 
     private fun appendCapabilityFlags(args: MutableList<String>, profile: SandboxProfile) {
@@ -489,6 +497,10 @@ class GvxCommandBuilder(
         when (profile.network.backend) {
             NetBackend.NAT -> {
                 args.add("-net=nat")
+                args.add("--dynamic-ports")
+                if (profile.network.autoPublishPorts) {
+                    args.add("--auto-publish")
+                }
                 if (profile.network.isolateLanEgress) {
                     args.add("-isolate-lan")
                 }
@@ -565,6 +577,44 @@ class GvxCommandBuilder(
             }
         }
     }
+
+    internal fun formatPortRemoveSpecs(
+        profileId: String,
+        rule: PortForwardRule,
+        effectiveHostPort: Int? = null,
+    ): List<String> {
+        return when (rule.protocol) {
+            ForwardProtocol.TCP, ForwardProtocol.UDP -> {
+                val proto = if (rule.protocol == ForwardProtocol.TCP) "tcp" else "udp"
+                val host = rule.listenHost.wireLiteral
+                if (rule.hostPortStart > 0 && rule.hostPortEnd > rule.hostPortStart) {
+                    val count = (rule.hostPortEnd - rule.hostPortStart).coerceAtLeast(0)
+                    (0..count).map { offset ->
+                        "$host:${rule.hostPortStart + offset}:${rule.guestPortStart + offset}/$proto"
+                    }
+                } else {
+                    val hostPort = effectiveHostPort ?: rule.hostPortStart
+                    if (hostPort > 0 && rule.guestPortStart > 0) {
+                        listOf("$host:$hostPort:${rule.guestPortStart}/$proto")
+                    } else if (hostPort > 0) {
+                        listOf("$hostPort/$proto")
+                    } else {
+                        // Empty host port matches GuestPort rather than HostPort in gvx parsePortRemoveQuery.
+                        listOf("$host::${rule.guestPortStart}/$proto")
+                    }
+                }
+            }
+            ForwardProtocol.UNIX_STREAM -> {
+                val sockName = requireNotNull(rule.unixSocketName) {
+                    "unixSocketName is required for UNIX_STREAM port forward"
+                }
+                listOf("unix:${forwardSocketFile(profileId, sockName).absolutePath}")
+            }
+        }
+    }
+
+    internal fun formatPortRemoveSpec(profileId: String, rule: PortForwardRule, effectiveHostPort: Int? = null): String =
+        formatPortRemoveSpecs(profileId, rule, effectiveHostPort).first()
 
     private fun appendVolumeAndTmpfsFlags(
         args: MutableList<String>,

@@ -8,13 +8,24 @@ import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.HostReadinessReport
 import dev.gfire.termvr.core.model.ListenHost
+import dev.gfire.termvr.core.model.LiveKernelLogEntry
+import dev.gfire.termvr.core.model.LiveMountInfo
+import dev.gfire.termvr.core.model.LivePortInfo
+import dev.gfire.termvr.core.model.LiveProcessInfo
+import dev.gfire.termvr.core.model.LiveResourceLimits
+import dev.gfire.termvr.core.model.LiveResourceUpdate
+import dev.gfire.termvr.core.model.LiveStatsSnapshot
 import dev.gfire.termvr.core.model.MuxMode
+import dev.gfire.termvr.core.model.NetBackend
 import dev.gfire.termvr.core.model.OutboundProxyConfig
 import dev.gfire.termvr.core.model.OutboundProxyMode
 import dev.gfire.termvr.core.model.PortForwardRule
+import dev.gfire.termvr.core.model.SandboxInspectSnapshot
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
+import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import java.io.BufferedReader
 import java.io.Closeable
 import java.io.File
@@ -206,6 +217,7 @@ class SandboxSupervisor(
     private val hostPssSampler: HostProcessPssSampler = HostProcessPssSampler { 0L },
     private val hostPortProbe: HostPortProbe = NoOpHostPortProbe,
     private val gitWorktreeManager: GitWorktreeManager = GitWorktreeManager(filesDir),
+    private val controlClient: GvxControlClient = GvxControlClient(),
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
     private val nanoClock: () -> Long = { System.nanoTime() },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -331,6 +343,15 @@ class SandboxSupervisor(
             val existing = sessions[profile.id]
             if (existing != null && existing.process.isAlive) {
                 cachedProfiles[profile.id] = profile
+                if (_runStates.value[profile.id] == SandboxRunState.PAUSED) {
+                    try {
+                        controlClient.unpause(existing.controlSock)
+                    } catch (e: GvxControlException) {
+                        if (e.code != GvxControlClient.CODE_NOT_PAUSED) throw e
+                    }
+                    existing.lastActivityMillis.set(clockMillis())
+                    setRunState(profile.id, SandboxRunState.RUNNING)
+                }
                 if (reconfirmLan) {
                     _lanReconfirmationRequired.update { it - profile.id }
                     if (profile.portForwards.any { it.exposesLan } &&
@@ -640,11 +661,61 @@ class SandboxSupervisor(
     }
 
     /**
-     * Checkpoints and freezes a running sandbox using dual-slot rotation.
+     * Pauses guest vCPUs in memory via `gvx-ctrl/2` `lifecycle.pause` without tearing down streams or sockets.
+     */
+    suspend fun pauseSandbox(
+        profileId: String,
+        quiesceNet: Boolean = true,
+    ): SandboxRunState = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val managed = sessions[profileId] ?: return@withLock (_runStates.value[profileId] ?: SandboxRunState.STOPPED)
+            if (!managed.process.isAlive) {
+                return@withLock _runStates.value[profileId] ?: SandboxRunState.STOPPED
+            }
+            if (_runStates.value[profileId] == SandboxRunState.PAUSED) {
+                return@withLock SandboxRunState.PAUSED
+            }
+            try {
+                controlClient.pause(managed.controlSock, quiesceNet = quiesceNet)
+            } catch (e: GvxControlException) {
+                if (e.code != GvxControlClient.CODE_ALREADY_PAUSED) throw e
+            }
+            setRunState(profileId, SandboxRunState.PAUSED)
+            releaseWakeLockIfNoRunningSandboxes()
+            SandboxRunState.PAUSED
+        }
+    }
+
+    /**
+     * Resumes a paused sandbox in memory via `gvx-ctrl/2` `lifecycle.unpause`.
+     */
+    suspend fun unpauseSandbox(profileId: String): SandboxRunState = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val managed = sessions[profileId] ?: return@withLock (_runStates.value[profileId] ?: SandboxRunState.STOPPED)
+            if (!managed.process.isAlive) {
+                return@withLock _runStates.value[profileId] ?: SandboxRunState.STOPPED
+            }
+            if (_runStates.value[profileId] == SandboxRunState.RUNNING) {
+                return@withLock SandboxRunState.RUNNING
+            }
+            try {
+                controlClient.unpause(managed.controlSock)
+            } catch (e: GvxControlException) {
+                if (e.code != GvxControlClient.CODE_NOT_PAUSED) throw e
+            }
+            managed.lastActivityMillis.set(clockMillis())
+            setRunState(profileId, SandboxRunState.RUNNING)
+            SandboxRunState.RUNNING
+        }
+    }
+
+    /**
+     * Checkpoints and freezes a running or paused sandbox using dual-slot rotation.
      */
     suspend fun freezeSandbox(profileId: String): SandboxRunState = withContext(Dispatchers.IO) {
         profileMutex(profileId).withLock {
             val managed = sessions[profileId] ?: return@withLock (_runStates.value[profileId] ?: SandboxRunState.STOPPED)
+            val prevState = _runStates.value[profileId] ?: SandboxRunState.RUNNING
             setRunState(profileId, SandboxRunState.FREEZING)
             val currentPss = _telemetryByProfile.value[profileId]?.pssBytes
                 ?: hostPssSampler.samplePssBytes(managed.process.pid)
@@ -667,7 +738,10 @@ class SandboxSupervisor(
                 SandboxRunState.FROZEN
             } catch (e: Exception) {
                 if (managed.process.isAlive) {
-                    setRunState(profileId, SandboxRunState.RUNNING)
+                    setRunState(
+                        profileId,
+                        if (prevState == SandboxRunState.PAUSED) SandboxRunState.PAUSED else SandboxRunState.RUNNING,
+                    )
                 } else {
                     cleanupSessionResources(profileId, managed)
                     setRunState(profileId, SandboxRunState.FAILED)
@@ -681,7 +755,18 @@ class SandboxSupervisor(
         profileMutex(profileId).withLock {
             val managed = sessions.remove(profileId)
             if (managed != null) {
-                managed.process.destroyGracefully()
+                if (managed.process.isAlive && managed.controlSock.exists()) {
+                    runCatching {
+                        controlClient.stop(
+                            socketFile = managed.controlSock,
+                            signal = "SIGTERM",
+                            timeoutMs = GRACEFUL_STOP_TIMEOUT_MS,
+                        )
+                    }
+                }
+                if (managed.process.isAlive) {
+                    managed.process.destroyGracefully()
+                }
                 cleanupSessionResources(profileId, managed)
             }
             checkpointController.markSuperseded(
@@ -693,6 +778,241 @@ class SandboxSupervisor(
             refreshHostReadiness()
         }
         Unit
+    }
+
+    /**
+     * Updates RAM, CPU, PID limit, or LAN egress isolation on a live sandbox via `resource.update`.
+     */
+    suspend fun updateResourcesLive(
+        profileId: String,
+        update: LiveResourceUpdate,
+    ): LiveResourceLimits = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val managed = requireLiveManagedSandbox(profileId)
+            val result = controlClient.updateResources(managed.controlSock, update)
+            var nextProfile = managed.profile
+            update.memoryMiB?.let { mem ->
+                nextProfile = nextProfile.copy(memoryMiB = SandboxProfile.clampMemoryMiB(mem))
+            }
+            update.cpuCores?.let { cores ->
+                nextProfile = nextProfile.copy(cpuCores = SandboxProfile.clampCpuCores(cores))
+            }
+            update.pidsLimit?.let { pids ->
+                nextProfile = nextProfile.copy(pidsLimit = SandboxProfile.clampPidsLimit(pids))
+            }
+            update.isolateLan?.let { isolate ->
+                nextProfile = nextProfile.copy(
+                    network = nextProfile.network.copy(isolateLanEgress = isolate),
+                )
+                proxyBridge.updatePolicy(nextProfile.network.outboundProxy, isolate)
+            }
+            managed.profile = nextProfile
+            cachedProfiles[profileId] = nextProfile
+            result
+        }
+    }
+
+    /**
+     * Adds one loopback TCP/UDP port-forward rule live via `port.add` without restarting the sandbox.
+     */
+    suspend fun addPortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+        replace: Boolean = false,
+    ): List<PublishedPortMapping> = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val managed = requireLiveManagedSandbox(profileId)
+            require(managed.profile.network.backend == NetBackend.NAT) {
+                "Live port forwarding requires NAT networking."
+            }
+            require(!rule.exposesLan && rule.protocol != ForwardProtocol.UNIX_STREAM) {
+                "Live port addition supports loopback TCP/UDP rules only; LAN rules require staged restart."
+            }
+            val candidateRules = managed.profile.portForwards.filterNot { it.id == rule.id } + rule
+            val alreadyBoundBySelf = collectBoundPortSet(
+                managed.profile.portForwards,
+                _publishedPortsByProfile.value[profileId].orEmpty(),
+            )
+            validatePortRulesBeforeBind(
+                profileId = profileId,
+                displayName = managed.profile.displayName,
+                candidateRules = candidateRules,
+                skipAlreadyBoundOnProfile = alreadyBoundBySelf,
+            )
+            val spec = commandBuilder.formatPortForwardRule(profileId, rule)
+            val added = controlClient.addPorts(managed.controlSock, listOf(spec), replace = replace)
+            val nextProfile = managed.profile.copy(portForwards = candidateRules)
+            managed.profile = nextProfile
+            cachedProfiles[profileId] = nextProfile
+            syncPublishedPortsLocked(profileId, managed, fallbackAdded = added)
+        }
+    }
+
+    /**
+     * Removes one active port-forward rule live via `port.remove` without restarting the sandbox.
+     */
+    suspend fun removePortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+    ): List<PublishedPortMapping> = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val managed = requireLiveManagedSandbox(profileId)
+            val activeRule = managed.profile.portForwards.firstOrNull { it.id == rule.id } ?: rule
+            val effectiveHostPort = if (activeRule.hostPortStart > 0) {
+                activeRule.hostPortStart
+            } else {
+                synchronized(managed.publishedPorts) {
+                    managed.publishedPorts.firstOrNull {
+                        it.protocol == activeRule.protocol && it.guestPort == activeRule.guestPortStart && it.hostPort > 0
+                    }?.hostPort
+                }
+            }
+            val specs = commandBuilder.formatPortRemoveSpecs(profileId, activeRule, effectiveHostPort)
+            controlClient.removePorts(managed.controlSock, specs = specs, force = true)
+            val nextRules = managed.profile.portForwards.filterNot { it.id == activeRule.id }
+            val nextProfile = managed.profile.copy(portForwards = nextRules)
+            managed.profile = nextProfile
+            cachedProfiles[profileId] = nextProfile
+            syncPublishedPortsLocked(
+                profileId = profileId,
+                managed = managed,
+                fallbackRemovedRule = activeRule,
+                fallbackHostPort = effectiveHostPort,
+            )
+        }
+    }
+
+    /**
+     * Queries active static, dynamic, and auto-published host ports via `port.list`.
+     */
+    suspend fun refreshPublishedPorts(profileId: String): List<PublishedPortMapping> = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val managed = requireLiveManagedSandbox(profileId)
+            val live = controlClient.listPorts(managed.controlSock)
+            replacePublishedPortsLocked(profileId, managed, live)
+        }
+    }
+
+    /**
+     * Hot-attaches a named `ext4lite` volume via `SCM_RIGHTS` `mount.add` while the sandbox stays live.
+     */
+    suspend fun attachVolumeLive(
+        profileId: String,
+        mount: VolumeMountSpec,
+    ): LiveMountInfo = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            require(mount.kind == VolumeKind.NAMED_EXT4LITE) {
+                "Live volume hot-attach supports named ext4lite volumes only."
+            }
+            val managed = requireLiveManagedSandbox(profileId)
+            val volumeFile = commandBuilder.volumeImageFile(mount.sourceName)
+            val mounted = controlClient.attachVolumeMount(
+                socketFile = managed.controlSock,
+                volumeName = mount.sourceName,
+                volumeFile = volumeFile,
+                target = mount.guestMountPath,
+                readOnly = mount.readOnly,
+            )
+            val updatedVolumes = managed.profile.volumes.filterNot { it.guestMountPath == mount.guestMountPath } + mount
+            val nextProfile = managed.profile.copy(volumes = updatedVolumes)
+            managed.profile = nextProfile
+            cachedProfiles[profileId] = nextProfile
+            mounted
+        }
+    }
+
+    /**
+     * Unmounts a guest mount point live via `mount.remove`, closing dynamic volume handles when [detach] is false.
+     */
+    suspend fun detachMountLive(
+        profileId: String,
+        targetPath: String,
+        detach: Boolean = false,
+    ): Unit = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val normalized = targetPath.trim().trimEnd('/').ifEmpty { "/" }
+            require(!isProtectedRestoreMount(normalized)) {
+                "Mount $normalized is required for container operation and restore parity."
+            }
+            val managed = requireLiveManagedSandbox(profileId)
+            controlClient.removeMount(managed.controlSock, target = normalized, detach = detach)
+            val updatedVolumes = managed.profile.volumes.filterNot { it.guestMountPath.trimEnd('/') == normalized }
+            val updatedTmpfs = managed.profile.tmpfsMounts.filterNot { it.trimEnd('/') == normalized }
+            val nextProfile = managed.profile.copy(volumes = updatedVolumes, tmpfsMounts = updatedTmpfs)
+            managed.profile = nextProfile
+            cachedProfiles[profileId] = nextProfile
+        }
+        Unit
+    }
+
+    /**
+     * Remounts an existing managed mount read-only or read-write live via `mount.remount`.
+     */
+    suspend fun remountLive(
+        profileId: String,
+        targetPath: String,
+        readOnly: Boolean,
+    ): Boolean = withContext(Dispatchers.IO) {
+        profileMutex(profileId).withLock {
+            val normalized = targetPath.trim().trimEnd('/').ifEmpty { "/" }
+            require(!isProtectedRestoreMount(normalized)) {
+                "Mount $normalized cannot be remounted live without breaking checkpoint restore parity."
+            }
+            val managed = requireLiveManagedSandbox(profileId)
+            val matchingVol = managed.profile.volumes.firstOrNull { it.guestMountPath.trimEnd('/') == normalized }
+            require(matchingVol?.kind != VolumeKind.OVERLAY_EXT4LITE) {
+                "CoW overlay mount $normalized cannot be remounted read-only live while preserving restore parity."
+            }
+            require(managed.profile.tmpfsMounts.none { it.trimEnd('/') == normalized }) {
+                "Tmpfs mount $normalized cannot be remounted live while preserving restore parity."
+            }
+            val updatedReadOnly = controlClient.remount(
+                socketFile = managed.controlSock,
+                target = normalized,
+                readOnly = readOnly,
+            )
+            val updatedVolumes = managed.profile.volumes.map { vol ->
+                if (vol.guestMountPath.trimEnd('/') == normalized) vol.copy(readOnly = updatedReadOnly) else vol
+            }
+            val nextProfile = managed.profile.copy(volumes = updatedVolumes)
+            managed.profile = nextProfile
+            cachedProfiles[profileId] = nextProfile
+            updatedReadOnly
+        }
+    }
+
+    suspend fun inspectSandbox(profileId: String): SandboxInspectSnapshot = withContext(Dispatchers.IO) {
+        val managed = requireLiveManagedSandbox(profileId)
+        controlClient.inspect(managed.controlSock)
+    }
+
+    suspend fun statsSandbox(profileId: String): LiveStatsSnapshot = withContext(Dispatchers.IO) {
+        val managed = requireLiveManagedSandbox(profileId)
+        controlClient.stats(managed.controlSock)
+    }
+
+    suspend fun listGuestProcesses(profileId: String): List<LiveProcessInfo> = withContext(Dispatchers.IO) {
+        val managed = requireLiveManagedSandbox(profileId)
+        controlClient.listProcesses(managed.controlSock)
+    }
+
+    suspend fun signalGuestProcess(
+        profileId: String,
+        pid: Int,
+        signal: String,
+        all: Boolean = false,
+    ): Unit = withContext(Dispatchers.IO) {
+        val managed = requireLiveManagedSandbox(profileId)
+        controlClient.signalProcess(managed.controlSock, pid = pid, signal = signal, all = all)
+    }
+
+    suspend fun readKernelLog(
+        profileId: String,
+        tail: Int = 200,
+        clear: Boolean = false,
+    ): List<LiveKernelLogEntry> = withContext(Dispatchers.IO) {
+        val managed = requireLiveManagedSandbox(profileId)
+        controlClient.kernelLog(managed.controlSock, tail = tail, clear = clear)
     }
 
     suspend fun stopAllSandboxes() {
@@ -748,7 +1068,7 @@ class SandboxSupervisor(
         cachedProfiles[profileId] = updatedProfile
 
         val state = _runStates.value[profileId] ?: SandboxRunState.STOPPED
-        if (state != SandboxRunState.RUNNING) {
+        if (!state.isLiveInMemory) {
             return state
         }
         return if (checkpointAndRestore) {
@@ -843,7 +1163,8 @@ class SandboxSupervisor(
 
         for (id in activeIds) {
             val managed = sessions[id] ?: continue
-            if ((_runStates.value[id] ?: SandboxRunState.STOPPED) != SandboxRunState.RUNNING) {
+            val currentState = _runStates.value[id] ?: SandboxRunState.STOPPED
+            if (!currentState.isLiveInMemory) {
                 continue
             }
             if (!managed.process.isAlive) {
@@ -872,14 +1193,45 @@ class SandboxSupervisor(
                 }
                 continue
             }
-            val guestSnap = runCatching {
-                managed.muxClient?.requestTelemetry(timeoutMs = 1_500L)
-            }.getOrNull()
+            val guestSnap = if (currentState == SandboxRunState.RUNNING) {
+                runCatching {
+                    managed.muxClient?.requestTelemetry(timeoutMs = 1_500L)
+                }.getOrNull()
+            } else {
+                null
+            }
+            val ctrlStats = if (guestSnap == null && managed.controlSock.exists()) {
+                runCatching {
+                    controlClient.stats(managed.controlSock, readTimeoutMs = 1_500)
+                }.getOrNull()
+            } else {
+                null
+            }
+            if (currentState == SandboxRunState.RUNNING &&
+                managed.profile.network.autoPublishPorts &&
+                managed.controlSock.exists()
+            ) {
+                val mutex = profileMutex(id)
+                if (mutex.tryLock()) {
+                    try {
+                        if (sessions[id] === managed) {
+                            runCatching {
+                                val livePorts = controlClient.listPorts(managed.controlSock, readTimeoutMs = 1_000)
+                                replacePublishedPortsLocked(id, managed, livePorts)
+                            }
+                        }
+                    } finally {
+                        mutex.unlock()
+                    }
+                }
+            }
 
-            val cpuNanos = guestSnap?.cpuNanos ?: 0L
+            val cpuNanos = guestSnap?.cpuNanos ?: ctrlStats?.totalCpuNanos ?: managed.lastCpuNanos
             val prevCpu = managed.lastCpuNanos
             val prevNs = managed.lastCpuSampleNs
-            val cpuPercent = if (prevNs > 0L && nowNs > prevNs && cpuNanos >= prevCpu) {
+            val cpuPercent = if (currentState == SandboxRunState.PAUSED) {
+                0.0
+            } else if (prevNs > 0L && nowNs > prevNs && cpuNanos >= prevCpu) {
                 val deltaCpu = (cpuNanos - prevCpu).toDouble()
                 val deltaWall = (nowNs - prevNs).toDouble()
                 ((deltaCpu / deltaWall) * 100.0).coerceAtLeast(0.0)
@@ -889,20 +1241,20 @@ class SandboxSupervisor(
             managed.lastCpuNanos = cpuNanos
             managed.lastCpuSampleNs = nowNs
 
+            val guestMemBytes = guestSnap?.rssBytes ?: ctrlStats?.memoryTotalBytes ?: 0L
             val pssBytes = hostPssSampler.samplePssBytes(managed.process.pid)
                 .takeIf { it > 0L }
-                ?: guestSnap?.rssBytes
-                ?: 0L
+                ?: guestMemBytes
 
             val snapshot = SandboxTelemetrySnapshot(
                 profileId = id,
-                state = _runStates.value[id] ?: SandboxRunState.RUNNING,
+                state = _runStates.value[id] ?: currentState,
                 cpuPercent = cpuPercent,
                 cpuNanos = cpuNanos,
                 pssBytes = pssBytes,
-                guestRssBytes = guestSnap?.rssBytes ?: 0L,
+                guestRssBytes = guestMemBytes,
                 hostChildProcessCount = _hostReadiness.value.liveChildProcessCount,
-                guestProcessCount = guestSnap?.procCount ?: 0,
+                guestProcessCount = guestSnap?.procCount ?: ctrlStats?.pids ?: 0,
                 guestListenPorts = guestSnap?.listenPorts?.filter { it in 1..65535 }.orEmpty(),
                 exposesLan = managed.profile.portForwards.any { it.exposesLan },
                 activeProxyLabel = formatProxyBadgeLabel(proxyBridge.currentPolicy.outboundProxy),
@@ -1175,6 +1527,84 @@ class SandboxSupervisor(
         return out
     }
 
+    private fun requireLiveManagedSandbox(profileId: String): ManagedSandbox {
+        val managed = sessions[profileId]
+            ?: throw IllegalStateException("Container $profileId is not running.")
+        if (!managed.process.isAlive) {
+            throw IllegalStateException("Container $profileId is not running.")
+        }
+        return managed
+    }
+
+    private fun syncPublishedPortsLocked(
+        profileId: String,
+        managed: ManagedSandbox,
+        fallbackAdded: List<LivePortInfo> = emptyList(),
+        fallbackRemovedRule: PortForwardRule? = null,
+        fallbackHostPort: Int? = null,
+    ): List<PublishedPortMapping> {
+        val listed = runCatching { controlClient.listPorts(managed.controlSock) }.getOrNull()
+        if (listed != null) {
+            return replacePublishedPortsLocked(profileId, managed, listed)
+        }
+        val snapshot = synchronized(managed.publishedPorts) {
+            if (fallbackRemovedRule != null) {
+                val targetHost = fallbackHostPort ?: fallbackRemovedRule.hostPortStart
+                managed.publishedPorts.removeAll {
+                    it.protocol == fallbackRemovedRule.protocol &&
+                        (if (targetHost > 0) it.hostPort == targetHost else it.guestPort == fallbackRemovedRule.guestPortStart)
+                }
+            }
+            for (added in fallbackAdded) {
+                val mapped = toPublishedPortMapping(added) ?: continue
+                if (managed.publishedPorts.none {
+                        it.protocol == mapped.protocol &&
+                            it.hostPort == mapped.hostPort &&
+                            it.guestPort == mapped.guestPort &&
+                            it.listenHost == mapped.listenHost
+                    }
+                ) {
+                    managed.publishedPorts.add(mapped)
+                }
+            }
+            managed.publishedPorts.toList()
+        }
+        _publishedPortsByProfile.update { current -> current + (profileId to snapshot) }
+        return snapshot
+    }
+
+    private fun replacePublishedPortsLocked(
+        profileId: String,
+        managed: ManagedSandbox,
+        livePorts: List<LivePortInfo>,
+    ): List<PublishedPortMapping> {
+        val mapped = livePorts.mapNotNull(::toPublishedPortMapping)
+        val snapshot = synchronized(managed.publishedPorts) {
+            managed.publishedPorts.clear()
+            managed.publishedPorts.addAll(mapped)
+            managed.publishedPorts.toList()
+        }
+        _publishedPortsByProfile.update { current -> current + (profileId to snapshot) }
+        return snapshot
+    }
+
+    private fun toPublishedPortMapping(info: LivePortInfo): PublishedPortMapping? {
+        if (info.hostPort !in 1..65535 || info.guestPort !in 1..65535) return null
+        val proto = when (info.proto.lowercase()) {
+            "tcp" -> ForwardProtocol.TCP
+            "udp" -> ForwardProtocol.UDP
+            else -> return null
+        }
+        val rawHost = info.hostIp.trim().ifEmpty { "127.0.0.1" }
+        val normalizedHost = if (rawHost.contains(':') && !rawHost.startsWith('[')) "[$rawHost]" else rawHost
+        return PublishedPortMapping(
+            listenHost = normalizedHost,
+            hostPort = info.hostPort,
+            guestPort = info.guestPort,
+            protocol = proto,
+        )
+    }
+
     private fun setRunState(profileId: String, state: SandboxRunState) {
         _runStates.update { current -> current + (profileId to state) }
     }
@@ -1205,8 +1635,16 @@ class SandboxSupervisor(
         const val DEFAULT_IDLE_FREEZE_MINUTES: Int = 5
         const val COLD_BOOT_HELLO_TIMEOUT_MS: Long = 300_000L
         const val RESTORE_RESYNC_TIMEOUT_MS: Long = 30_000L
+        const val GRACEFUL_STOP_TIMEOUT_MS: Long = 2_000L
         const val SIGKILL_SIGNAL_NUMBER: Int = 9
         const val SIGKILL_EXIT_CODE: Int = 128 + SIGKILL_SIGNAL_NUMBER
+
+        private val PROTECTED_RESTORE_MOUNTS = setOf("/", "/workspace", "/run/termvr-agent", "/tmp", "/run")
+
+        fun isProtectedRestoreMount(targetPath: String): Boolean {
+            val normalized = targetPath.trim().trimEnd('/').ifEmpty { "/" }
+            return normalized in PROTECTED_RESTORE_MOUNTS || normalized.startsWith("/git/")
+        }
 
         fun isSigkillExitCode(exitCode: Int): Boolean =
             exitCode == SIGKILL_EXIT_CODE || exitCode == -SIGKILL_SIGNAL_NUMBER

@@ -521,6 +521,11 @@ class FilesViewModel(
                     mode = mode,
                     overlayUpperVolumeName = resolvedUpper,
                 )
+                val isLive = runtimeGateway.runStates.value[profileId]?.isLiveInMemory == true
+                val canHotAttach = isLive && mount.kind == VolumeKind.NAMED_EXT4LITE
+                if (canHotAttach) {
+                    runtimeGateway.attachVolumeLive(profileId, mount)
+                }
                 val updatedVolumes = profile.volumes.filterNot { existing ->
                     existing.guestMountPath == cleanPath ||
                         (mode == VolumeMountMode.EXCLUSIVE_RW && existing.referencesVolume(volumeName)) ||
@@ -531,7 +536,6 @@ class FilesViewModel(
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
                 val updatedHostVolumes = runCatching { runtimeGateway.listVolumes() }
                     .getOrDefault(localState.value.hostVolumes)
-                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
                 val modeDesc = when (mode) {
                     VolumeMountMode.EXCLUSIVE_RW -> "read-write"
                     VolumeMountMode.SHARED_RO -> "shared read-only"
@@ -540,11 +544,11 @@ class FilesViewModel(
                 }
                 localState.value = localState.value.copy(
                     hostVolumes = updatedHostVolumes,
-                    pendingRestartProfileId = if (isRunning) profileId else null,
-                    statusMessage = if (isRunning) {
-                        "Mounted $volumeName ($modeDesc) at $cleanPath. Restart ${profile.displayName} to apply."
-                    } else {
-                        "Mounted $volumeName ($modeDesc) at $cleanPath on ${profile.displayName}."
+                    pendingRestartProfileId = if (isLive && !canHotAttach) profileId else null,
+                    statusMessage = when {
+                        canHotAttach -> "Mounted $volumeName ($modeDesc) at $cleanPath live on ${profile.displayName}."
+                        isLive -> "Mounted $volumeName ($modeDesc) at $cleanPath. Restart ${profile.displayName} to apply."
+                        else -> "Mounted $volumeName ($modeDesc) at $cleanPath on ${profile.displayName}."
                     },
                 )
             } catch (ce: CancellationException) {
@@ -562,15 +566,25 @@ class FilesViewModel(
         scope.launch {
             localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
             try {
+                val matching = profile.volumes.filter { it.referencesVolume(volumeName) }
+                val isLive = runtimeGateway.runStates.value[profileId]?.isLiveInMemory == true
+                val canHotDetach = isLive && matching.isNotEmpty() && matching.all { it.kind == VolumeKind.NAMED_EXT4LITE }
+                if (canHotDetach) {
+                    for (vol in matching) {
+                        runtimeGateway.detachMountLive(profileId, vol.guestMountPath, detach = false)
+                    }
+                }
                 val updatedVolumes = profile.volumes.filterNot { it.referencesVolume(volumeName) }
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
-                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
+                val updatedHostVolumes = runCatching { runtimeGateway.listVolumes() }
+                    .getOrDefault(localState.value.hostVolumes)
                 localState.value = localState.value.copy(
-                    pendingRestartProfileId = if (isRunning) profileId else null,
-                    statusMessage = if (isRunning) {
-                        "Unmounted $volumeName. Restart ${profile.displayName} to apply."
-                    } else {
-                        "Unmounted $volumeName from ${profile.displayName}."
+                    hostVolumes = updatedHostVolumes,
+                    pendingRestartProfileId = if (isLive && !canHotDetach) profileId else null,
+                    statusMessage = when {
+                        canHotDetach -> "Unmounted $volumeName live from ${profile.displayName}."
+                        isLive -> "Unmounted $volumeName. Restart ${profile.displayName} to apply."
+                        else -> "Unmounted $volumeName from ${profile.displayName}."
                     },
                 )
             } catch (ce: CancellationException) {

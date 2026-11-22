@@ -3,6 +3,7 @@ package dev.gfire.termvr.ui.network
 import dev.gfire.termvr.core.data.ProfileRepository
 import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.ListenHost
+import dev.gfire.termvr.core.model.LiveResourceUpdate
 import dev.gfire.termvr.core.model.NetBackend
 import dev.gfire.termvr.core.model.OutboundProxyConfig
 import dev.gfire.termvr.core.model.OutboundProxyMode
@@ -11,6 +12,8 @@ import dev.gfire.termvr.core.model.ProxyEndpointSpec
 import dev.gfire.termvr.core.model.ProxyProtocol
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
+import dev.gfire.termvr.core.runtime.GvxControlClient
+import dev.gfire.termvr.core.runtime.GvxControlException
 import dev.gfire.termvr.core.runtime.PortConflictDetector
 import dev.gfire.termvr.core.runtime.ProxyTestResult
 import dev.gfire.termvr.core.runtime.PublishedPortMapping
@@ -101,7 +104,7 @@ class NetworkViewModel(
     val uiState: StateFlow<NetworkUiState> = combine(runtimePart, localState) { rt, local ->
         val selected = rt.profiles.firstOrNull { it.id == local.selectedProfileId }
             ?: rt.profiles.firstOrNull()
-        val isRunning = selected != null && rt.states[selected.id] == SandboxRunState.RUNNING
+        val isRunning = selected != null && rt.states[selected.id]?.isLiveInMemory == true
         val baselineNetRaw = selected?.let { local.runningTransparentTcpBaseline[it.id] }
         val needsNetRawRestart = isRunning &&
             baselineNetRaw != null &&
@@ -136,7 +139,7 @@ class NetworkViewModel(
                 val profiles = profileRepository.observeProfiles().first().associateBy { it.id }
                 val updatedBaseline = localState.value.runningTransparentTcpBaseline.toMutableMap()
                 for ((id, state) in states) {
-                    if (state == SandboxRunState.RUNNING) {
+                    if (state.isLiveInMemory) {
                         if (!updatedBaseline.containsKey(id)) {
                             updatedBaseline[id] = profiles[id]?.network?.outboundProxy?.transparentTcp ?: false
                         }
@@ -223,7 +226,7 @@ class NetworkViewModel(
     }
 
     /**
-     * Validates and adds a port forward rule, blocking port 2375 LAN exposure and staging live restarts.
+     * Validates and adds a port forward rule, applying loopback NAT rules live or staging LAN restarts.
      */
     fun addPortRule(
         protocol: ForwardProtocol,
@@ -244,16 +247,120 @@ class NetworkViewModel(
             guestPortStart = guestPort,
             guestPortEnd = guestPort,
         )
+        val isLive = uiState.value.runStates[profile.id]?.isLiveInMemory == true
+        val canApplyLive = isLive &&
+            profile.network.backend == NetBackend.NAT &&
+            !newRule.exposesLan &&
+            newRule.protocol != ForwardProtocol.UNIX_STREAM
+        if (canApplyLive) {
+            scope.launch {
+                localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+                runCatching {
+                    runtimeGateway.addPortRuleLive(profile.id, newRule)
+                    profileRepository.upsertProfile(profile.copy(portForwards = profile.portForwards + newRule))
+                    localState.value = localState.value.copy(
+                        statusMessage = "Published ${newRule.listenHost.wireLiteral}:${newRule.hostPortStart} -> :${newRule.guestPortStart}/${newRule.protocol.name.lowercase()} live.",
+                        errorMessage = null,
+                    )
+                }.onFailure { err ->
+                    if (err is CancellationException) throw err
+                    localState.value = localState.value.copy(
+                        errorMessage = err.message ?: "Failed to add port rule live",
+                        statusMessage = null,
+                    )
+                }
+                localState.value = localState.value.copy(busy = false)
+            }
+            return
+        }
         applyUpdatedPortRules(profile, profile.portForwards + newRule)
     }
 
     /**
-     * Removes a port forward rule from the selected profile and stages a restart when running.
+     * Removes a port forward rule from the selected profile, unbinding NAT rules live when active.
      */
     fun removePortRule(ruleId: String) {
         val profile = uiState.value.selectedProfile ?: return
+        val removedRule = profile.portForwards.firstOrNull { it.id == ruleId } ?: return
         val nextRules = profile.portForwards.filterNot { it.id == ruleId }
+        val isLive = uiState.value.runStates[profile.id]?.isLiveInMemory == true
+        val canRemoveLive = isLive &&
+            profile.network.backend == NetBackend.NAT &&
+            removedRule.protocol != ForwardProtocol.UNIX_STREAM
+        if (canRemoveLive) {
+            scope.launch {
+                localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+                runCatching {
+                    try {
+                        runtimeGateway.removePortRuleLive(profile.id, removedRule)
+                    } catch (err: GvxControlException) {
+                        if (err.code != GvxControlClient.CODE_NOT_FOUND) throw err
+                    }
+                    profileRepository.upsertProfile(profile.copy(portForwards = nextRules))
+                    localState.value = localState.value.copy(
+                        statusMessage = "Removed port rule live.",
+                        errorMessage = null,
+                    )
+                }.onFailure { err ->
+                    if (err is CancellationException) throw err
+                    localState.value = localState.value.copy(
+                        errorMessage = err.message ?: "Failed to remove port rule live",
+                        statusMessage = null,
+                    )
+                }
+                localState.value = localState.value.copy(busy = false)
+            }
+            return
+        }
         applyUpdatedPortRules(profile, nextRules)
+    }
+
+    /**
+     * Toggles opt-in guest port auto-publishing (`--auto-publish`) for the selected NAT profile.
+     */
+    fun toggleAutoPublishPorts(enabled: Boolean) {
+        val profile = uiState.value.selectedProfile ?: return
+        scope.launch {
+            localState.value = localState.value.copy(errorMessage = null, statusMessage = null)
+            runCatching {
+                val updated = profile.copy(
+                    network = profile.network.copy(autoPublishPorts = enabled),
+                )
+                profileRepository.upsertProfile(updated)
+                val isLive = uiState.value.runStates[profile.id]?.isLiveInMemory == true
+                localState.value = localState.value.copy(
+                    statusMessage = when {
+                        isLive -> "Saved auto-publish setting. Restart container to apply."
+                        enabled -> "Enabled auto-publish for listening guest ports."
+                        else -> "Disabled auto-publish."
+                    },
+                )
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                localState.value = localState.value.copy(errorMessage = err.message ?: "Failed to update auto-publish")
+            }
+        }
+    }
+
+    /**
+     * Queries `gvx-ctrl/2` `port.list` to refresh active static, dynamic, and auto-published ports.
+     */
+    fun refreshLivePorts() {
+        val profile = uiState.value.selectedProfile ?: return
+        if (uiState.value.runStates[profile.id]?.isLiveInMemory != true) return
+        scope.launch {
+            localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+            runCatching {
+                val ports = runtimeGateway.refreshPublishedPorts(profile.id)
+                localState.value = localState.value.copy(
+                    statusMessage = "Synced ${ports.size} active published port${if (ports.size == 1) "" else "s"}.",
+                )
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                localState.value = localState.value.copy(errorMessage = err.message ?: "Failed to query live ports")
+            }
+            localState.value = localState.value.copy(busy = false)
+        }
     }
 
     /**
@@ -406,7 +513,7 @@ class NetworkViewModel(
                 profileRepository.upsertProfile(updated)
                 runtimeGateway.updateOutboundProxyLive(profile.id, nextProxy)
 
-                val isRunning = uiState.value.runStates[profile.id] == SandboxRunState.RUNNING
+                val isRunning = uiState.value.runStates[profile.id]?.isLiveInMemory == true
                 val baseline = localState.value.runningTransparentTcpBaseline[profile.id]
                 val notice = if (isRunning && baseline != null && baseline != transparentTcp) {
                     "Saved proxy policy. Restart sandbox to apply --net-raw change."
@@ -455,6 +562,17 @@ class NetworkViewModel(
         val profile = uiState.value.selectedProfile ?: return
         scope.launch {
             runCatching {
+                val isLive = uiState.value.runStates[profile.id]?.isLiveInMemory == true
+                val liveIsolateToggle = isLive &&
+                    profile.network.backend == NetBackend.NAT &&
+                    backend == NetBackend.NAT &&
+                    profile.network.isolateLanEgress != isolateLanEgress
+                if (liveIsolateToggle) {
+                    runtimeGateway.updateResourcesLive(
+                        profileId = profile.id,
+                        update = LiveResourceUpdate(isolateLan = isolateLanEgress),
+                    )
+                }
                 val updated = profile.copy(
                     network = profile.network.copy(
                         backend = backend,
@@ -463,7 +581,14 @@ class NetworkViewModel(
                     ),
                 )
                 profileRepository.upsertProfile(updated)
-                localState.value = localState.value.copy(statusMessage = "Updated network backend to ${backend.name}.")
+                val msg = when {
+                    liveIsolateToggle && isolateLanEgress -> "Enabled private LAN egress isolation live."
+                    liveIsolateToggle -> "Disabled private LAN egress isolation live."
+                    isLive && backend != profile.network.backend ->
+                        "Updated network backend to ${backend.name}. Restart container to apply."
+                    else -> "Updated network backend to ${backend.name}."
+                }
+                localState.value = localState.value.copy(statusMessage = msg, errorMessage = null)
             }.onFailure { err ->
                 if (err is CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Failed to update backend")
@@ -573,7 +698,7 @@ class NetworkViewModel(
             runCatching {
                 val updated = profile.copy(portForwards = nextRules)
                 profileRepository.upsertProfile(updated)
-                val isRunning = uiState.value.runStates[profile.id] == SandboxRunState.RUNNING
+                val isRunning = uiState.value.runStates[profile.id]?.isLiveInMemory == true
                 if (isRunning) {
                     localState.value = localState.value.copy(
                         stagedPortApply = StagedPortApplyRequest(

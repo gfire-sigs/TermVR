@@ -32,6 +32,7 @@ import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
 import java.io.File
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -94,8 +95,8 @@ class SandboxForegroundService : LifecycleService() {
 
         lifecycleScope.launch {
             supervisorInstance.runStates.collectLatest { states ->
-                val anyRunning = states.values.any { it == SandboxRunState.RUNNING }
-                if (anyRunning) {
+                val anyLive = states.values.any { it.isLiveInMemory }
+                if (anyLive) {
                     startTelemetryPollingIfInteractive()
                 } else {
                     stopTelemetryPolling()
@@ -135,7 +136,7 @@ class SandboxForegroundService : LifecycleService() {
             ACTION_FREEZE_ALL -> {
                 lifecycleScope.launch {
                     val runningIds = supervisorInstance.runStates.value
-                        .filterValues { it == SandboxRunState.RUNNING }
+                        .filterValues { it.isLiveInMemory }
                         .keys
                     for (id in runningIds) {
                         runCatching { supervisorInstance.freezeSandbox(id) }
@@ -192,11 +193,11 @@ class SandboxForegroundService : LifecycleService() {
 
     private fun startTelemetryPollingIfInteractive() {
         if (!powerManager.isInteractive) return
-        val anyRunning = supervisorInstance.runStates.value.values.any { it == SandboxRunState.RUNNING }
-        if (!anyRunning) return
+        val anyLive = supervisorInstance.runStates.value.values.any { it.isLiveInMemory }
+        if (!anyLive) return
         if (telemetryLoopJob?.isActive == true) return
 
-        telemetryLoopJob = lifecycleScope.launch {
+        telemetryLoopJob = lifecycleScope.launch(Dispatchers.IO) {
             while (isActive) {
                 if (!powerManager.isInteractive) {
                     break
@@ -482,7 +483,8 @@ class SandboxForegroundService : LifecycleService() {
             proxyBridge = proxyBridge,
         )
         val commandBuilder = GvxCommandBuilder(filesDir = files, cacheDir = cache)
-        val checkpointController = CheckpointController(filesDir = files)
+        val controlClient = GvxControlClient()
+        val checkpointController = CheckpointController(filesDir = files, controlClient = controlClient)
         val readinessInspector = HostReadinessInspector.create(appCtx)
         val hostAbi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
         val arch = GuestLinuxArch.fromAndroidAbi(hostAbi) ?: GuestLinuxArch.ARM64
@@ -511,6 +513,7 @@ class SandboxForegroundService : LifecycleService() {
             guestArch = arch,
             hostPssSampler = pssSampler,
             hostPortProbe = SocketBindHostPortProbe,
+            controlClient = controlClient,
         )
     }
 
@@ -543,6 +546,7 @@ class SandboxForegroundService : LifecycleService() {
         fun isForegroundActiveState(state: SandboxRunState): Boolean = when (state) {
             SandboxRunState.STARTING,
             SandboxRunState.RUNNING,
+            SandboxRunState.PAUSED,
             SandboxRunState.RESTORING,
             SandboxRunState.FREEZING -> true
             SandboxRunState.STOPPED,

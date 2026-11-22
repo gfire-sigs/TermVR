@@ -186,6 +186,7 @@ class CheckpointController(
     private val gvxVersion: String = DEFAULT_GVX_VERSION,
     private val freeSpaceProvider: FreeSpaceProvider = StatvfsFreeSpaceProvider,
     private val controlTransport: ControlSocketTransport = AndroidLocalSocketTransport,
+    private val controlClient: GvxControlClient? = null,
     private val clockMillis: () -> Long = { System.currentTimeMillis() },
 ) {
     private val json = Json {
@@ -314,37 +315,54 @@ class CheckpointController(
             }
         }
 
-        val cmdLine = lineJson.encodeToString(
-            ControlCheckpointCommand(dir = nextSlotDir.absolutePath, leaveRunning = false),
-        )
-        val reply = try {
-            controlTransport.sendCommand(
-                socketFile = controlSocketFile,
-                payloadLine = cmdLine,
-                connectWriteTimeoutMs = CONNECT_WRITE_TIMEOUT_MS,
-                readTimeoutMs = CHECKPOINT_READ_TIMEOUT_MS,
-            ).trim()
-        } catch (e: Exception) {
-            if (preopenedSlotDir == null) {
-                nextSlotDir.deleteRecursively()
+        if (controlClient != null) {
+            try {
+                controlClient.checkpoint(
+                    socketFile = controlSocketFile,
+                    dir = nextSlotDir.absolutePath,
+                    leaveRunning = false,
+                    force = false,
+                    readTimeoutMs = CHECKPOINT_READ_TIMEOUT_MS,
+                )
+            } catch (e: Exception) {
+                if (preopenedSlotDir == null) {
+                    nextSlotDir.deleteRecursively()
+                }
+                throw CheckpointFailedException("Checkpoint rejected by gvx: ${e.message}")
             }
-            throw CheckpointFailedException("Control socket checkpoint command failed: ${e.message}")
-        }
+        } else {
+            val cmdLine = lineJson.encodeToString(
+                ControlCheckpointCommand(dir = nextSlotDir.absolutePath, leaveRunning = false),
+            )
+            val reply = try {
+                controlTransport.sendCommand(
+                    socketFile = controlSocketFile,
+                    payloadLine = cmdLine,
+                    connectWriteTimeoutMs = CONNECT_WRITE_TIMEOUT_MS,
+                    readTimeoutMs = CHECKPOINT_READ_TIMEOUT_MS,
+                ).trim()
+            } catch (e: Exception) {
+                if (preopenedSlotDir == null) {
+                    nextSlotDir.deleteRecursively()
+                }
+                throw CheckpointFailedException("Control socket checkpoint command failed: ${e.message}")
+            }
 
-        val response = try {
-            lineJson.decodeFromString<ControlCheckpointResponse>(reply)
-        } catch (_: SerializationException) {
-            if (preopenedSlotDir == null) {
-                nextSlotDir.deleteRecursively()
+            val response = try {
+                lineJson.decodeFromString<ControlCheckpointResponse>(reply)
+            } catch (_: SerializationException) {
+                if (preopenedSlotDir == null) {
+                    nextSlotDir.deleteRecursively()
+                }
+                throw CheckpointFailedException("Unexpected checkpoint reply from gvx: '$reply'")
             }
-            throw CheckpointFailedException("Unexpected checkpoint reply from gvx: '$reply'")
-        }
-        if (!response.ok) {
-            if (preopenedSlotDir == null) {
-                nextSlotDir.deleteRecursively()
+            if (!response.ok) {
+                if (preopenedSlotDir == null) {
+                    nextSlotDir.deleteRecursively()
+                }
+                val detail = response.error?.takeIf { it.isNotBlank() } ?: "gvx reported checkpoint failure"
+                throw CheckpointFailedException("Checkpoint rejected by gvx: $detail")
             }
-            val detail = response.error?.takeIf { it.isNotBlank() } ?: "gvx reported checkpoint failure"
-            throw CheckpointFailedException("Checkpoint rejected by gvx: $detail")
         }
 
         val exitCode = awaitProcessExit()
@@ -420,7 +438,7 @@ class CheckpointController(
     }
 
     companion object {
-        const val DEFAULT_GVX_VERSION: String = "v0.18.10022026111600"
+        const val DEFAULT_GVX_VERSION: String = "v0.20.10012026111600"
         const val CONNECT_WRITE_TIMEOUT_MS: Int = 2_000
         const val CHECKPOINT_READ_TIMEOUT_MS: Int = 60_000
         const val FREE_SPACE_SAFETY_MULTIPLIER: Double = 1.2

@@ -611,5 +611,53 @@ class SandboxModelsTest {
             """{"id":"legacy-box","displayName":"Legacy","imageRef":"alpine:3.21"}""",
         )
         assertNull(legacyDecoded.gitWorktree)
+        assertEquals(SandboxProfile.UNLIMITED_PIDS_LIMIT, legacyDecoded.pidsLimit)
+        assertFalse(legacyDecoded.network.autoPublishPorts)
+    }
+
+    @Test
+    fun `pidsLimit, autoPublishPorts, PAUSED state, and gvx-ctrl v2 models round-trip cleanly`() {
+        assertEquals(SandboxProfile.UNLIMITED_PIDS_LIMIT, SandboxProfile.clampPidsLimit(0))
+        assertEquals(SandboxProfile.MIN_PIDS_LIMIT, SandboxProfile.clampPidsLimit(2))
+        assertEquals(SandboxProfile.MAX_PIDS_LIMIT, SandboxProfile.clampPidsLimit(999_999))
+        assertEquals(256, SandboxProfile.clampPidsLimit(256))
+
+        val profile = SandboxProfile(
+            id = "ctrl-v2-box",
+            displayName = "Ctrl V2",
+            imageRef = "debian:trixie-slim",
+            pidsLimit = 256,
+            network = NetworkModeConfig(autoPublishPorts = true),
+        )
+        assertTrue(profile.hasPidsLimit)
+        assertEquals(profile, json.decodeFromString<SandboxProfile>(json.encodeToString(profile)))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            profile.copy(pidsLimit = 4)
+        }
+
+        assertTrue(SandboxRunState.RUNNING.isLiveInMemory)
+        assertTrue(SandboxRunState.PAUSED.isLiveInMemory)
+        assertFalse(SandboxRunState.FROZEN.isLiveInMemory)
+        assertFalse(SandboxRunState.STOPPED.isLiveInMemory)
+        assertFalse(SandboxRunState.PAUSED.locksWorkspaceWrites)
+
+        val proc = LiveProcessInfo(pid = 7, comm = "sh", cmdline = listOf("/bin/sh", "-c", "echo hi"))
+        assertEquals("/bin/sh -c echo hi", proc.displayCommand)
+        assertEquals("init", LiveProcessInfo(pid = 1, comm = "init").displayCommand)
+
+        val stats = LiveStatsSnapshot(cpuUserNanos = 100L, cpuSysNanos = 50L)
+        assertEquals(150L, stats.totalCpuNanos)
+
+        val inspect = SandboxInspectSnapshot(
+            id = "ctrl-v2-box",
+            state = "paused",
+            resources = LiveResourceLimits(memoryBytes = 512L * 1024L * 1024L, pidsLimit = 256L, isolateLan = true),
+            ports = listOf(LivePortInfo(proto = "tcp", hostIp = "127.0.0.1", hostPort = 8080, guestPort = 80, source = "dynamic")),
+            mounts = listOf(LiveMountInfo(target = "/data", type = "ext4lite", source = "vol1", readOnly = false, mutable = true)),
+        )
+        assertEquals(inspect, json.decodeFromString<SandboxInspectSnapshot>(json.encodeToString(inspect)))
+        assertFalse(LiveResourceUpdate().hasChanges)
+        assertTrue(LiveResourceUpdate(pidsLimit = 128).hasChanges)
     }
 }

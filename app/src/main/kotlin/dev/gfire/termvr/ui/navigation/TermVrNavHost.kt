@@ -109,7 +109,10 @@ fun TermVrNavHost(
     val notificationsDenied by runtimeGateway.notificationsDeniedBanner.collectAsStateWithLifecycle()
     val runStates by runtimeGateway.runStates.collectAsStateWithLifecycle()
     val anyActive = runStates.values.any {
-        it == SandboxRunState.STARTING || it == SandboxRunState.RUNNING || it == SandboxRunState.RESTORING
+        it == SandboxRunState.STARTING ||
+            it == SandboxRunState.RUNNING ||
+            it == SandboxRunState.PAUSED ||
+            it == SandboxRunState.RESTORING
     }
     val scope = rememberCoroutineScope()
 

@@ -14,6 +14,7 @@ import dev.gfire.termvr.core.model.FontConfig
 import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.HostReadinessReport
 import dev.gfire.termvr.core.model.ListenHost
+import dev.gfire.termvr.core.model.NetBackend
 import dev.gfire.termvr.core.model.OutboundProxyConfig
 import dev.gfire.termvr.core.model.OutboundProxyMode
 import dev.gfire.termvr.core.model.PortForwardRule
@@ -24,6 +25,7 @@ import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
 import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.VolumeKind
 import dev.gfire.termvr.core.model.VolumeMountMode
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.core.runtime.HostPtyHandle
 import dev.gfire.termvr.core.runtime.MuxSessionClient
 import dev.gfire.termvr.core.runtime.ProxyTestResult
@@ -127,7 +129,7 @@ class AppViewModelsTest {
         assertTrue(vm.uiState.value.errorMessage?.contains("2375") == true)
         assertTrue(vm.uiState.value.selectedProfile?.portForwards?.isEmpty() == true)
 
-        // Loopback 127.0.0.1 port 8080 stages Checkpoint & Restore while RUNNING
+        // Loopback 127.0.0.1 port 8080 applies LIVE on NAT without staging restart!
         vm.addPortRule(
             protocol = ForwardProtocol.TCP,
             listenHost = ListenHost.LOOPBACK_V4,
@@ -136,12 +138,37 @@ class AppViewModelsTest {
         )
         advanceUntilIdle()
         assertNull(vm.uiState.value.errorMessage)
+        assertNull(vm.uiState.value.stagedPortApply)
+        assertEquals(1, gateway.liveAddedPorts.size)
+        assertEquals(8080, gateway.liveAddedPorts.single().second.hostPortStart)
+
+        // LAN 0.0.0.0 port 8081 stages Checkpoint & Restore while RUNNING (lockdown forbids dynamic LAN binds)
+        vm.addPortRule(
+            protocol = ForwardProtocol.TCP,
+            listenHost = ListenHost.LAN_ALL_V4,
+            hostPort = 8081,
+            guestPort = 8081,
+        )
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.errorMessage)
         assertNotNull(vm.uiState.value.stagedPortApply)
 
         vm.confirmStagedPortApply(checkpointAndRestore = true)
         advanceUntilIdle()
         assertNull(vm.uiState.value.stagedPortApply)
-        assertEquals(listOf(Triple("dev-net", 1, true)), gateway.appliedPortCalls)
+        assertEquals(listOf(Triple("dev-net", 2, true)), gateway.appliedPortCalls)
+
+        // Toggling isolateLanEgress on live NAT applies LIVE via resource.update
+        vm.updateNetworkBackend(NetBackend.NAT, isolateLanEgress = true, wireGuardName = null)
+        advanceUntilIdle()
+        assertEquals(true, gateway.lastLiveResourceUpdate?.second?.isolateLan)
+
+        // Removing a live NAT port rule calls removePortRuleLive without staging restart
+        val loopbackId = vm.uiState.value.selectedProfile!!.portForwards.first { it.hostPortStart == 8080 }.id
+        vm.removePortRule(loopbackId)
+        advanceUntilIdle()
+        assertEquals(1, gateway.liveRemovedPorts.size)
+        assertNull(vm.uiState.value.stagedPortApply)
 
         // Toggling transparentTcp on a running sandbox flags restart required for --net-raw
         vm.saveOutboundProxy(
@@ -856,6 +883,83 @@ class AppViewModelsTest {
         vmScope.cancel()
     }
 
+    @Test
+    fun homeViewModelDrivesPauseResumeLiveResourceUpdateHotMountAndInspector() = runTest(testDispatcher) {
+        val (profileRepo, catalogRepo, gateway) = createFixtures(backgroundScope)
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = HomeViewModel(profileRepo, catalogRepo, gateway, coordinator, scope = vmScope)
+        advanceUntilIdle()
+
+        vm.createProfile("Live Box", "docker.io/library/debian:trixie-slim", pidsLimit = 128)
+        advanceUntilIdle()
+        val liveBox = vm.uiState.value.profiles.single()
+        assertEquals(128, liveBox.pidsLimit)
+
+        vm.startOrOpenProfile(liveBox) {}
+        advanceUntilIdle()
+        assertEquals(SandboxRunState.RUNNING, vm.uiState.value.runStates[liveBox.id])
+
+        // Pause & unpause
+        vm.pauseProfile(liveBox.id)
+        advanceUntilIdle()
+        assertEquals(SandboxRunState.PAUSED, vm.uiState.value.runStates[liveBox.id])
+        assertEquals(1, vm.uiState.value.pausedCount)
+        assertEquals(1, vm.uiState.value.liveInMemoryCount)
+
+        vm.unpauseProfile(liveBox.id)
+        advanceUntilIdle()
+        assertEquals(SandboxRunState.RUNNING, vm.uiState.value.runStates[liveBox.id])
+
+        // Live RAM/CPU/PIDs edit applies via updateResourcesLive without restart notice
+        vm.updateProfileConfig(
+            profileId = liveBox.id,
+            displayName = "Live Box",
+            memoryMiB = 768,
+            cpuCores = 1.5,
+            persistentRootfs = false,
+            gitWorktree = null,
+            pidsLimit = 256,
+        )
+        advanceUntilIdle()
+        assertEquals(768, gateway.lastLiveResourceUpdate?.second?.memoryMiB)
+        assertEquals(1.5, gateway.lastLiveResourceUpdate?.second?.cpuCores)
+        assertEquals(256, gateway.lastLiveResourceUpdate?.second?.pidsLimit)
+        assertTrue(vm.uiState.value.statusMessage.orEmpty().contains("live"))
+
+        // Hot-attach and hot-detach named ext4lite volume
+        vm.attachVolumeToProfile(liveBox.id, "hot-data", "/data", VolumeMountMode.EXCLUSIVE_RW)
+        advanceUntilIdle()
+        assertEquals(listOf("hot-data"), gateway.liveAttachedVolumes.map { it.second.sourceName })
+        assertTrue(vm.uiState.value.statusMessage.orEmpty().contains("live"))
+
+        vm.detachVolumeFromProfile(liveBox.id, "hot-data", "/data")
+        advanceUntilIdle()
+        assertEquals(listOf("/data"), gateway.liveDetachedMounts.map { it.second })
+
+        // Inspector loads snapshot, processes, mounts, dmesg, and dispatches signal/clear
+        vm.openInspector(liveBox.id)
+        advanceUntilIdle()
+        assertNotNull(vm.uiState.value.inspector)
+        assertEquals(liveBox.id, vm.uiState.value.inspector!!.inspect?.id)
+        vm.signalInspectorProcess(42, "SIGTERM")
+        advanceUntilIdle()
+        assertEquals(listOf(Triple(liveBox.id, 42, "SIGTERM")), gateway.signaledProcesses)
+        vm.clearInspectorKernelLog()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.inspector!!.kernelLog.isEmpty())
+        vm.closeInspector()
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.inspector)
+
+        vmScope.cancel()
+    }
+
     private fun createFixtures(scope: CoroutineScope): Triple<ProfileRepository, CatalogRepository, FakeGateway> {
         val secretStore = InMemorySecretStore()
         val dataStore = InMemoryDataStore()
@@ -939,9 +1043,15 @@ private class FakeGateway(private val rootDir: File) : SandboxRuntimeGateway {
 
     val activeCheckpoints = mutableSetOf<String>()
     val appliedPortCalls = mutableListOf<Triple<String, Int, Boolean>>()
+    val liveAddedPorts = mutableListOf<Pair<String, PortForwardRule>>()
+    val liveRemovedPorts = mutableListOf<Pair<String, PortForwardRule>>()
+    val liveAttachedVolumes = mutableListOf<Pair<String, VolumeMountSpec>>()
+    val liveDetachedMounts = mutableListOf<Pair<String, String>>()
+    val signaledProcesses = mutableListOf<Triple<String, Int, String>>()
     val sharedFiles = mutableMapOf<String, ByteArray>()
     val namedVolumes = mutableListOf<RungvVolumeLsEntry>()
     var lastLiveProxyUpdate: OutboundProxyConfig? = null
+    var lastLiveResourceUpdate: Pair<String, dev.gfire.termvr.core.model.LiveResourceUpdate>? = null
     var lastVolumeClientCall: VolumeClientCall? = null
 
     override fun refreshHostReadiness() = Unit
@@ -957,6 +1067,67 @@ private class FakeGateway(private val rootDir: File) : SandboxRuntimeGateway {
         activeCheckpoints.remove(profile.id)
         runStates.value = runStates.value + (profile.id to SandboxRunState.RUNNING)
         return SandboxRunState.RUNNING
+    }
+
+    override suspend fun pauseSandbox(profileId: String, quiesceNet: Boolean): SandboxRunState {
+        runStates.value = runStates.value + (profileId to SandboxRunState.PAUSED)
+        return SandboxRunState.PAUSED
+    }
+
+    override suspend fun unpauseSandbox(profileId: String): SandboxRunState {
+        runStates.value = runStates.value + (profileId to SandboxRunState.RUNNING)
+        return SandboxRunState.RUNNING
+    }
+
+    override suspend fun updateResourcesLive(
+        profileId: String,
+        update: dev.gfire.termvr.core.model.LiveResourceUpdate,
+    ): dev.gfire.termvr.core.model.LiveResourceLimits {
+        lastLiveResourceUpdate = profileId to update
+        return dev.gfire.termvr.core.model.LiveResourceLimits(
+            memoryBytes = (update.memoryMiB ?: 0).toLong() * 1024L * 1024L,
+            pidsLimit = (update.pidsLimit ?: 0).toLong(),
+            isolateLan = update.isolateLan ?: false,
+        )
+    }
+
+    override suspend fun addPortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+        replace: Boolean,
+    ): List<PublishedPortMapping> {
+        liveAddedPorts.add(profileId to rule)
+        return listOf(PublishedPortMapping(rule.listenHost.wireLiteral, rule.hostPortStart, rule.guestPortStart, rule.protocol))
+    }
+
+    override suspend fun removePortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+    ): List<PublishedPortMapping> {
+        liveRemovedPorts.add(profileId to rule)
+        return emptyList()
+    }
+
+    override suspend fun attachVolumeLive(
+        profileId: String,
+        mount: VolumeMountSpec,
+    ): dev.gfire.termvr.core.model.LiveMountInfo {
+        liveAttachedVolumes.add(profileId to mount)
+        return dev.gfire.termvr.core.model.LiveMountInfo(
+            target = mount.guestMountPath,
+            type = "ext4lite",
+            source = mount.sourceName,
+            readOnly = mount.readOnly,
+            mutable = !mount.readOnly,
+        )
+    }
+
+    override suspend fun detachMountLive(profileId: String, targetPath: String, detach: Boolean) {
+        liveDetachedMounts.add(profileId to targetPath)
+    }
+
+    override suspend fun signalGuestProcess(profileId: String, pid: Int, signal: String, all: Boolean) {
+        signaledProcesses.add(Triple(profileId, pid, signal))
     }
 
     override suspend fun freezeSandbox(profileId: String): SandboxRunState {

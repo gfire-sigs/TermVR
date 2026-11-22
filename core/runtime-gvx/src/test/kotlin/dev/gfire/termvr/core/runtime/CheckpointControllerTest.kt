@@ -350,4 +350,54 @@ class CheckpointControllerTest {
         }
         assertTrue(ex.message.orEmpty().contains("Unix domain limit"))
     }
+
+    @Test
+    fun `checkpoint prefers gvx-ctrl v2 controlClient when configured and cleans failed slot on error`(
+        @TempDir tempDir: File,
+    ) {
+        val ctlSock = File(tempDir, "ctl/v2-box.sock").apply { parentFile?.mkdirs() }
+        var failReply = false
+        val server = FakeGvxControlServer { call ->
+            assertEquals(GvxControlClient.METHOD_CHECKPOINT, call.method)
+            if (failReply) {
+                """{"ok":false,"error":{"code":"BUSY","message":"checkpoint busy"}}"""
+            } else {
+                val dir = call.params!!.toString()
+                    .substringAfter("\"dir\":\"")
+                    .substringBefore('"')
+                File(dir, "state.bin").writeText("v2-state")
+                """{"ok":true,"result":{"ok":true}}"""
+            }
+        }
+        try {
+            val controller = CheckpointController(
+                filesDir = tempDir,
+                freeSpaceProvider = { 512L * 1024L * 1024L },
+                controlClient = GvxControlClient(transport = server.transport),
+            )
+            val meta = controller.checkpoint(
+                profileId = "v2-box",
+                controlSocketFile = ctlSock,
+                currentPssBytes = 16L * 1024L * 1024L,
+                awaitProcessExit = { 0 },
+            )
+            assertEquals(CheckpointSlotMetadata.SLOT_A, meta.activeSlot)
+            assertTrue(File(tempDir, "checkpoints/v2-box/slot-a/state.bin").isFile)
+
+            failReply = true
+            val ex = assertThrows(CheckpointFailedException::class.java) {
+                controller.checkpoint(
+                    profileId = "v2-box",
+                    controlSocketFile = ctlSock,
+                    currentPssBytes = 16L * 1024L * 1024L,
+                    awaitProcessExit = { 0 },
+                )
+            }
+            assertTrue(ex.message.orEmpty().contains("checkpoint busy"))
+            assertFalse(File(tempDir, "checkpoints/v2-box/slot-b").exists())
+            assertEquals(CheckpointSlotMetadata.SLOT_A, controller.resolveActiveCheckpoint("v2-box")?.metadata?.activeSlot)
+        } finally {
+            server.shutdown()
+        }
+    }
 }

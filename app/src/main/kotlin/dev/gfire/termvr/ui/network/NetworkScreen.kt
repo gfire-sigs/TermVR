@@ -233,13 +233,48 @@ fun NetworkScreen(
 
         when (activeTab) {
             NetworkSubTab.PORTS -> {
+                val isSelectedLive = state.runStates[selectedProfile.id]?.isLiveInMemory == true
                 item {
                     TermVrCard(modifier = Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier.padding(14.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            Text("Port Forwarding", style = MaterialTheme.typography.titleMedium)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Port Forwarding", style = MaterialTheme.typography.titleMedium)
+                                if (isSelectedLive && selectedProfile.network.backend == NetBackend.NAT) {
+                                    TermVrOutlinedButton(
+                                        onClick = viewModel::refreshLivePorts,
+                                        enabled = !state.busy,
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    ) {
+                                        Text("Sync Live", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                            if (isSelectedLive && selectedProfile.network.backend == NetBackend.NAT) {
+                                Text(
+                                    text = "Loopback TCP/UDP rules apply live. LAN binds require restart.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            if (selectedProfile.network.backend == NetBackend.NAT) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Checkbox(
+                                        checked = selectedProfile.network.autoPublishPorts,
+                                        onCheckedChange = viewModel::toggleAutoPublishPorts,
+                                    )
+                                    Text(
+                                        text = "Auto-publish listening guest ports (127.0.0.1)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedTextField(
                                     value = hostPortText,
@@ -398,6 +433,47 @@ fun NetworkScreen(
                                     }
                                 }
                             }
+
+                            val extraLivePorts = profilePublishedPorts.filter { live ->
+                                selectedProfile.portForwards.none { rule ->
+                                    rule.protocol == live.protocol &&
+                                        rule.guestPortStart == live.guestPort &&
+                                        (rule.hostPortStart == 0 || rule.hostPortStart == live.hostPort)
+                                }
+                            }
+                            if (extraLivePorts.isNotEmpty()) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Text("Auto-Published Ports", style = MaterialTheme.typography.labelLarge)
+                                for (live in extraLivePorts) {
+                                    val liveHost = live.listenHost.ifBlank { "127.0.0.1" }
+                                    val liveUrl = "http://$liveHost:${live.hostPort}"
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = "${live.protocol.name} $liveHost:${live.hostPort} -> :${live.guestPort}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = monoFont,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        if (live.protocol == ForwardProtocol.TCP) {
+                                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                TermVrTextButton(onClick = { viewModel.openUrlInCustomTab(liveUrl) }) {
+                                                    Text("Open", style = MaterialTheme.typography.labelSmall)
+                                                }
+                                                TermVrTextButton(onClick = {
+                                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                    cm.setPrimaryClip(ClipData.newPlainText("TermVR Endpoint", liveUrl))
+                                                }) {
+                                                    Text("Copy", style = MaterialTheme.typography.labelSmall)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -443,6 +519,8 @@ fun NetworkScreen(
                                     )
                                 }
                             }
+                            val isLiveNat = state.runStates[selectedProfile.id]?.isLiveInMemory == true &&
+                                selectedProfile.network.backend == NetBackend.NAT
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Checkbox(
                                     checked = selectedProfile.network.isolateLanEgress,
@@ -455,7 +533,7 @@ fun NetworkScreen(
                                     },
                                 )
                                 Text(
-                                    text = "Block private LAN egress",
+                                    text = if (isLiveNat) "Block private LAN egress (applies live)" else "Block private LAN egress",
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                             }

@@ -17,6 +17,7 @@ data class SandboxProfile(
     val defaultShellArgv: List<String> = emptyList(),
     val memoryMiB: Int = UNLIMITED_MEMORY_MIB,
     val cpuCores: Double = UNLIMITED_CPU_CORES,
+    val pidsLimit: Int = UNLIMITED_PIDS_LIMIT,
     val guestPrivileged: Boolean = false,
     val volumes: List<VolumeMountSpec> = emptyList(),
     val tmpfsMounts: List<String> = DEFAULT_TMPFS_MOUNTS,
@@ -53,6 +54,10 @@ data class SandboxProfile(
         }
         require(cpuCores == UNLIMITED_CPU_CORES || (cpuCores.isFinite() && cpuCores > 0.0)) {
             "SandboxProfile cpuCores must be $UNLIMITED_CPU_CORES (unlimited) or finite and positive, found $cpuCores"
+        }
+        require(pidsLimit == UNLIMITED_PIDS_LIMIT || pidsLimit in MIN_PIDS_LIMIT..MAX_PIDS_LIMIT) {
+            "SandboxProfile pidsLimit must be $UNLIMITED_PIDS_LIMIT (unlimited) or within " +
+                "$MIN_PIDS_LIMIT..$MAX_PIDS_LIMIT, found $pidsLimit"
         }
         validateExt4VolumeConflicts()
         for (tmpfsPath in tmpfsMounts) {
@@ -115,6 +120,9 @@ data class SandboxProfile(
     val hasCpuLimit: Boolean
         get() = cpuCores > 0.0
 
+    val hasPidsLimit: Boolean
+        get() = pidsLimit > 0
+
     val rootfsVolumeName: String
         get() = "$ROOTFS_VOLUME_PREFIX$id"
 
@@ -123,10 +131,14 @@ data class SandboxProfile(
         const val ROOTFS_VOLUME_PREFIX: String = "rootfs-"
         const val UNLIMITED_MEMORY_MIB: Int = 0
         const val UNLIMITED_CPU_CORES: Double = 0.0
+        const val UNLIMITED_PIDS_LIMIT: Int = 0
         const val MIN_MEMORY_MIB: Int = 256
         const val MAX_MEMORY_MIB: Int = 12288
+        const val MIN_PIDS_LIMIT: Int = 8
+        const val MAX_PIDS_LIMIT: Int = 65536
         const val DEFAULT_MEMORY_MIB: Int = UNLIMITED_MEMORY_MIB
         const val DEFAULT_CPU_CORES: Double = UNLIMITED_CPU_CORES
+        const val DEFAULT_PIDS_LIMIT: Int = UNLIMITED_PIDS_LIMIT
 
         val DEFAULT_TMPFS_MOUNTS: List<String> = listOf("/tmp", "/run")
 
@@ -137,6 +149,9 @@ data class SandboxProfile(
 
         fun clampMemoryMiB(rawMiB: Int): Int =
             if (rawMiB <= 0) UNLIMITED_MEMORY_MIB else rawMiB.coerceIn(MIN_MEMORY_MIB, MAX_MEMORY_MIB)
+
+        fun clampPidsLimit(rawPids: Int): Int =
+            if (rawPids <= 0) UNLIMITED_PIDS_LIMIT else rawPids.coerceIn(MIN_PIDS_LIMIT, MAX_PIDS_LIMIT)
 
         fun clampCpuCores(
             requestedCores: Double,
@@ -456,6 +471,7 @@ data class GitWorktreeSpec(
 data class NetworkModeConfig(
     val backend: NetBackend = NetBackend.NAT,
     val isolateLanEgress: Boolean = false,
+    val autoPublishPorts: Boolean = false,
     val wireGuardConfigName: String? = null,
     val outboundProxy: OutboundProxyConfig = OutboundProxyConfig(),
 ) {
@@ -698,6 +714,7 @@ enum class SandboxRunState {
     STOPPED,
     STARTING,
     RUNNING,
+    PAUSED,
     FREEZING,
     FROZEN,
     RESTORING,
@@ -706,6 +723,9 @@ enum class SandboxRunState {
 
     val locksWorkspaceWrites: Boolean
         get() = this == FREEZING || this == FROZEN
+
+    val isLiveInMemory: Boolean
+        get() = this == RUNNING || this == PAUSED
 }
 
 /**

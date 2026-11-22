@@ -344,6 +344,7 @@ fun runStateColor(runState: SandboxRunState): Color {
     val tokens = LocalTermVrPaletteTokens.current
     return when (runState) {
         SandboxRunState.RUNNING -> tokens.statusRunning
+        SandboxRunState.PAUSED,
         SandboxRunState.FROZEN,
         SandboxRunState.STARTING,
         SandboxRunState.FREEZING,
@@ -356,6 +357,7 @@ fun runStateColor(runState: SandboxRunState): Color {
 
 fun runStateLabel(runState: SandboxRunState): String = when (runState) {
     SandboxRunState.RUNNING -> "Running"
+    SandboxRunState.PAUSED -> "Paused"
     SandboxRunState.FROZEN -> "Frozen"
     SandboxRunState.STARTING -> "Starting"
     SandboxRunState.FREEZING -> "Freezing"

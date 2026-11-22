@@ -98,6 +98,7 @@ object PortConflictDetector {
     fun isActivePortHoldingState(state: SandboxRunState?): Boolean = when (state) {
         SandboxRunState.STARTING,
         SandboxRunState.RUNNING,
+        SandboxRunState.PAUSED,
         SandboxRunState.RESTORING -> true
         else -> false
     }

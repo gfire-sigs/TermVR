@@ -16,11 +16,19 @@ import dev.gfire.termvr.core.data.RungvCommandResult
 import dev.gfire.termvr.core.data.RungvVolumeLsEntry
 import dev.gfire.termvr.core.data.SecretStore
 import dev.gfire.termvr.core.model.HostReadinessReport
+import dev.gfire.termvr.core.model.LiveKernelLogEntry
+import dev.gfire.termvr.core.model.LiveMountInfo
+import dev.gfire.termvr.core.model.LiveProcessInfo
+import dev.gfire.termvr.core.model.LiveResourceLimits
+import dev.gfire.termvr.core.model.LiveResourceUpdate
+import dev.gfire.termvr.core.model.LiveStatsSnapshot
 import dev.gfire.termvr.core.model.OutboundProxyConfig
 import dev.gfire.termvr.core.model.PortForwardRule
+import dev.gfire.termvr.core.model.SandboxInspectSnapshot
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.core.runtime.AndroidNetworkDnsBackend
 import dev.gfire.termvr.core.runtime.AndroidSystemProxyResolver
 import dev.gfire.termvr.core.runtime.CheckpointController
@@ -69,10 +77,37 @@ interface SandboxRuntimeGateway {
     fun setNotificationsPermissionGranted(granted: Boolean)
     fun clearNotice()
     suspend fun startOrResumeSandbox(profile: SandboxProfile, reconfirmLan: Boolean = false): SandboxRunState
+    suspend fun pauseSandbox(profileId: String, quiesceNet: Boolean = true): SandboxRunState = SandboxRunState.PAUSED
+    suspend fun unpauseSandbox(profileId: String): SandboxRunState = SandboxRunState.RUNNING
     suspend fun freezeSandbox(profileId: String): SandboxRunState
     suspend fun stopSandbox(profileId: String)
     suspend fun stopAllSandboxes()
     suspend fun updateOutboundProxyLive(profileId: String, outboundProxy: OutboundProxyConfig)
+    suspend fun updateResourcesLive(profileId: String, update: LiveResourceUpdate): LiveResourceLimits = LiveResourceLimits()
+    suspend fun addPortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+        replace: Boolean = false,
+    ): List<PublishedPortMapping> = emptyList()
+    suspend fun removePortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+    ): List<PublishedPortMapping> = emptyList()
+    suspend fun refreshPublishedPorts(profileId: String): List<PublishedPortMapping> = emptyList()
+    suspend fun attachVolumeLive(profileId: String, mount: VolumeMountSpec): LiveMountInfo = LiveMountInfo(
+        target = mount.guestMountPath,
+        type = "ext4lite",
+        source = mount.sourceName,
+        readOnly = mount.readOnly,
+        mutable = !mount.readOnly,
+    )
+    suspend fun detachMountLive(profileId: String, targetPath: String, detach: Boolean = false) = Unit
+    suspend fun remountLive(profileId: String, targetPath: String, readOnly: Boolean): Boolean = readOnly
+    suspend fun inspectSandbox(profileId: String): SandboxInspectSnapshot = SandboxInspectSnapshot(id = profileId)
+    suspend fun statsSandbox(profileId: String): LiveStatsSnapshot = LiveStatsSnapshot()
+    suspend fun listGuestProcesses(profileId: String): List<LiveProcessInfo> = emptyList()
+    suspend fun signalGuestProcess(profileId: String, pid: Int, signal: String, all: Boolean = false) = Unit
+    suspend fun readKernelLog(profileId: String, tail: Int = 200, clear: Boolean = false): List<LiveKernelLogEntry> = emptyList()
     suspend fun applyPortForwards(
         profileId: String,
         updatedRules: List<PortForwardRule>,
@@ -297,6 +332,14 @@ class AndroidSandboxRuntimeGateway(
         )
     }
 
+    override suspend fun pauseSandbox(profileId: String, quiesceNet: Boolean): SandboxRunState {
+        return awaitSupervisor().pauseSandbox(profileId, quiesceNet)
+    }
+
+    override suspend fun unpauseSandbox(profileId: String): SandboxRunState {
+        return awaitSupervisor().unpauseSandbox(profileId)
+    }
+
     override suspend fun freezeSandbox(profileId: String): SandboxRunState {
         return awaitSupervisor().freezeSandbox(profileId)
     }
@@ -311,6 +354,64 @@ class AndroidSandboxRuntimeGateway(
 
     override suspend fun updateOutboundProxyLive(profileId: String, outboundProxy: OutboundProxyConfig) {
         awaitSupervisor().updateOutboundProxyLive(profileId, outboundProxy)
+    }
+
+    override suspend fun updateResourcesLive(
+        profileId: String,
+        update: LiveResourceUpdate,
+    ): LiveResourceLimits {
+        return awaitSupervisor().updateResourcesLive(profileId, update)
+    }
+
+    override suspend fun addPortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+        replace: Boolean,
+    ): List<PublishedPortMapping> {
+        return awaitSupervisor().addPortRuleLive(profileId, rule, replace)
+    }
+
+    override suspend fun removePortRuleLive(
+        profileId: String,
+        rule: PortForwardRule,
+    ): List<PublishedPortMapping> {
+        return awaitSupervisor().removePortRuleLive(profileId, rule)
+    }
+
+    override suspend fun refreshPublishedPorts(profileId: String): List<PublishedPortMapping> {
+        return awaitSupervisor().refreshPublishedPorts(profileId)
+    }
+
+    override suspend fun attachVolumeLive(profileId: String, mount: VolumeMountSpec): LiveMountInfo {
+        return awaitSupervisor().attachVolumeLive(profileId, mount)
+    }
+
+    override suspend fun detachMountLive(profileId: String, targetPath: String, detach: Boolean) {
+        awaitSupervisor().detachMountLive(profileId, targetPath, detach)
+    }
+
+    override suspend fun remountLive(profileId: String, targetPath: String, readOnly: Boolean): Boolean {
+        return awaitSupervisor().remountLive(profileId, targetPath, readOnly)
+    }
+
+    override suspend fun inspectSandbox(profileId: String): SandboxInspectSnapshot {
+        return awaitSupervisor().inspectSandbox(profileId)
+    }
+
+    override suspend fun statsSandbox(profileId: String): LiveStatsSnapshot {
+        return awaitSupervisor().statsSandbox(profileId)
+    }
+
+    override suspend fun listGuestProcesses(profileId: String): List<LiveProcessInfo> {
+        return awaitSupervisor().listGuestProcesses(profileId)
+    }
+
+    override suspend fun signalGuestProcess(profileId: String, pid: Int, signal: String, all: Boolean) {
+        awaitSupervisor().signalGuestProcess(profileId, pid, signal, all)
+    }
+
+    override suspend fun readKernelLog(profileId: String, tail: Int, clear: Boolean): List<LiveKernelLogEntry> {
+        return awaitSupervisor().readKernelLog(profileId, tail, clear)
     }
 
     override suspend fun applyPortForwards(

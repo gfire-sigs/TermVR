@@ -8,8 +8,14 @@ import dev.gfire.termvr.core.model.GitProjectSummary
 import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.GlobalAppSettings
 import dev.gfire.termvr.core.model.HostReadinessReport
+import dev.gfire.termvr.core.model.LiveKernelLogEntry
+import dev.gfire.termvr.core.model.LiveMountInfo
+import dev.gfire.termvr.core.model.LiveProcessInfo
+import dev.gfire.termvr.core.model.LiveResourceUpdate
+import dev.gfire.termvr.core.model.LiveStatsSnapshot
 import dev.gfire.termvr.core.model.MuxMode
 import dev.gfire.termvr.core.model.PhantomProcessRemediation
+import dev.gfire.termvr.core.model.SandboxInspectSnapshot
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
@@ -18,6 +24,7 @@ import dev.gfire.termvr.core.model.VolumeMountMode
 import dev.gfire.termvr.core.model.VolumeMountSpec
 import dev.gfire.termvr.runtime.SandboxRuntimeGateway
 import dev.gfire.termvr.ui.terminal.TerminalSessionCoordinator
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +40,30 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+enum class InspectorTab(val label: String) {
+    STATS("Stats"),
+    PROCESSES("Processes"),
+    MOUNTS("Mounts"),
+    KERNEL_LOG("dmesg"),
+}
+
+/**
+ * Holds live `gvx-ctrl/2` inspection state for one running or paused container.
+ */
+data class ContainerInspectorState(
+    val profileId: String,
+    val displayName: String,
+    val selectedTab: InspectorTab = InspectorTab.STATS,
+    val loading: Boolean = false,
+    val inspect: SandboxInspectSnapshot? = null,
+    val stats: LiveStatsSnapshot? = null,
+    val processes: List<LiveProcessInfo> = emptyList(),
+    val mounts: List<LiveMountInfo> = emptyList(),
+    val kernelLog: List<LiveKernelLogEntry> = emptyList(),
+    val errorMessage: String? = null,
+    val actionMessage: String? = null,
+)
+
 /**
  * UI state for the Containers dashboard and concurrent multi-container controls.
  */
@@ -44,6 +75,7 @@ data class HomeUiState(
     val availableVolumes: List<String> = emptyList(),
     val gitProjects: List<GitProjectSummary> = emptyList(),
     val busyProfileIds: Set<String> = emptySet(),
+    val inspector: ContainerInspectorState? = null,
     val serviceNotice: String? = null,
     val statusMessage: String? = null,
     val errorMessage: String? = null,
@@ -51,8 +83,14 @@ data class HomeUiState(
     val runningCount: Int
         get() = runStates.values.count { it == SandboxRunState.RUNNING }
 
+    val pausedCount: Int
+        get() = runStates.values.count { it == SandboxRunState.PAUSED }
+
+    val liveInMemoryCount: Int
+        get() = runStates.values.count { it.isLiveInMemory }
+
     val exceedsRecommendedSandboxCount: Boolean
-        get() = runningCount > GlobalAppSettings.DEFAULT_MAX_ACTIVE_SANDBOXES
+        get() = liveInMemoryCount > GlobalAppSettings.DEFAULT_MAX_ACTIVE_SANDBOXES
 
     val hasReadinessWarning: Boolean
         get() = hostReadiness.phantomKillerDetected ||
@@ -60,14 +98,14 @@ data class HomeUiState(
             exceedsRecommendedSandboxCount
 
     val readinessWarningMessage: String?
-        get() = HomeViewModel.formatHostReadinessWarning(hostReadiness, runningCount)
+        get() = HomeViewModel.formatHostReadinessWarning(hostReadiness, liveInMemoryCount)
 
     val isNoticeError: Boolean
         get() = errorMessage != null || HomeViewModel.isErrorServiceNotice(serviceNotice)
 
     val activeOrFrozenCount: Int
         get() = runStates.values.count {
-            it == SandboxRunState.RUNNING || it == SandboxRunState.FROZEN
+            it == SandboxRunState.RUNNING || it == SandboxRunState.PAUSED || it == SandboxRunState.FROZEN
         }
 }
 
@@ -84,6 +122,7 @@ class HomeViewModel(
     private val busyProfileIds = MutableStateFlow<Set<String>>(emptySet())
     private val availableVolumes = MutableStateFlow<List<String>>(emptyList())
     private val gitProjects = MutableStateFlow<List<GitProjectSummary>>(emptyList())
+    private val inspectorState = MutableStateFlow<ContainerInspectorState?>(null)
     private val statusMessage = MutableStateFlow<String?>(null)
     private val errorMessage = MutableStateFlow<String?>(null)
 
@@ -106,7 +145,12 @@ class HomeViewModel(
         LocalHomeData(busyIds, volumes, notice, status, err)
     }
 
-    val uiState: StateFlow<HomeUiState> = combine(baseFlow, localFlow, gitProjects) { base, local, projects ->
+    val uiState: StateFlow<HomeUiState> = combine(
+        baseFlow,
+        localFlow,
+        gitProjects,
+        inspectorState,
+    ) { base, local, projects, inspector ->
         val profileVolumes = base.profiles.flatMap { profile ->
             profile.volumes.flatMap { vol ->
                 when (vol.kind) {
@@ -125,6 +169,7 @@ class HomeViewModel(
             availableVolumes = mergedVolumes,
             gitProjects = projects,
             busyProfileIds = local.busyIds,
+            inspector = inspector,
             serviceNotice = local.notice,
             statusMessage = local.status,
             errorMessage = local.err,
@@ -241,6 +286,38 @@ class HomeViewModel(
         }
     }
 
+    fun pauseProfile(profileId: String) {
+        scope.launch {
+            markBusy(profileId)
+            errorMessage.value = null
+            statusMessage.value = null
+            runCatching {
+                runtimeGateway.pauseSandbox(profileId, quiesceNet = true)
+                statusMessage.value = "Paused container in memory."
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                errorMessage.value = err.message ?: "Failed to pause container"
+            }
+            clearBusy(profileId)
+        }
+    }
+
+    fun unpauseProfile(profileId: String) {
+        scope.launch {
+            markBusy(profileId)
+            errorMessage.value = null
+            statusMessage.value = null
+            runCatching {
+                runtimeGateway.unpauseSandbox(profileId)
+                statusMessage.value = "Resumed container."
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                errorMessage.value = err.message ?: "Failed to resume container"
+            }
+            clearBusy(profileId)
+        }
+    }
+
     fun freezeProfile(profileId: String) {
         scope.launch {
             markBusy(profileId)
@@ -249,6 +326,7 @@ class HomeViewModel(
                 runtimeGateway.freezeSandbox(profileId)
                 runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to freeze container"
             }
             clearBusy(profileId)
@@ -262,8 +340,12 @@ class HomeViewModel(
             runCatching {
                 runtimeGateway.stopSandbox(profileId)
                 sessionCoordinator.closeProfileTabs(profileId)
+                if (inspectorState.value?.profileId == profileId) {
+                    inspectorState.value = null
+                }
                 runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to stop container"
             }
             clearBusy(profileId)
@@ -274,7 +356,7 @@ class HomeViewModel(
         scope.launch {
             errorMessage.value = null
             val runningIds = runtimeGateway.runStates.value
-                .filterValues { it == SandboxRunState.RUNNING }
+                .filterValues { it.isLiveInMemory }
                 .keys
                 .toList()
             if (runningIds.isEmpty()) return@launch
@@ -285,6 +367,7 @@ class HomeViewModel(
                 }.awaitAll()
                 runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to freeze all containers"
             }
             runningIds.forEach(::clearBusy)
@@ -302,11 +385,179 @@ class HomeViewModel(
             runCatching {
                 runtimeGateway.stopAllSandboxes()
                 activeIds.forEach { sessionCoordinator.closeProfileTabs(it) }
+                inspectorState.value = null
                 runtimeGateway.refreshHostReadiness()
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to stop all containers"
             }
             activeIds.forEach(::clearBusy)
+        }
+    }
+
+    fun openInspector(profileId: String) {
+        val profile = uiState.value.profiles.firstOrNull { it.id == profileId } ?: return
+        inspectorState.value = ContainerInspectorState(
+            profileId = profile.id,
+            displayName = profile.displayName,
+            loading = true,
+        )
+        refreshInspector()
+    }
+
+    fun closeInspector() {
+        inspectorState.value = null
+    }
+
+    fun selectInspectorTab(tab: InspectorTab) {
+        val cur = inspectorState.value ?: return
+        inspectorState.value = cur.copy(selectedTab = tab, actionMessage = null)
+    }
+
+    fun refreshInspector() {
+        val cur = inspectorState.value ?: return
+        val profileId = cur.profileId
+        inspectorState.value = cur.copy(loading = true, errorMessage = null)
+        scope.launch {
+            val inspectDef = async { runCatching { runtimeGateway.inspectSandbox(profileId) } }
+            val statsDef = async { runCatching { runtimeGateway.statsSandbox(profileId) } }
+            val procsDef = async { runCatching { runtimeGateway.listGuestProcesses(profileId) } }
+            val dmesgDef = async { runCatching { runtimeGateway.readKernelLog(profileId, tail = 200) } }
+
+            val inspectRes = inspectDef.await()
+            val statsRes = statsDef.await()
+            val procsRes = procsDef.await()
+            val dmesgRes = dmesgDef.await()
+
+            val firstErr = listOf(inspectRes, statsRes, procsRes, dmesgRes)
+                .mapNotNull { it.exceptionOrNull() }
+                .firstOrNull()
+            if (firstErr is CancellationException) throw firstErr
+
+            val latest = inspectorState.value
+            if (latest?.profileId != profileId) return@launch
+            val inspectSnap = inspectRes.getOrNull() ?: latest.inspect
+            inspectorState.value = latest.copy(
+                loading = false,
+                inspect = inspectSnap,
+                stats = statsRes.getOrNull() ?: latest.stats,
+                processes = procsRes.getOrNull() ?: latest.processes,
+                mounts = inspectSnap?.mounts ?: latest.mounts,
+                kernelLog = dmesgRes.getOrNull() ?: latest.kernelLog,
+                errorMessage = if (inspectSnap == null && statsRes.isFailure) {
+                    firstErr?.message ?: "Control socket unavailable"
+                } else {
+                    null
+                },
+            )
+        }
+    }
+
+    fun signalInspectorProcess(pid: Int, signal: String) {
+        val cur = inspectorState.value ?: return
+        val profileId = cur.profileId
+        scope.launch {
+            inspectorState.value = inspectorState.value?.copy(loading = true, errorMessage = null, actionMessage = null)
+            runCatching {
+                runtimeGateway.signalGuestProcess(profileId, pid = pid, signal = signal)
+            }.onSuccess {
+                inspectorState.value = inspectorState.value?.copy(
+                    actionMessage = "Sent $signal to PID $pid.",
+                )
+                refreshInspector()
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                inspectorState.value = inspectorState.value?.copy(
+                    loading = false,
+                    errorMessage = err.message ?: "Failed to signal PID $pid",
+                )
+            }
+        }
+    }
+
+    fun remountInspectorMount(targetPath: String, readOnly: Boolean) {
+        val cur = inspectorState.value ?: return
+        val profileId = cur.profileId
+        scope.launch {
+            inspectorState.value = inspectorState.value?.copy(loading = true, errorMessage = null, actionMessage = null)
+            runCatching {
+                val resultingRo = runtimeGateway.remountLive(profileId, targetPath, readOnly)
+                profileRepository.getProfile(profileId)?.let { profile ->
+                    val updated = profile.volumes.map { vol ->
+                        if (vol.guestMountPath == targetPath) vol.copy(readOnly = resultingRo) else vol
+                    }
+                    if (updated != profile.volumes) {
+                        profileRepository.upsertProfile(profile.copy(volumes = updated))
+                    }
+                }
+                resultingRo
+            }.onSuccess { ro ->
+                inspectorState.value = inspectorState.value?.copy(
+                    actionMessage = "Remounted $targetPath ${if (ro) "read-only" else "read-write"}.",
+                )
+                refreshInspector()
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                inspectorState.value = inspectorState.value?.copy(
+                    loading = false,
+                    errorMessage = err.message ?: "Failed to remount $targetPath",
+                )
+            }
+        }
+    }
+
+    fun unmountInspectorMount(targetPath: String, detach: Boolean = false) {
+        val cur = inspectorState.value ?: return
+        val profileId = cur.profileId
+        scope.launch {
+            inspectorState.value = inspectorState.value?.copy(loading = true, errorMessage = null, actionMessage = null)
+            runCatching {
+                val normalized = targetPath.trim().trimEnd('/').ifEmpty { "/" }
+                runtimeGateway.detachMountLive(profileId, normalized, detach = detach)
+                profileRepository.getProfile(profileId)?.let { profile ->
+                    val updatedVolumes = profile.volumes.filterNot { it.guestMountPath.trimEnd('/') == normalized }
+                    val updatedTmpfs = profile.tmpfsMounts.filterNot { it.trimEnd('/') == normalized }
+                    if (updatedVolumes != profile.volumes || updatedTmpfs != profile.tmpfsMounts) {
+                        profileRepository.upsertProfile(
+                            profile.copy(volumes = updatedVolumes, tmpfsMounts = updatedTmpfs),
+                        )
+                    }
+                }
+            }.onSuccess {
+                inspectorState.value = inspectorState.value?.copy(
+                    actionMessage = "Unmounted $targetPath.",
+                )
+                refreshInspector()
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                inspectorState.value = inspectorState.value?.copy(
+                    loading = false,
+                    errorMessage = err.message ?: "Failed to unmount $targetPath",
+                )
+            }
+        }
+    }
+
+    fun clearInspectorKernelLog() {
+        val cur = inspectorState.value ?: return
+        val profileId = cur.profileId
+        scope.launch {
+            inspectorState.value = inspectorState.value?.copy(loading = true, errorMessage = null, actionMessage = null)
+            runCatching {
+                runtimeGateway.readKernelLog(profileId, tail = 200, clear = true)
+            }.onSuccess {
+                inspectorState.value = inspectorState.value?.copy(
+                    loading = false,
+                    kernelLog = emptyList(),
+                    actionMessage = "Cleared kernel log ring.",
+                )
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                inspectorState.value = inspectorState.value?.copy(
+                    loading = false,
+                    errorMessage = err.message ?: "Failed to clear kernel log",
+                )
+            }
         }
     }
 
@@ -315,6 +566,7 @@ class HomeViewModel(
         imageRef: String,
         memoryMiB: Int = SandboxProfile.UNLIMITED_MEMORY_MIB,
         cpuCores: Double = SandboxProfile.UNLIMITED_CPU_CORES,
+        pidsLimit: Int = SandboxProfile.UNLIMITED_PIDS_LIMIT,
         muxMode: MuxMode = MuxMode.STDIO_MUX,
         persistentRootfs: Boolean = false,
         gitWorktree: GitWorktreeSpec? = null,
@@ -366,6 +618,7 @@ class HomeViewModel(
                     defaultShellArgv = emptyList(),
                     memoryMiB = SandboxProfile.clampMemoryMiB(memoryMiB),
                     cpuCores = SandboxProfile.clampCpuCores(cpuCores),
+                    pidsLimit = SandboxProfile.clampPidsLimit(pidsLimit),
                     volumes = defaultVolumes,
                     persistentRootfs = persistentRootfs,
                     gitWorktree = gitWorktree,
@@ -373,6 +626,7 @@ class HomeViewModel(
                 profileRepository.upsertProfile(profile)
                 gitProjects.value = runtimeGateway.gitWorktreeManager().listProjects()
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to create container"
             }
         }
@@ -386,6 +640,7 @@ class HomeViewModel(
         persistentRootfs: Boolean,
         gitWorktree: GitWorktreeSpec?,
         gitProjectDisplayName: String? = null,
+        pidsLimit: Int? = null,
     ) {
         scope.launch {
             errorMessage.value = null
@@ -393,6 +648,19 @@ class HomeViewModel(
             runCatching {
                 val existing = profileRepository.getProfile(profileId)
                     ?: error("Container not found")
+                val clampedMem = SandboxProfile.clampMemoryMiB(memoryMiB)
+                val clampedCpu = SandboxProfile.clampCpuCores(cpuCores)
+                val clampedPids = pidsLimit?.let { SandboxProfile.clampPidsLimit(it) } ?: existing.pidsLimit
+                val isLive = runtimeGateway.runStates.value[profileId]?.isLiveInMemory == true
+                val liveResourceUpdate = LiveResourceUpdate(
+                    memoryMiB = if (clampedMem != existing.memoryMiB) clampedMem else null,
+                    cpuCores = if (clampedCpu != existing.cpuCores) clampedCpu else null,
+                    pidsLimit = if (clampedPids != existing.pidsLimit) clampedPids else null,
+                )
+                if (isLive && liveResourceUpdate.hasChanges) {
+                    runtimeGateway.updateResourcesLive(profileId, liveResourceUpdate)
+                }
+
                 val wtMgr = runtimeGateway.gitWorktreeManager()
                 val prevGit = existing.gitWorktree
                 if (gitWorktree != null) {
@@ -426,21 +694,28 @@ class HomeViewModel(
                 }
                 val updated = existing.copy(
                     displayName = displayName.trim().ifEmpty { existing.displayName },
-                    memoryMiB = SandboxProfile.clampMemoryMiB(memoryMiB),
-                    cpuCores = SandboxProfile.clampCpuCores(cpuCores),
+                    memoryMiB = clampedMem,
+                    cpuCores = clampedCpu,
+                    pidsLimit = clampedPids,
                     persistentRootfs = persistentRootfs,
                     volumes = cleanedVolumes,
                     gitWorktree = gitWorktree,
                 )
                 profileRepository.upsertProfile(updated)
                 gitProjects.value = wtMgr.listProjects()
-                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
-                statusMessage.value = if (isRunning) {
-                    "Saved ${updated.displayName}. Restart container to apply changes."
-                } else {
-                    "Saved ${updated.displayName}."
+                val restartOnlyChanged = persistentRootfs != existing.persistentRootfs || gitWorktree != prevGit
+                statusMessage.value = when {
+                    isLive && liveResourceUpdate.hasChanges && restartOnlyChanged ->
+                        "Applied resource limits live. Restart ${updated.displayName} for storage changes."
+                    isLive && liveResourceUpdate.hasChanges ->
+                        "Applied resource limits live on ${updated.displayName}."
+                    isLive && restartOnlyChanged ->
+                        "Saved ${updated.displayName}. Restart container to apply changes."
+                    else ->
+                        "Saved ${updated.displayName}."
                 }
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to update container"
             }
         }
@@ -476,6 +751,11 @@ class HomeViewModel(
                     mode = mode,
                     overlayUpperVolumeName = resolvedUpper,
                 )
+                val isLive = runtimeGateway.runStates.value[profileId]?.isLiveInMemory == true
+                val canHotAttach = isLive && mount.kind == VolumeKind.NAMED_EXT4LITE
+                if (canHotAttach) {
+                    runtimeGateway.attachVolumeLive(profileId, mount)
+                }
                 val updatedVolumes = profile.volumes
                     .filterNot { existing ->
                         existing.guestMountPath == cleanPath ||
@@ -488,13 +768,13 @@ class HomeViewModel(
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
                 val addedNames = listOfNotNull(cleanVol, resolvedUpper)
                 availableVolumes.value = (availableVolumes.value + addedNames).distinct().sorted()
-                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
-                statusMessage.value = if (isRunning) {
-                    "Attached $cleanVol at $cleanPath. Restart container to apply."
-                } else {
-                    "Attached $cleanVol at $cleanPath."
+                statusMessage.value = when {
+                    canHotAttach -> "Mounted $cleanVol at $cleanPath live."
+                    isLive -> "Attached $cleanVol at $cleanPath. Restart container to apply CoW overlay."
+                    else -> "Attached $cleanVol at $cleanPath."
                 }
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to attach volume"
             }
         }
@@ -511,19 +791,31 @@ class HomeViewModel(
             runCatching {
                 val profile = profileRepository.getProfile(profileId)
                     ?: error("Container not found")
+                val matching = profile.volumes.filter { vol ->
+                    (vol.kind == VolumeKind.NAMED_EXT4LITE || vol.kind == VolumeKind.OVERLAY_EXT4LITE) &&
+                        vol.sourceName == volumeName &&
+                        (guestMountPath == null || vol.guestMountPath == guestMountPath)
+                }
+                val isLive = runtimeGateway.runStates.value[profileId]?.isLiveInMemory == true
+                val canHotDetach = isLive && matching.isNotEmpty() && matching.all { it.kind == VolumeKind.NAMED_EXT4LITE }
+                if (canHotDetach) {
+                    for (vol in matching) {
+                        runtimeGateway.detachMountLive(profileId, vol.guestMountPath, detach = false)
+                    }
+                }
                 val updatedVolumes = profile.volumes.filterNot { vol ->
                     (vol.kind == VolumeKind.NAMED_EXT4LITE || vol.kind == VolumeKind.OVERLAY_EXT4LITE) &&
                         vol.sourceName == volumeName &&
                         (guestMountPath == null || vol.guestMountPath == guestMountPath)
                 }
                 profileRepository.upsertProfile(profile.copy(volumes = updatedVolumes))
-                val isRunning = runtimeGateway.runStates.value[profileId] == SandboxRunState.RUNNING
-                statusMessage.value = if (isRunning) {
-                    "Detached $volumeName. Restart container to apply."
-                } else {
-                    "Detached $volumeName."
+                statusMessage.value = when {
+                    canHotDetach -> "Unmounted $volumeName live."
+                    isLive -> "Detached $volumeName. Restart container to apply."
+                    else -> "Detached $volumeName."
                 }
             }.onFailure { err ->
+                if (err is CancellationException) throw err
                 errorMessage.value = err.message ?: "Failed to detach volume"
             }
         }
@@ -674,13 +966,19 @@ class HomeViewModel(
         fun formatRunningStatusSummary(
             runningCount: Int,
             liveChildProcessCount: Int,
+            pausedCount: Int = 0,
         ): String {
-            val base = if (runningCount == 1) "1 running" else "$runningCount running"
-            return if (liveChildProcessCount > 0) {
-                "$base · $liveChildProcessCount/32 procs"
-            } else {
-                base
+            val parts = mutableListOf<String>()
+            if (runningCount > 0 || pausedCount == 0) {
+                parts.add("$runningCount running")
             }
+            if (pausedCount > 0) {
+                parts.add("$pausedCount paused")
+            }
+            if (liveChildProcessCount > 0) {
+                parts.add("$liveChildProcessCount/32 procs")
+            }
+            return parts.joinToString(" · ")
         }
 
         fun isErrorServiceNotice(notice: String?): Boolean {

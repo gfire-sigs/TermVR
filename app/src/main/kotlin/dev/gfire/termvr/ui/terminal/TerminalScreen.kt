@@ -891,7 +891,9 @@ private fun TerminalSessionDrawer(
                                 Text(
                                     text = when (runState) {
                                         SandboxRunState.RUNNING -> "Open"
-                                        SandboxRunState.FROZEN -> "Resume"
+                                        SandboxRunState.PAUSED,
+                                        SandboxRunState.FROZEN,
+                                        -> "Resume"
                                         else -> "Start"
                                     },
                                     style = MaterialTheme.typography.labelMedium,
@@ -904,6 +906,8 @@ private fun TerminalSessionDrawer(
                                 ) {
                                     Text("+ New Shell", style = MaterialTheme.typography.labelMedium)
                                 }
+                            }
+                            if (runState.isLiveInMemory) {
                                 TermVrTextButton(onClick = { onFreezeProfile(profile.id) }) {
                                     Text("Freeze")
                                 }

@@ -8,7 +8,10 @@ import dev.gfire.termvr.core.model.ForwardProtocol
 import dev.gfire.termvr.core.model.GitWorktreeSpec
 import dev.gfire.termvr.core.model.GuestLinuxArch
 import dev.gfire.termvr.core.model.ListenHost
+import dev.gfire.termvr.core.model.LiveResourceUpdate
 import dev.gfire.termvr.core.model.MuxMode
+import dev.gfire.termvr.core.model.NetBackend
+import dev.gfire.termvr.core.model.NetworkModeConfig
 import dev.gfire.termvr.core.model.OutboundProxyConfig
 import dev.gfire.termvr.core.model.OutboundProxyMode
 import dev.gfire.termvr.core.model.PhantomProcessRemediation
@@ -18,6 +21,8 @@ import dev.gfire.termvr.core.model.ProxyProtocol
 import dev.gfire.termvr.core.model.SandboxProfile
 import dev.gfire.termvr.core.model.SandboxRunState
 import dev.gfire.termvr.core.model.SandboxTelemetrySnapshot
+import dev.gfire.termvr.core.model.VolumeKind
+import dev.gfire.termvr.core.model.VolumeMountSpec
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -186,6 +191,7 @@ class HostReadinessAndSupervisorTest {
         )
         assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.STARTING))
         assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.RUNNING))
+        assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.PAUSED))
         assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.RESTORING))
         assertTrue(SandboxForegroundService.isForegroundActiveState(SandboxRunState.FREEZING))
         assertFalse(SandboxForegroundService.isForegroundActiveState(SandboxRunState.STOPPED))
@@ -1034,6 +1040,249 @@ class HostReadinessAndSupervisorTest {
             assertEquals(1, launchedArgs.size)
         } finally {
             supervisor.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `SandboxSupervisor drives gvx-ctrl v2 pause, live resources, live loopback ports, volume attach, inspector, and RAW_PTY stats`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val pool = Executors.newCachedThreadPool()
+        val commandBuilder = GvxCommandBuilder(filesDir, cacheDir) { pem, dir ->
+            pem.parentFile?.mkdirs()
+            pem.writeText("PEM")
+            dir.mkdirs()
+        }
+        val proxyBridge = LoopbackProxyBridge(secretStore = InMemorySecretStore())
+        val dnsProxy = LoopbackDnsProxy(networkDnsBackend = { _, _ -> ByteArray(0) }, proxyBridge = proxyBridge)
+        val readinessInspector = HostReadinessInspector(
+            filesDir = filesDir,
+            procRoot = File(tempDir, "empty-proc"),
+            sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+            hostAbiProvider = { "arm64-v8a" },
+            pageSizeProvider = { 16384 },
+            totalHostRamMiBProvider = { 8192 },
+            freeDiskMiBProvider = { 4096 },
+            selfPidProvider = { 100 },
+        )
+
+        var pausedOnServer = false
+        val dynamicPorts = CopyOnWriteArrayList<String>()
+        val controlServer = FakeGvxControlServer { call ->
+            when (call.method) {
+                GvxControlClient.METHOD_PAUSE -> {
+                    if (pausedOnServer) {
+                        """{"ok":false,"error":{"code":"ALREADY_PAUSED","message":"already paused"}}"""
+                    } else {
+                        pausedOnServer = true
+                        """{"ok":true,"result":{"state":"paused"}}"""
+                    }
+                }
+                GvxControlClient.METHOD_UNPAUSE -> {
+                    if (!pausedOnServer) {
+                        """{"ok":false,"error":{"code":"NOT_PAUSED","message":"not paused"}}"""
+                    } else {
+                        pausedOnServer = false
+                        """{"ok":true,"result":{"state":"running"}}"""
+                    }
+                }
+                GvxControlClient.METHOD_STOP -> """{"ok":true,"result":{"signaled":"SIGTERM","killed":false}}"""
+                GvxControlClient.METHOD_RESOURCE_UPDATE ->
+                    """{"ok":true,"result":{"memory_bytes":536870912,"cpu_millis":2000,"guest_cpus":2,"pids_limit":128,"isolate_lan":true}}"""
+                GvxControlClient.METHOD_PORT_ADD -> {
+                    dynamicPorts.add("""{"proto":"tcp","host_ip":"127.0.0.1","host_port":8088,"guest_port":80,"source":"dynamic"}""")
+                    """{"ok":true,"result":{"ports":[${dynamicPorts.joinToString(",")}]}}"""
+                }
+                GvxControlClient.METHOD_PORT_REMOVE -> {
+                    dynamicPorts.clear()
+                    """{"ok":true,"result":{"removed":[{"proto":"tcp","host_ip":"127.0.0.1","host_port":8088,"guest_port":80,"source":"dynamic"}]}}"""
+                }
+                GvxControlClient.METHOD_PORT_LIST ->
+                    """{"ok":true,"result":{"ports":[${dynamicPorts.joinToString(",")}]}}"""
+                GvxControlClient.METHOD_MOUNT_ADD -> {
+                    assertTrue(call.hasFdsFlag)
+                    assertEquals(1, call.fdCount)
+                    """{"ok":true,"result":{"target":"/data","type":"ext4lite","source":"hotvol","read_only":false,"mutable":true}}"""
+                }
+                GvxControlClient.METHOD_MOUNT_REMOUNT -> """{"ok":true,"result":{"target":"/data","read_only":true}}"""
+                GvxControlClient.METHOD_MOUNT_REMOVE -> """{"ok":true,"result":{"removed":"/data"}}"""
+                GvxControlClient.METHOD_INSPECT ->
+                    """{"ok":true,"result":{"id":"ctrl-box","state":"${if (pausedOnServer) "paused" else "running"}","platform":"systrap","architecture":"arm64","lockdown_applied":true,"network_mode":"nat","eth0_ip":"10.88.0.2","pid_count":3,"resources":{"memory_bytes":536870912,"cpu_millis":2000,"pids_limit":128,"isolate_lan":true},"mounts":[{"target":"/data","type":"ext4lite","source":"hotvol","read_only":true,"mutable":true}]}}"""
+                GvxControlClient.METHOD_STATS ->
+                    """{"ok":true,"result":{"cpu":{"user_ns":300000000,"sys_ns":100000000},"memory":{"total_bytes":50331648,"anon_bytes":33554432},"pids":3,"pids_limit":128}}"""
+                GvxControlClient.METHOD_PROC_LIST ->
+                    """{"ok":true,"result":{"processes":[{"pid":1,"state":"S","comm":"init"},{"pid":42,"state":"R","comm":"worker","cmdline":["worker","--serve"]}]}}"""
+                GvxControlClient.METHOD_PROC_SIGNAL -> """{"ok":true,"result":{"signal":"SIGTERM","pid":42}}"""
+                GvxControlClient.METHOD_KERNEL_LOG ->
+                    """{"ok":true,"result":{"records":[{"seq":1,"level":6,"usec":500000,"text":"ready"}]}}"""
+                else -> """{"ok":true,"result":{}}"""
+            }
+        }
+        val controlClient = GvxControlClient(transport = controlServer.transport)
+        val checkpointController = CheckpointController(
+            filesDir = filesDir,
+            freeSpaceProvider = { 512L * 1024L * 1024L },
+            controlClient = controlClient,
+        )
+        var nowNs = 1_000_000_000L
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = commandBuilder,
+            proxyBridge = proxyBridge,
+            dnsProxy = dnsProxy,
+            checkpointController = checkpointController,
+            readinessInspector = readinessInspector,
+            processLauncher = { _, _, _ ->
+                commandBuilder.controlSocketFile("ctrl-box").apply {
+                    parentFile?.mkdirs()
+                    writeText("sock")
+                }
+                commandBuilder.controlSocketFile("raw-box").apply {
+                    parentFile?.mkdirs()
+                    writeText("sock")
+                }
+                FakeMuxProcessHandle(pool)
+            },
+            agentExtractor = { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("agent")
+                }
+            },
+            ptyBackend = object : PtyBackend {
+                override fun openPty(rows: Int, cols: Int, xpixel: Int, ypixel: Int): HostPtyHandle = object : HostPtyHandle {
+                    override val slavePath: String = "/dev/pts/0"
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = -1
+                    override fun write(data: ByteArray, offset: Int, length: Int) = Unit
+                    override fun resize(rows: Int, cols: Int, xpixel: Int, ypixel: Int, childPid: Long) = Unit
+                    override fun close() = Unit
+                }
+            },
+            controlClient = controlClient,
+            nanoClock = { nowNs },
+        )
+        try {
+            val profile = SandboxProfile(
+                id = "ctrl-box",
+                displayName = "Ctrl Box",
+                imageRef = "docker.io/library/debian:trixie-slim",
+                network = NetworkModeConfig(backend = NetBackend.NAT),
+            )
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+
+            // Pause -> PAUSED, telemetry emits PAUSED with 0% CPU, startOrResumeSandbox unpauses -> RUNNING.
+            assertEquals(SandboxRunState.PAUSED, supervisor.pauseSandbox(profile.id))
+            assertTrue(PortConflictDetector.isActivePortHoldingState(SandboxRunState.PAUSED))
+            val pausedSnap = supervisor.pollTelemetryOnce(isInteractive = true)[profile.id]
+            assertNotNull(pausedSnap)
+            assertEquals(SandboxRunState.PAUSED, pausedSnap!!.state)
+            assertEquals(0.0, pausedSnap.cpuPercent)
+
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
+            assertEquals(SandboxRunState.RUNNING, supervisor.runStates.value[profile.id])
+
+            // Live resource update syncs RAM/CPU/PIDs/isolateLan and proxyBridge isolation policy.
+            val limits = supervisor.updateResourcesLive(
+                profile.id,
+                LiveResourceUpdate(memoryMiB = 512, cpuCores = 2.0, pidsLimit = 128, isolateLan = true),
+            )
+            assertEquals(128L, limits.pidsLimit)
+            assertTrue(limits.isolateLan)
+            assertTrue(proxyBridge.currentPolicy.isolateLanEgress)
+
+            // Live loopback port add & remove work; LAN add is rejected at runtime boundary.
+            val lanRule = PortForwardRule("lan", ForwardProtocol.TCP, ListenHost.LAN_ALL_V4, 8089, 8089, 80, 80)
+            var lanRejected = false
+            try {
+                supervisor.addPortRuleLive(profile.id, lanRule)
+            } catch (_: IllegalArgumentException) {
+                lanRejected = true
+            }
+            assertTrue(lanRejected)
+
+            val loopRule = PortForwardRule("web", ForwardProtocol.TCP, ListenHost.LOOPBACK_V4, 8088, 8088, 80, 80)
+            val published = supervisor.addPortRuleLive(profile.id, loopRule)
+            assertEquals(1, published.size)
+            assertEquals(8088, published.single().hostPort)
+
+            val afterRemove = supervisor.removePortRuleLive(profile.id, loopRule)
+            assertTrue(afterRemove.isEmpty())
+
+            // Live named ext4lite volume attach (SCM_RIGHTS), remount RO, and detach.
+            commandBuilder.volumeImageFile("hotvol").apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(4096))
+            }
+            val attached = supervisor.attachVolumeLive(
+                profile.id,
+                VolumeMountSpec("hotvol", "/data", VolumeKind.NAMED_EXT4LITE, readOnly = false),
+            )
+            assertEquals("/data", attached.target)
+            assertTrue(supervisor.remountLive(profile.id, "/data", readOnly = true))
+            supervisor.detachMountLive(profile.id, "/data")
+
+            // Protected system/restore mounts cannot be detached or remounted live.
+            assertTrue(SandboxSupervisor.isProtectedRestoreMount("/tmp"))
+            assertTrue(SandboxSupervisor.isProtectedRestoreMount("/run"))
+            assertTrue(SandboxSupervisor.isProtectedRestoreMount("/git/demo.git"))
+            var protectedBlocked = false
+            try {
+                supervisor.detachMountLive(profile.id, "/tmp")
+            } catch (_: IllegalArgumentException) {
+                protectedBlocked = true
+            }
+            assertTrue(protectedBlocked)
+
+            // CoW overlay mounts reject remountLive before mutating gvx (preserving restore parity).
+            val cowProfile = SandboxProfile(
+                id = "cow-box",
+                displayName = "CoW Box",
+                imageRef = "docker.io/library/alpine:3.21",
+                muxMode = MuxMode.RAW_PTY,
+                volumes = listOf(VolumeMountSpec("base", "/cow", VolumeKind.OVERLAY_EXT4LITE, readOnly = false)),
+            )
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(cowProfile))
+            val remountCallsBefore = controlServer.calls.count { it.method == GvxControlClient.METHOD_MOUNT_REMOUNT }
+            var cowRemountBlocked = false
+            try {
+                supervisor.remountLive(cowProfile.id, "/cow", readOnly = true)
+            } catch (_: IllegalArgumentException) {
+                cowRemountBlocked = true
+            }
+            assertTrue(cowRemountBlocked)
+            assertEquals(remountCallsBefore, controlServer.calls.count { it.method == GvxControlClient.METHOD_MOUNT_REMOUNT })
+
+            // Inspector RPCs
+            assertEquals("10.88.0.2", supervisor.inspectSandbox(profile.id).eth0Ip)
+            assertEquals(3, supervisor.statsSandbox(profile.id).pids)
+            assertEquals(2, supervisor.listGuestProcesses(profile.id).size)
+            supervisor.signalGuestProcess(profile.id, pid = 42, signal = "SIGTERM")
+            assertEquals("ready", supervisor.readKernelLog(profile.id).single().text)
+
+            // RAW_PTY telemetry falls back to gvx-ctrl/2 sandbox.stats when muxClient is null.
+            val rawProfile = SandboxProfile(
+                id = "raw-box",
+                displayName = "Raw Box",
+                imageRef = "docker.io/library/alpine:3.21",
+                muxMode = MuxMode.RAW_PTY,
+            )
+            assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(rawProfile))
+            nowNs += 1_000_000_000L
+            val rawSnap = supervisor.pollTelemetryOnce(isInteractive = true)["raw-box"]
+            assertNotNull(rawSnap)
+            assertEquals(50_331_648L, rawSnap!!.guestRssBytes)
+            assertEquals(3, rawSnap.guestProcessCount)
+
+            // Graceful stop invokes lifecycle.stop before process destroy.
+            supervisor.stopSandbox(profile.id)
+            assertTrue(controlServer.calls.any { it.method == GvxControlClient.METHOD_STOP })
+        } finally {
+            supervisor.close()
+            controlServer.shutdown()
             pool.shutdownNow()
         }
     }
