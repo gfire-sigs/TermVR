@@ -6,7 +6,31 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.18.10022026111600.1`.
+This section tracks changes staged on `main` after `0.20.10012026111600`.
+
+---
+
+## [0.20.10012026111600]
+
+This release (`versionCode` `302000010`) upgrades `gvx` to `v0.20.10012026111600` (`cc04f5ba8790`) and integrates the `gvx-ctrl/2` control surface. It adds live pause and resume, live resource and LAN-isolation updates, live loopback ports, live `ext4lite` mounts, and a Container Inspector.
+
+### Live container control over `gvx-ctrl/2`
+
+`TermVR` now communicates with running containers over the framed `gvx-ctrl/2` Unix socket protocol and passes `SCM_RIGHTS` descriptors under host lockdown.
+
+- Added `GvxControlClient` in `:core:runtime-gvx` for binary-framed `GVX2` calls over owner-only Unix domain sockets. It calls lifecycle, resource, port, mount, process, and kernel-log RPCs.
+- Added instant in-memory `Pause` and `Resume` (`SandboxRunState.PAUSED`) alongside checkpoint `Freeze`. Stopping a container sends graceful `SIGTERM`, and `RAW_PTY` containers read `sandbox.stats`.
+- Added live RAM, CPU, and `PIDs` limit updates in `Edit Container`. Added live toggling of LAN egress isolation in `Network` without restarting containers.
+- Enabled `--dynamic-ports`, opt-in `--auto-publish`, and `--allow-volume-attach` in `GvxCommandBuilder`. Loopback TCP/UDP rules and named `ext4lite` volumes apply live, while LAN binds require confirmation and staged restarts.
+- Added the tabbed **Container Inspector** dialog in `HomeScreen` with `Stats`, `Processes` (`TERM`/`KILL`), `Mounts` (`RO`/`RW` remount and unmount), and `dmesg` (`Clear`).
+
+### Release and automation workflow fixes
+
+Release and daily sync workflows now index Android 16 APKs on F-Droid cleanly and tolerate restricted PR permissions in GitHub Actions.
+
+- Included the PyPI `fdroidserver` fix on this release tag so `publish-fdroid-repo` indexes Android 16 (API 36) APKs on `gh-pages`.
+- Updated `.github/workflows/sync-gvx.yml` to prefer `SYNC_GH_PAT` when configured. The workflow logs a warning with a compare URL when repository policy blocks PR creation.
+- Added `scripts/publish-fdroid-repo.sh` to the shell syntax and mode audit in `.github/workflows/ci.yml`.
 
 ---
 

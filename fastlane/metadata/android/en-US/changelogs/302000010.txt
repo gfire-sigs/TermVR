@@ -1,0 +1,5 @@
+TermVR 0.20.10012026111600 (gvx v0.20.10012026111600):
+- Added live gvx-ctrl/2 controls: Pause/Resume, graceful Stop, and RAW_PTY stats.
+- Live RAM, CPU, PIDs limit, and LAN-egress isolation updates without container restart.
+- Live loopback port forwarding (--dynamic-ports), opt-in --auto-publish, and live ext4lite mounts.
+- Added Container Inspector (Stats, Processes, Mounts remount/unmount, dmesg).
