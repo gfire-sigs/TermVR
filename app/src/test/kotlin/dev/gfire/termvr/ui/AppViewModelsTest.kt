@@ -47,6 +47,7 @@ import dev.gfire.termvr.ui.catalog.CatalogViewModel
 import dev.gfire.termvr.ui.files.FileRootTab
 import dev.gfire.termvr.ui.files.FilesViewModel
 import dev.gfire.termvr.ui.home.HomeViewModel
+import dev.gfire.termvr.ui.home.formatBitsPerSecond
 import dev.gfire.termvr.ui.licenses.LicenseCatalogLoader
 import dev.gfire.termvr.ui.network.NetworkViewModel
 import dev.gfire.termvr.ui.network.resolveEffectiveHostPort
@@ -162,6 +163,27 @@ class AppViewModelsTest {
         vm.updateNetworkBackend(NetBackend.NAT, isolateLanEgress = true, wireGuardName = null)
         advanceUntilIdle()
         assertEquals(true, gateway.lastLiveResourceUpdate?.second?.isolateLan)
+
+        // Setting NAT TX/RX Mbps caps on live NAT applies LIVE via resource.update and persists to profile
+        vm.updateNatBandwidthLimits(txMbpsRaw = "12.5", rxMbpsRaw = "50")
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.errorMessage)
+        assertEquals(12_500_000L, gateway.lastLiveResourceUpdate?.second?.netTxBps)
+        assertEquals(50_000_000L, gateway.lastLiveResourceUpdate?.second?.netRxBps)
+        assertEquals(12_500_000L, vm.uiState.value.selectedProfile?.network?.netTxBps)
+        assertEquals(50_000_000L, vm.uiState.value.selectedProfile?.network?.netRxBps)
+
+        // Clearing bandwidth inputs removes caps (0 bps)
+        vm.updateNatBandwidthLimits(txMbpsRaw = "", rxMbpsRaw = "0")
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.errorMessage)
+        assertEquals(0L, gateway.lastLiveResourceUpdate?.second?.netTxBps)
+        assertEquals(0L, gateway.lastLiveResourceUpdate?.second?.netRxBps)
+
+        // Negative or non-numeric bandwidth inputs are rejected without mutating live limits
+        vm.updateNatBandwidthLimits(txMbpsRaw = "-5", rxMbpsRaw = "10")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.errorMessage?.contains("Mbps") == true)
 
         // Removing a live NAT port rule calls removePortRuleLive without staging restart
         val loopbackId = vm.uiState.value.selectedProfile!!.portForwards.first { it.hostPortStart == 8080 }.id
@@ -957,6 +979,76 @@ class AppViewModelsTest {
         advanceUntilIdle()
         assertNull(vm.uiState.value.inspector)
 
+        assertEquals("Unlimited", formatBitsPerSecond(0L))
+        assertEquals("500 bps", formatBitsPerSecond(500L))
+        assertEquals("250 Kbps", formatBitsPerSecond(250_000L))
+        assertEquals("25 Mbps", formatBitsPerSecond(25_000_000L))
+        assertEquals("12.5 Mbps", formatBitsPerSecond(12_500_000L))
+        assertEquals("1.50 Gbps", formatBitsPerSecond(1_500_000_000L))
+
+        vmScope.cancel()
+    }
+
+    @Test
+    fun catalogViewModelSupportsKeepBlobsOfflineSaveAndImagePush() = runTest(testDispatcher) {
+        val recordedCommands = mutableListOf<List<String>>()
+        val secretStore = InMemorySecretStore()
+        val dataStore = InMemoryDataStore()
+        val profileRepo = ProfileRepository(dataStore, tempDir, secretStore)
+        val assetsRoot = findCoreDataAssetsDir()
+        val assetSource = AssetSource { path -> FileInputStream(File(assetsRoot, path)) }
+        val catalogRepo = CatalogRepository(
+            filesDir = tempDir,
+            assetSource = assetSource,
+            commandExecutor = RungvCommandExecutor { args, _ ->
+                recordedCommands += args
+                RungvCommandResult(0, "", "")
+            },
+            hostAbiProvider = { "arm64-v8a" },
+        )
+        val gateway = FakeGateway(tempDir)
+        val coordinator = TerminalSessionCoordinator(
+            runtimeGateway = gateway,
+            sessionFactory = { maxLines ->
+                NativeVtSession(maxScrollbackLines = maxLines, backendFactory = { _, _, _ -> FakeVtBackend() })
+            },
+        )
+        val vmScope = CoroutineScope(SupervisorJob() + testDispatcher)
+        val vm = CatalogViewModel(
+            catalogRepository = catalogRepo,
+            profileRepository = profileRepo,
+            runtimeGateway = gateway,
+            sessionCoordinator = coordinator,
+            scope = vmScope,
+            probeIntervalMs = null,
+        )
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.keepBlobs)
+        vm.toggleKeepBlobs()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.keepBlobs)
+
+        val inTar = File(tempDir, "in.tar")
+        val outTar = File(tempDir, "out.tar")
+        var exportedFile: File? = null
+        vm.pullImage("alpine:3.21")
+        vm.loadImageTar(inTar)
+        vm.exportImageTar("alpine:3.21", outTar, isOnline = false) { exportedFile = it }
+        vm.pushImage("alpine:3.21", targetRef = "ghcr.io/gfire-sigs/alpine:3.21")
+        advanceUntilIdle()
+
+        assertEquals(outTar, exportedFile)
+        assertTrue(recordedCommands.contains(listOf("pull", "-keep-blobs", "--host-dns", "127.0.0.1:1053", "alpine:3.21")))
+        assertTrue(recordedCommands.contains(listOf("image", "load", "-keep-blobs", "-i", inTar.absolutePath)))
+        assertTrue(recordedCommands.contains(listOf("image", "save", "-o", outTar.absolutePath, "alpine:3.21")))
+        assertTrue(
+            recordedCommands.contains(
+                listOf("image", "push", "--host-dns", "127.0.0.1:1053", "alpine:3.21", "ghcr.io/gfire-sigs/alpine:3.21"),
+            ),
+        )
+        assertNull(vm.uiState.value.errorMessage)
+
         vmScope.cancel()
     }
 
@@ -1088,6 +1180,8 @@ private class FakeGateway(private val rootDir: File) : SandboxRuntimeGateway {
             memoryBytes = (update.memoryMiB ?: 0).toLong() * 1024L * 1024L,
             pidsLimit = (update.pidsLimit ?: 0).toLong(),
             isolateLan = update.isolateLan ?: false,
+            netTxBps = update.netTxBps ?: 0L,
+            netRxBps = update.netRxBps ?: 0L,
         )
     }
 

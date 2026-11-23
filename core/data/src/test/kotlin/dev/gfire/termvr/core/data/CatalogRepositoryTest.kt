@@ -260,16 +260,38 @@ class CatalogRepositoryTest {
         assertEquals("docker-dev", inspected[0].name)
 
         repo.pullImage("alpine:3.21", dnsPort = 15353)
+        repo.pullImage("alpine:3.21", dnsPort = 15353, keepBlobs = true)
         repo.loadImageArchive("/tmp/alpine.tar")
+        repo.loadImageArchive("/tmp/alpine.tar", keepBlobs = true)
         repo.saveImageArchive("alpine:3.21", "/tmp/out.tar", dnsPort = 15353, isOnline = true)
+        repo.saveImageArchive("alpine:3.21", "/tmp/offline.tar", dnsPort = 15353, isOnline = false, allowOffline = true)
+        repo.pushImage("alpine:3.21", targetRef = "ghcr.io/gfire-sigs/alpine:3.21", dnsPort = 15353)
+        repo.pushImage("alpine:3.21", dnsPort = 15353)
         repo.systemPrune()
         repo.volumePrune()
 
         assertTrue(recordedCommands.contains(listOf("pull", "--host-dns", "127.0.0.1:15353", "alpine:3.21")))
-        assertTrue(recordedCommands.contains(listOf("image", "load", "/tmp/alpine.tar")))
+        assertTrue(recordedCommands.contains(listOf("pull", "-keep-blobs", "--host-dns", "127.0.0.1:15353", "alpine:3.21")))
+        assertTrue(recordedCommands.contains(listOf("image", "load", "-i", "/tmp/alpine.tar")))
+        assertTrue(recordedCommands.contains(listOf("image", "load", "-keep-blobs", "-i", "/tmp/alpine.tar")))
         assertTrue(
             recordedCommands.contains(
                 listOf("image", "save", "--host-dns", "127.0.0.1:15353", "-o", "/tmp/out.tar", "alpine:3.21"),
+            ),
+        )
+        assertTrue(
+            recordedCommands.contains(
+                listOf("image", "save", "-o", "/tmp/offline.tar", "alpine:3.21"),
+            ),
+        )
+        assertTrue(
+            recordedCommands.contains(
+                listOf("image", "push", "--host-dns", "127.0.0.1:15353", "alpine:3.21", "ghcr.io/gfire-sigs/alpine:3.21"),
+            ),
+        )
+        assertTrue(
+            recordedCommands.contains(
+                listOf("image", "push", "--host-dns", "127.0.0.1:15353", "alpine:3.21"),
             ),
         )
         assertTrue(recordedCommands.contains(listOf("system", "prune", "-f")))
@@ -277,6 +299,18 @@ class CatalogRepositoryTest {
 
         assertThrows(IllegalStateException::class.java) {
             CatalogRepository.buildImageSaveArgs("alpine:3.21", "/tmp/out.tar", dnsPort = 15353, isOnline = false)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogRepository.buildImagePushArgs("", dnsPort = 15353)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogRepository.buildImagePushArgs("alpine:3.21", dnsPort = 0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogRepository.buildPullArgs("--registry-url=https://evil.example", dnsPort = 15353)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogRepository.buildImagePushArgs("alpine:3.21", targetRef = "-q", dnsPort = 15353)
         }
     }
 

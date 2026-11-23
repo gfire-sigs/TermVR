@@ -558,6 +558,58 @@ class NetworkViewModel(
         }
     }
 
+    /**
+     * Updates per-sandbox NAT bandwidth limits (Mbps, 0 = unlimited), applying live when running.
+     */
+    fun updateNatBandwidthLimits(txMbpsRaw: String, rxMbpsRaw: String) {
+        val profile = uiState.value.selectedProfile ?: return
+        val txBps = parseMbpsToBps(txMbpsRaw)
+        val rxBps = parseMbpsToBps(rxMbpsRaw)
+        if (txBps == null || rxBps == null) {
+            localState.value = localState.value.copy(
+                errorMessage = "Bandwidth limits must be non-negative Mbps values (0 for unlimited).",
+                statusMessage = null,
+            )
+            return
+        }
+        scope.launch {
+            localState.value = localState.value.copy(busy = true, errorMessage = null, statusMessage = null)
+            runCatching {
+                val isLiveNat = uiState.value.runStates[profile.id]?.isLiveInMemory == true &&
+                    profile.network.backend == NetBackend.NAT
+                if (isLiveNat) {
+                    runtimeGateway.updateResourcesLive(
+                        profileId = profile.id,
+                        update = LiveResourceUpdate(netTxBps = txBps, netRxBps = rxBps),
+                    )
+                }
+                val updated = profile.copy(
+                    network = profile.network.copy(netTxBps = txBps, netRxBps = rxBps),
+                )
+                profileRepository.upsertProfile(updated)
+                val suffix = if (isLiveNat) " live." else "."
+                localState.value = localState.value.copy(
+                    statusMessage = "Updated NAT bandwidth limits$suffix",
+                    errorMessage = null,
+                )
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                localState.value = localState.value.copy(
+                    errorMessage = err.message ?: "Failed to update NAT bandwidth limits",
+                )
+            }
+            localState.value = localState.value.copy(busy = false)
+        }
+    }
+
+    private fun parseMbpsToBps(raw: String): Long? {
+        val clean = raw.trim()
+        if (clean.isEmpty()) return 0L
+        val mbps = clean.toDoubleOrNull() ?: return null
+        if (!mbps.isFinite() || mbps < 0.0 || mbps > 100_000.0) return null
+        return kotlin.math.round(mbps * 1_000_000.0).toLong()
+    }
+
     fun updateNetworkBackend(backend: NetBackend, isolateLanEgress: Boolean, wireGuardName: String?) {
         val profile = uiState.value.selectedProfile ?: return
         scope.launch {

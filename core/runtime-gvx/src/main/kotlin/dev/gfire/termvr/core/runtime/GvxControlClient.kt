@@ -2,6 +2,7 @@ package dev.gfire.termvr.core.runtime
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import dev.gfire.termvr.core.model.LiveBlockIoSample
 import dev.gfire.termvr.core.model.LiveKernelLogEntry
 import dev.gfire.termvr.core.model.LiveMountInfo
 import dev.gfire.termvr.core.model.LivePortInfo
@@ -247,6 +248,8 @@ class GvxControlClient(
             cpuMillis = cpuMillis,
             pidsLimit = pidsLimit,
             isolateLan = update.isolateLan,
+            netTxBps = update.netTxBps?.coerceAtLeast(0L),
+            netRxBps = update.netRxBps?.coerceAtLeast(0L),
         )
         return withSession(socketFile, readTimeoutMs) { session ->
             val wire = session.callDecoded<WireResourceSnapshot>(
@@ -687,9 +690,16 @@ class GvxControlClient(
         const val METHOD_PROC_LIST: String = "proc.list"
         const val METHOD_PROC_SIGNAL: String = "proc.signal"
         const val METHOD_KERNEL_LOG: String = "kernel.log"
+        const val METHOD_EVENTS: String = "sandbox.events"
+        const val METHOD_NET_POLICY_GET: String = "net.policy_get"
+        const val METHOD_NET_POLICY_SET: String = "net.policy_set"
+        const val METHOD_UNIX_FORWARD: String = "net.unix_forward"
 
         const val FEATURE_SCM_RIGHTS: String = "scm_rights"
+        const val FEATURE_NET_QOS: String = "net_qos"
         const val CAP_MOUNT_VOLUME_ATTACH: String = "mount.volume_attach"
+        const val CAP_MOUNT_BIND_ATTACH: String = "mount.bind_attach"
+        const val CAP_UNIX_FORWARD: String = "net.unix_forward"
 
         const val CODE_UNAUTHORIZED: String = "UNAUTHORIZED"
         const val CODE_LOCKDOWN_DENIED: String = "LOCKDOWN_DENIED"
@@ -832,6 +842,8 @@ private data class WireResourceUpdateRequest(
     @SerialName("cpu_millis") val cpuMillis: Long? = null,
     @SerialName("pids_limit") val pidsLimit: Long? = null,
     @SerialName("isolate_lan") val isolateLan: Boolean? = null,
+    @SerialName("net_tx_bps") val netTxBps: Long? = null,
+    @SerialName("net_rx_bps") val netRxBps: Long? = null,
 )
 
 @Serializable
@@ -843,6 +855,8 @@ private data class WireResourceSnapshot(
     @SerialName("guest_cpus") val guestCpus: Int = 0,
     @SerialName("pids_limit") val pidsLimit: Long = 0L,
     @SerialName("isolate_lan") val isolateLan: Boolean = false,
+    @SerialName("net_tx_bps") val netTxBps: Long = 0L,
+    @SerialName("net_rx_bps") val netRxBps: Long = 0L,
 ) {
     fun toModel(): LiveResourceLimits = LiveResourceLimits(
         memoryBytes = memoryBytes,
@@ -852,6 +866,8 @@ private data class WireResourceSnapshot(
         guestCpus = guestCpus,
         pidsLimit = pidsLimit,
         isolateLan = isolateLan,
+        netTxBps = netTxBps,
+        netRxBps = netRxBps,
     )
 }
 
@@ -1053,10 +1069,28 @@ private data class WireNetStatsSample(
 )
 
 @Serializable
+private data class WireBlockStatsSample(
+    val disk: String = "",
+    @SerialName("read_ops") val readOps: Long = 0L,
+    @SerialName("write_ops") val writeOps: Long = 0L,
+    @SerialName("read_sectors") val readSectors: Long = 0L,
+    @SerialName("write_sectors") val writeSectors: Long = 0L,
+) {
+    fun toModel(): LiveBlockIoSample = LiveBlockIoSample(
+        disk = disk,
+        readOps = readOps,
+        writeOps = writeOps,
+        readSectors = readSectors,
+        writeSectors = writeSectors,
+    )
+}
+
+@Serializable
 private data class WireStatsSample(
     val cpu: WireCpuStatsSample = WireCpuStatsSample(),
     val memory: WireMemoryStatsSample = WireMemoryStatsSample(),
-    val network: List<WireNetStatsSample> = emptyList(),
+    val network: List<WireNetStatsSample>? = null,
+    @SerialName("block_io") val blockIo: List<WireBlockStatsSample>? = null,
     val pids: Int = 0,
     @SerialName("pids_limit") val pidsLimit: Long = 0L,
 ) {
@@ -1070,8 +1104,9 @@ private data class WireStatsSample(
         memoryFileBytes = memory.fileBytes,
         memoryTmpfsBytes = memory.tmpfsBytes,
         memoryLimitBytes = memory.limitBytes,
-        netRxBytes = network.sumOf { it.rxBytes },
-        netTxBytes = network.sumOf { it.txBytes },
+        netRxBytes = network.orEmpty().sumOf { it.rxBytes },
+        netTxBytes = network.orEmpty().sumOf { it.txBytes },
+        blockIo = blockIo.orEmpty().map { it.toModel() },
         pids = pids,
         pidsLimit = pidsLimit,
     )

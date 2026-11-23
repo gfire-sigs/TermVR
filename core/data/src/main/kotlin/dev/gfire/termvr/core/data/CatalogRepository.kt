@@ -282,12 +282,14 @@ class CatalogRepository(
         imageRef: String,
         dnsPort: Int,
         env: Map<String, String> = emptyMap(),
-    ): RungvCommandResult = commandExecutor.execute(buildPullArgs(imageRef, dnsPort), env)
+        keepBlobs: Boolean = false,
+    ): RungvCommandResult = commandExecutor.execute(buildPullArgs(imageRef, dnsPort, keepBlobs), env)
 
     suspend fun loadImageArchive(
         tarPath: String,
         env: Map<String, String> = emptyMap(),
-    ): RungvCommandResult = commandExecutor.execute(buildImageLoadArgs(tarPath), env)
+        keepBlobs: Boolean = false,
+    ): RungvCommandResult = commandExecutor.execute(buildImageLoadArgs(tarPath, keepBlobs), env)
 
     suspend fun saveImageArchive(
         imageRef: String,
@@ -295,8 +297,19 @@ class CatalogRepository(
         dnsPort: Int,
         isOnline: Boolean,
         env: Map<String, String> = emptyMap(),
+        allowOffline: Boolean = false,
     ): RungvCommandResult = commandExecutor.execute(
-        buildImageSaveArgs(imageRef, outputTarPath, dnsPort, isOnline),
+        buildImageSaveArgs(imageRef, outputTarPath, dnsPort, isOnline, allowOffline),
+        env,
+    )
+
+    suspend fun pushImage(
+        imageRef: String,
+        targetRef: String? = null,
+        dnsPort: Int,
+        env: Map<String, String> = emptyMap(),
+    ): RungvCommandResult = commandExecutor.execute(
+        buildImagePushArgs(imageRef, targetRef, dnsPort),
         env,
     )
 
@@ -403,17 +416,40 @@ class CatalogRepository(
             commandExecutor = commandExecutor,
         )
 
-        fun buildPullArgs(imageRef: String, dnsPort: Int): List<String> {
-            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace)) {
+        fun buildPullArgs(
+            imageRef: String,
+            dnsPort: Int,
+            keepBlobs: Boolean = false,
+        ): List<String> {
+            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace) && !imageRef.startsWith("-")) {
                 "imageRef must be a non-blank OCI reference"
             }
             require(dnsPort in 1..65535) { "dnsPort must be within 1..65535" }
-            return listOf("pull", "--host-dns", "127.0.0.1:$dnsPort", imageRef)
+            return buildList {
+                add("pull")
+                if (keepBlobs) {
+                    add("-keep-blobs")
+                }
+                add("--host-dns")
+                add("127.0.0.1:$dnsPort")
+                add(imageRef)
+            }
         }
 
-        fun buildImageLoadArgs(tarPath: String): List<String> {
+        fun buildImageLoadArgs(
+            tarPath: String,
+            keepBlobs: Boolean = false,
+        ): List<String> {
             require(tarPath.isNotBlank()) { "tarPath must not be blank" }
-            return listOf("image", "load", tarPath)
+            return buildList {
+                add("image")
+                add("load")
+                if (keepBlobs) {
+                    add("-keep-blobs")
+                }
+                add("-i")
+                add(tarPath)
+            }
         }
 
         fun buildImageSaveArgs(
@@ -421,16 +457,56 @@ class CatalogRepository(
             outputTarPath: String,
             dnsPort: Int,
             isOnline: Boolean,
+            allowOffline: Boolean = false,
         ): List<String> {
-            check(isOnline) {
-                "Export Image (.tar) requires an active network connection because rungv image save fetches manifests"
+            check(isOnline || allowOffline) {
+                "Export Image (.tar) requires an active network connection or kept blobs (-keep-blobs)"
             }
-            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace)) {
+            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace) && !imageRef.startsWith("-")) {
                 "imageRef must be a non-blank OCI reference"
             }
             require(outputTarPath.isNotBlank()) { "outputTarPath must not be blank" }
+            if (isOnline) {
+                require(dnsPort in 1..65535) { "dnsPort must be within 1..65535" }
+            }
+            return buildList {
+                add("image")
+                add("save")
+                if (isOnline) {
+                    add("--host-dns")
+                    add("127.0.0.1:$dnsPort")
+                }
+                add("-o")
+                add(outputTarPath)
+                add(imageRef)
+            }
+        }
+
+        fun buildImagePushArgs(
+            imageRef: String,
+            targetRef: String? = null,
+            dnsPort: Int,
+        ): List<String> {
+            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace) && !imageRef.startsWith("-")) {
+                "imageRef must be a non-blank OCI reference"
+            }
+            val cleanTarget = targetRef?.trim()?.takeIf { it.isNotEmpty() }
+            if (cleanTarget != null) {
+                require(!cleanTarget.any(Char::isWhitespace) && !cleanTarget.startsWith("-")) {
+                    "targetRef must be a valid OCI reference"
+                }
+            }
             require(dnsPort in 1..65535) { "dnsPort must be within 1..65535" }
-            return listOf("image", "save", "--host-dns", "127.0.0.1:$dnsPort", "-o", outputTarPath, imageRef)
+            return buildList {
+                add("image")
+                add("push")
+                add("--host-dns")
+                add("127.0.0.1:$dnsPort")
+                add(imageRef)
+                if (cleanTarget != null) {
+                    add(cleanTarget)
+                }
+            }
         }
 
         fun buildSystemDfArgs(): List<String> = listOf("system", "df", "--format", "json")

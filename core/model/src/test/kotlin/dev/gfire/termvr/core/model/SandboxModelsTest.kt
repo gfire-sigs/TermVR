@@ -646,18 +646,62 @@ class SandboxModelsTest {
         assertEquals("/bin/sh -c echo hi", proc.displayCommand)
         assertEquals("init", LiveProcessInfo(pid = 1, comm = "init").displayCommand)
 
-        val stats = LiveStatsSnapshot(cpuUserNanos = 100L, cpuSysNanos = 50L)
+        val stats = LiveStatsSnapshot(
+            cpuUserNanos = 100L,
+            cpuSysNanos = 50L,
+            blockIo = listOf(
+                LiveBlockIoSample(disk = "vda", readOps = 10L, writeOps = 4L, readSectors = 16L, writeSectors = 8L),
+                LiveBlockIoSample(disk = "vdb", readOps = 2L, writeOps = 1L, readSectors = 4L, writeSectors = 2L),
+            ),
+        )
         assertEquals(150L, stats.totalCpuNanos)
+        assertEquals(12L, stats.blockReadOps)
+        assertEquals(5L, stats.blockWriteOps)
+        assertEquals(20L * 512L, stats.blockReadBytes)
+        assertEquals(10L * 512L, stats.blockWriteBytes)
 
         val inspect = SandboxInspectSnapshot(
             id = "ctrl-v2-box",
             state = "paused",
-            resources = LiveResourceLimits(memoryBytes = 512L * 1024L * 1024L, pidsLimit = 256L, isolateLan = true),
+            resources = LiveResourceLimits(
+                memoryBytes = 512L * 1024L * 1024L,
+                pidsLimit = 256L,
+                isolateLan = true,
+                netTxBps = 25_000_000L,
+                netRxBps = 50_000_000L,
+            ),
             ports = listOf(LivePortInfo(proto = "tcp", hostIp = "127.0.0.1", hostPort = 8080, guestPort = 80, source = "dynamic")),
             mounts = listOf(LiveMountInfo(target = "/data", type = "ext4lite", source = "vol1", readOnly = false, mutable = true)),
         )
         assertEquals(inspect, json.decodeFromString<SandboxInspectSnapshot>(json.encodeToString(inspect)))
         assertFalse(LiveResourceUpdate().hasChanges)
         assertTrue(LiveResourceUpdate(pidsLimit = 128).hasChanges)
+        assertTrue(LiveResourceUpdate(netTxBps = 10_000_000L).hasChanges)
+        assertTrue(LiveResourceUpdate(netRxBps = 20_000_000L).hasChanges)
+
+        val natWithCaps = NetworkModeConfig(
+            backend = NetBackend.NAT,
+            autoPublishPorts = true,
+            autoPublishAddr = "127.0.0.1",
+            netTxBps = 10_000_000L,
+            netRxBps = 50_000_000L,
+        )
+        assertEquals(natWithCaps, json.decodeFromString<NetworkModeConfig>(json.encodeToString(natWithCaps)))
+        assertThrows(IllegalArgumentException::class.java) {
+            NetworkModeConfig(netTxBps = -1L)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NetworkModeConfig(netRxBps = -1L)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NetworkModeConfig(autoPublishAddr = "127.0.0.1 bad")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NetworkModeConfig(autoPublishAddr = "0.0.0.0")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NetworkModeConfig(autoPublishAddr = ":::")
+        }
+        assertEquals("::1", NetworkModeConfig(autoPublishAddr = "::1").autoPublishAddr)
     }
 }

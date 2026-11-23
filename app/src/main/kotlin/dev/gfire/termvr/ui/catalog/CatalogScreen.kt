@@ -68,6 +68,7 @@ fun CatalogScreen(
     val context = LocalContext.current
     var imageRefInput by remember { mutableStateOf("docker.io/library/debian:trixie-slim") }
     var showRegistryDialog by remember { mutableStateOf(false) }
+    var showPushDialog by remember { mutableStateOf(false) }
     var isOnline by remember { mutableStateOf(isNetworkConnected(context)) }
 
     DisposableEffect(context) {
@@ -243,9 +244,12 @@ fun CatalogScreen(
                         LocalImagesCard(
                             imageRefInput = imageRefInput,
                             onImageRefChange = { imageRefInput = it },
+                            keepBlobs = state.keepBlobs,
+                            onToggleKeepBlobs = viewModel::toggleKeepBlobs,
                             busy = state.busyAction != null,
                             isOnline = isOnline,
                             onPull = { viewModel.pullImage(imageRefInput) },
+                            onPush = { showPushDialog = true },
                             onOpenRegistryAuth = { showRegistryDialog = true },
                             onLoadTar = {
                                 loadTarLauncher.launch(arrayOf("application/x-tar", "application/octet-stream", "*/*"))
@@ -273,6 +277,17 @@ fun CatalogScreen(
             onAuthenticate = { host, user, pass ->
                 viewModel.authenticateRegistry(host, user, pass)
                 showRegistryDialog = false
+            },
+        )
+    }
+
+    if (showPushDialog) {
+        PushImageDialog(
+            sourceImageRef = imageRefInput,
+            onDismiss = { showPushDialog = false },
+            onPush = { targetRef ->
+                viewModel.pushImage(imageRefInput, targetRef)
+                showPushDialog = false
             },
         )
     }
@@ -494,9 +509,12 @@ private fun RecipeCard(
 private fun LocalImagesCard(
     imageRefInput: String,
     onImageRefChange: (String) -> Unit,
+    keepBlobs: Boolean,
+    onToggleKeepBlobs: () -> Unit,
     busy: Boolean,
     isOnline: Boolean,
     onPull: () -> Unit,
+    onPush: () -> Unit,
     onOpenRegistryAuth: () -> Unit,
     onLoadTar: () -> Unit,
     onExportTar: () -> Unit,
@@ -515,12 +533,28 @@ private fun LocalImagesCard(
                 shape = TermVrControlShape,
                 modifier = Modifier.fillMaxWidth(),
             )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = keepBlobs,
+                    onCheckedChange = { onToggleKeepBlobs() },
+                )
+                Text(
+                    text = "Keep original blobs (enables offline .tar export and push)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 TermVrButton(onClick = onPull, enabled = !busy) {
                     Text("Pull")
+                }
+                TermVrOutlinedButton(
+                    onClick = onPush,
+                    enabled = !busy && isOnline && imageRefInput.isNotBlank(),
+                ) {
+                    Text("Push")
                 }
                 TermVrOutlinedButton(onClick = onOpenRegistryAuth, enabled = !busy) {
                     Text("Registry Auth")
@@ -530,13 +564,56 @@ private fun LocalImagesCard(
                 }
                 TermVrOutlinedButton(
                     onClick = onExportTar,
-                    enabled = !busy && isOnline && imageRefInput.isNotBlank(),
+                    enabled = !busy && (isOnline || keepBlobs) && imageRefInput.isNotBlank(),
                 ) {
                     Text("Export .tar")
                 }
             }
         }
     }
+}
+
+@Composable
+private fun PushImageDialog(
+    sourceImageRef: String,
+    onDismiss: () -> Unit,
+    onPush: (String?) -> Unit,
+) {
+    var targetRef by remember(sourceImageRef) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Push OCI Image") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Source: $sourceImageRef",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = LocalTermVrMonoFontFamily.current,
+                )
+                OutlinedTextField(
+                    value = targetRef,
+                    onValueChange = { targetRef = it },
+                    label = { Text("Target Reference (optional)") },
+                    placeholder = { Text("ghcr.io/user/app:v1") },
+                    singleLine = true,
+                    shape = TermVrControlShape,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TermVrButton(
+                onClick = { onPush(targetRef.trim().takeIf { it.isNotEmpty() }) },
+            ) {
+                Text("Push")
+            }
+        },
+        dismissButton = {
+            TermVrTextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable
