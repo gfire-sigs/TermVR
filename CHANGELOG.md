@@ -6,7 +6,31 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.20.10012026111600`.
+This section tracks changes staged on `main` after `0.21.10002026111600`.
+
+---
+
+## [0.21.10002026111600]
+
+This release (`versionCode` `302100000`) upgrades `gvx` to `v0.21.10002026111600` (`b14cfd642f46`). It adds live NAT bandwidth shaping, Container Inspector block I/O telemetry, OCI image push, opt-in `-keep-blobs` retention for offline archive export, and fixes `image load -i`.
+
+### Live NAT bandwidth limits and block I/O telemetry
+
+`TermVR` now sets NAT transmit and receive rate limits at launch, across restore, and live over `gvx-ctrl/2`, and reports block I/O counters in the Container Inspector.
+
+- Added `netTxBps`, `netRxBps`, and `autoPublishAddr` to `NetworkModeConfig`, emitting `--net-tx-bps`, `--net-rx-bps`, and `--auto-publish-addr` in `GvxCommandBuilder` for both `run` and `restore`.
+- Extended `GvxControlClient` and `SandboxSupervisor.updateResourcesLive` to send and decode `net_tx_bps`, `net_rx_bps`, and `block_io` samples (`LiveBlockIoSample`).
+- Added TX and RX `Mbps` limit inputs and live `Apply Bandwidth` controls in `NetworkScreen` (`Backend & WireGuard` tab).
+- Added NAT cap and block I/O read and write totals to the Container Inspector `Stats` tab on `HomeScreen`.
+
+### OCI image push, offline archive export, and gvx v0.21.10002026111600
+
+Local OCI image workflows now support pushing images to registries, retaining original layer blobs for offline `.tar` exports, and loading `.tar` archives with the required `-i` flag.
+
+- Added `CatalogRepository.pushImage` and `Push` dialog controls in `CatalogScreen` (`Local Images` card) running `rungv image push --host-dns 127.0.0.1:<port>`.
+- Added opt-in `Keep original blobs` (`-keep-blobs`) in `CatalogScreen` for `pull` and `image load`, enabling offline `image save` without a registry connection.
+- Fixed `CatalogRepository.buildImageLoadArgs` to pass `-i <tarPath>` to `rungv image load`.
+- Bundled `gvx` `v0.21.10002026111600` (`b14cfd642f46`), including live NAT bandwidth shaping, block I/O stats, `-keep-blobs`, `image push`, and the `gvx-oci/v1.0` OCI registry `User-Agent`.
 
 ---
 
