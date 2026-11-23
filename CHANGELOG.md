@@ -6,7 +6,21 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.21.10002026111600`.
+This section tracks changes staged on `main` after `0.21.10012026111600`.
+
+---
+
+## [0.21.10012026111600]
+
+This release (`versionCode` `302100010`) upgrades `gvx` to `v0.21.10012026111600` (`3178313725b5`). It fixes a startup panic on Android devices with 16 KB pages and sealed kernel mappings, and preserves full panic headers in startup errors.
+
+### Sealed-page systrap fix and startup diagnostics
+
+`TermVR` now boots `gvx` containers on kernels that seal `[vdso]` or `[vvar]` pages on 16 KB Android devices, and preserves both ends of early Go panic logs.
+
+- Bundled `gvx` `v0.21.10012026111600` (`3178313725b5`), which aligns recursive `munmap` splits in `systrap` `unmapSegment` to `hostPageSize`, ignores `EPERM` during the early `forkStub` unmap sweep and optional `mseal`, guards VA gap bounds in `stubInit`, and tolerates restricted `seccomp` notification probes.
+- Updated `SandboxSupervisor` (`StderrCaptureBuffer`) to retain the first 12 head lines and last 12 tail lines of `librungv.so` stderr, preventing truncation of the `panic:` message.
+- Unwrapped `ExecutionException` causes in `SandboxSupervisor.startOrResumeSandbox` so container failure cards display the underlying cause directly.
 
 ---
 

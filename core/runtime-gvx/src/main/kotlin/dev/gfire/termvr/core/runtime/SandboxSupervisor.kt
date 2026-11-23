@@ -489,7 +489,7 @@ class SandboxSupervisor(
             val publishedList = ArrayList<PublishedPortMapping>().apply {
                 addAll(PortConflictDetector.buildFixedPublishedPortMappings(launchPorts))
             }
-            val recentStderr = ArrayDeque<String>()
+            val recentStderr = StderrCaptureBuffer()
             val stderrThread = Thread(
                 {
                     try {
@@ -497,12 +497,7 @@ class SandboxSupervisor(
                             while (true) {
                                 val line = reader.readLine() ?: break
                                 if (line.isNotBlank()) {
-                                    synchronized(recentStderr) {
-                                        if (recentStderr.size >= 12) {
-                                            recentStderr.removeFirst()
-                                        }
-                                        recentStderr.addLast(line)
-                                    }
+                                    recentStderr.append(line)
                                 }
                                 val parsed = GvxCommandBuilder.parsePublishingLine(line)
                                 if (parsed != null) {
@@ -559,15 +554,16 @@ class SandboxSupervisor(
                             Thread.currentThread().interrupt()
                         }
                         _publishedPortsByProfile.update { current -> current - profile.id }
-                        val stderrTail = synchronized(recentStderr) { recentStderr.joinToString(" | ") }
+                        val stderrTail = recentStderr.formatSummary()
                         val exitCode = if (!process.isAlive) {
                             runCatching { process.waitForExit() }.getOrDefault(-1)
                         } else {
                             -1
                         }
                         val addressInUse = PortConflictDetector.isAddressInUseError(e, stderrTail)
-                        val reason = e.message?.takeIf { it.isNotBlank() }
-                            ?: if (e is TimeoutException) {
+                        val unwrapped = (e as? java.util.concurrent.ExecutionException)?.cause ?: e
+                        val reason = unwrapped.message?.takeIf { it.isNotBlank() }
+                            ?: if (unwrapped is TimeoutException || e is TimeoutException) {
                                 "Timed out waiting for sandbox handshake"
                             } else {
                                 "Sandbox start failed"
@@ -1181,9 +1177,7 @@ class SandboxSupervisor(
                 if (sessions.remove(id, managed)) {
                     cleanupSessionResources(id, managed)
                     val exitCode = runCatching { managed.process.waitForExit() }.getOrDefault(-1)
-                    val stderrTail = synchronized(managed.recentStderr) {
-                        managed.recentStderr.joinToString(" | ")
-                    }
+                    val stderrTail = managed.recentStderr.formatSummary()
                     if (isSigkillExitCode(exitCode)) {
                         observedChildSigkill.set(true)
                     }
@@ -1630,14 +1624,52 @@ class SandboxSupervisor(
         val controlSock: File,
         val preopenedCheckpointDir: File,
         val stderrThread: Thread,
-        val recentStderr: ArrayDeque<String>,
+        val recentStderr: StderrCaptureBuffer,
         val publishedPorts: MutableList<PublishedPortMapping>,
         val lastActivityMillis: AtomicLong,
         var lastCpuNanos: Long = 0L,
         var lastCpuSampleNs: Long = 0L,
     )
 
+    private class StderrCaptureBuffer(
+        private val headLimit: Int = STDERR_HEAD_LINES,
+        private val tailLimit: Int = STDERR_TAIL_LINES,
+    ) {
+        private val head = ArrayList<String>(headLimit)
+        private val tail = ArrayDeque<String>(tailLimit)
+        private var totalLines = 0
+
+        @Synchronized
+        fun append(line: String) {
+            totalLines++
+            if (head.size < headLimit) {
+                head.add(line)
+                return
+            }
+            if (tail.size >= tailLimit) {
+                tail.removeFirst()
+            }
+            tail.addLast(line)
+        }
+
+        @Synchronized
+        fun formatSummary(): String {
+            if (head.isEmpty()) return ""
+            val omitted = (totalLines - head.size - tail.size).coerceAtLeast(0)
+            if (omitted == 0) {
+                return (head + tail).joinToString(" | ")
+            }
+            return buildList(head.size + tail.size + 1) {
+                addAll(head)
+                add("... ($omitted lines omitted) ...")
+                addAll(tail)
+            }.joinToString(" | ")
+        }
+    }
+
     companion object {
+        private const val STDERR_HEAD_LINES: Int = 12
+        private const val STDERR_TAIL_LINES: Int = 12
         const val INDEFINITE_WAKE_LOCK_MINUTES: Int = 0
         const val INDEFINITE_WAKE_LOCK_SECONDS: Long = 0L
         const val DEFAULT_WAKE_LOCK_MINUTES: Int = INDEFINITE_WAKE_LOCK_MINUTES

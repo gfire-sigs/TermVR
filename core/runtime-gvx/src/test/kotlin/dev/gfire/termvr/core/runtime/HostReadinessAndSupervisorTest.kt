@@ -1299,6 +1299,88 @@ class HostReadinessAndSupervisorTest {
         }
     }
 
+    @Test
+    fun `early Go panic preserves both panic header and bottom stack frames`(
+        @TempDir tempDir: File,
+    ) = runBlocking {
+        val filesDir = File(tempDir, "files").apply { mkdirs() }
+        val cacheDir = File(tempDir, "cache").apply { mkdirs() }
+        val panicLines = buildList {
+            add("panic: munmap(0, 10000) failed: invalid argument")
+            add("")
+            add("goroutine 1 [running]:")
+            for (i in 1..15) {
+                add("z.gfire.dev/gvx/pkg/sentry/platform/systrap.frame$i()")
+                add("\tz.gfire.dev/gvx/pkg/sentry/platform/systrap/file$i.go:$i +0x10")
+            }
+            add("z.gfire.dev/gvx/pkg/gvx.New(...)")
+            add("\tz.gfire.dev/gvx/pkg/gvx/sandbox.go:231 +0x32c")
+            add("main.main()")
+            add("\tz.gfire.dev/gvx/cmd/rungv/main.go:63 +0x1c")
+        }
+        val supervisor = SandboxSupervisor(
+            filesDir = filesDir,
+            cacheDir = cacheDir,
+            commandBuilder = GvxCommandBuilder(filesDir, cacheDir, CaCertificateExporter { pem, dir ->
+                pem.parentFile?.mkdirs()
+                pem.writeText("pem")
+                dir.mkdirs()
+            }),
+            proxyBridge = LoopbackProxyBridge(InMemorySecretStore()),
+            dnsProxy = LoopbackDnsProxy(NetworkDnsBackend { _, _ -> ByteArray(0) }),
+            checkpointController = CheckpointController(filesDir),
+            readinessInspector = HostReadinessInspector(
+                filesDir = filesDir,
+                procRoot = File(tempDir, "proc"),
+                sdkIntProvider = { Build.VERSION_CODES.VANILLA_ICE_CREAM },
+                hostAbiProvider = { "arm64-v8a" },
+                pageSizeProvider = { 16384 },
+                totalHostRamMiBProvider = { 8192 },
+                freeDiskMiBProvider = { 4096 },
+                selfPidProvider = { 100 },
+            ),
+            processLauncher = GvxProcessLauncher { _, _, _ ->
+                object : GvxProcessHandle {
+                    override val stdoutStream: InputStream = ByteArrayInputStream(ByteArray(0))
+                    override val stdinStream: OutputStream = ByteArrayOutputStream()
+                    override val stderrStream: InputStream =
+                        ByteArrayInputStream(panicLines.joinToString("\n").toByteArray(StandardCharsets.UTF_8))
+                    override val pid: Long = 9001L
+                    override val isAlive: Boolean = false
+                    override fun waitForExit(): Int = 2
+                    override fun destroyGracefully() = Unit
+                }
+            },
+            agentExtractor = AgentAssetExtractor { arch ->
+                File(filesDir, "agent/${arch.ociArch}/termvr-agent").apply {
+                    parentFile?.mkdirs()
+                    writeText("stub")
+                }
+            },
+        )
+        try {
+            val profile = SandboxProfile(
+                id = "panic-head",
+                displayName = "Panic Head",
+                imageRef = "docker.io/library/debian:trixie-slim",
+            )
+            var thrown: Throwable? = null
+            try {
+                supervisor.startOrResumeSandbox(profile)
+            } catch (t: Throwable) {
+                thrown = t
+            }
+            assertNotNull(thrown)
+            val msg = thrown!!.message.orEmpty()
+            assertTrue(msg.contains("panic: munmap(0, 10000) failed: invalid argument"), "Missing panic header: $msg")
+            assertTrue(msg.contains("main.main()"), "Missing stack tail: $msg")
+            assertTrue(msg.contains("lines omitted"), "Expected middle omission marker: $msg")
+            assertFalse(msg.startsWith("java.io.IOException:"), "Should unwrap ExecutionException prefix: $msg")
+        } finally {
+            supervisor.close()
+        }
+    }
+
     private class FakeMuxProcessHandle(
         executor: java.util.concurrent.ExecutorService,
         stderrText: String = "",
