@@ -1501,6 +1501,9 @@ private fun ContainerInspectorDialog(
                                 text = buildString {
                                     appendLine("Limits: RAM $memLimitLabel · CPU $cpuLimitLabel · PIDs $pidsLimitLabel")
                                     appendLine("Network: ${snap.networkMode.ifBlank { "nat" }} · LAN isolated=${res.isolateLan}")
+                                    if (res.netTxBps > 0L || res.netRxBps > 0L) {
+                                        appendLine("NAT Cap: TX ${formatBitsPerSecond(res.netTxBps)} / RX ${formatBitsPerSecond(res.netRxBps)}")
+                                    }
                                     append("Uptime: ${snap.uptimeNanos / 1_000_000_000L}s · PIDs: ${snap.pidCount}")
                                 },
                                 style = MaterialTheme.typography.bodySmall,
@@ -1514,7 +1517,8 @@ private fun ContainerInspectorDialog(
                                 text = buildString {
                                     appendLine(String.format(Locale.US, "CPU Time: %.2fs (throttled %d periods)", cpuSec, stats.cpuThrottledPeriods))
                                     appendLine("Memory: ${formatBytes(stats.memoryTotalBytes)} (anon ${formatBytes(stats.memoryAnonBytes)}, tmpfs ${formatBytes(stats.memoryTmpfsBytes)})")
-                                    append("Net I/O: RX ${formatBytes(stats.netRxBytes)} / TX ${formatBytes(stats.netTxBytes)}")
+                                    appendLine("Net I/O: RX ${formatBytes(stats.netRxBytes)} / TX ${formatBytes(stats.netTxBytes)}")
+                                    append("Block I/O: R ${formatBytes(stats.blockReadBytes)} (${stats.blockReadOps} ops) / W ${formatBytes(stats.blockWriteBytes)} (${stats.blockWriteOps} ops)")
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 fontFamily = mono,
@@ -1720,4 +1724,17 @@ internal fun formatBytes(bytes: Long): String {
     if (mib < 1024.0) return "${mib.roundToInt()} MB"
     val gib = mib / 1024.0
     return String.format(Locale.US, "%.2f GB", gib)
+}
+
+internal fun formatBitsPerSecond(bps: Long): String {
+    if (bps <= 0L) return "Unlimited"
+    if (bps < 1_000L) return "$bps bps"
+    val kbps = bps / 1_000.0
+    if (kbps < 1_000.0) return String.format(Locale.US, "%.0f Kbps", kbps)
+    val mbps = kbps / 1_000.0
+    if (mbps < 1_000.0) {
+        return if (mbps == mbps.roundToInt().toDouble()) "${mbps.roundToInt()} Mbps" else String.format(Locale.US, "%.1f Mbps", mbps)
+    }
+    val gbps = mbps / 1_000.0
+    return String.format(Locale.US, "%.2f Gbps", gbps)
 }

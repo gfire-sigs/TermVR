@@ -537,6 +537,57 @@ fun NetworkScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                             }
+                            if (selectedProfile.network.backend == NetBackend.NAT) {
+                                var txMbpsText by remember(selectedProfile.id, selectedProfile.network.netTxBps) {
+                                    mutableStateOf(
+                                        if (selectedProfile.network.netTxBps > 0L) {
+                                            (selectedProfile.network.netTxBps / 1_000_000.0).toString().removeSuffix(".0")
+                                        } else {
+                                            ""
+                                        },
+                                    )
+                                }
+                                var rxMbpsText by remember(selectedProfile.id, selectedProfile.network.netRxBps) {
+                                    mutableStateOf(
+                                        if (selectedProfile.network.netRxBps > 0L) {
+                                            (selectedProfile.network.netRxBps / 1_000_000.0).toString().removeSuffix(".0")
+                                        } else {
+                                            ""
+                                        },
+                                    )
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Text(
+                                    text = if (isLiveNat) "NAT Bandwidth Cap (Mbps, applies live)" else "NAT Bandwidth Cap (Mbps, 0 = unlimited)",
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        value = txMbpsText,
+                                        onValueChange = { txMbpsText = it },
+                                        label = { Text("TX Mbps") },
+                                        placeholder = { Text("0") },
+                                        singleLine = true,
+                                        shape = TermVrControlShape,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    OutlinedTextField(
+                                        value = rxMbpsText,
+                                        onValueChange = { rxMbpsText = it },
+                                        label = { Text("RX Mbps") },
+                                        placeholder = { Text("0") },
+                                        singleLine = true,
+                                        shape = TermVrControlShape,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                TermVrOutlinedButton(
+                                    onClick = { viewModel.updateNatBandwidthLimits(txMbpsText, rxMbpsText) },
+                                    enabled = !state.busy,
+                                ) {
+                                    Text("Apply Bandwidth")
+                                }
+                            }
                             TermVrOutlinedButton(onClick = { wgLauncher.launch(arrayOf("*/*")) }) {
                                 Text("Import .conf")
                             }

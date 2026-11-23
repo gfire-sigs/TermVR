@@ -53,6 +53,7 @@ data class CatalogUiState(
     val hostReadiness: HostReadinessReport = HostReadinessReport(hostSdkInt = 31, hostAbi = "arm64-v8a"),
     val runStates: Map<String, SandboxRunState> = emptyMap(),
     val calicoVxlanEnabled: Boolean = false,
+    val keepBlobs: Boolean = false,
     val persistentDistroIds: Set<String> = emptySet(),
     val recipeProbeReady: Map<String, Boolean> = emptyMap(),
     val dfEntries: List<RungvSystemDfEntry> = emptyList(),
@@ -82,6 +83,7 @@ data class CatalogUiState(
 private data class CatalogLocalState(
     val selectedTab: CatalogSubTab = CatalogSubTab.DISTRIBUTIONS,
     val calicoVxlanEnabled: Boolean = false,
+    val keepBlobs: Boolean = false,
     val persistentDistroOverrides: Map<String, Boolean> = emptyMap(),
     val probeReady: Map<String, Boolean> = emptyMap(),
     val dfEntries: List<RungvSystemDfEntry> = emptyList(),
@@ -130,6 +132,7 @@ class CatalogViewModel(
             hostReadiness = readiness,
             runStates = states,
             calicoVxlanEnabled = local.calicoVxlanEnabled,
+            keepBlobs = local.keepBlobs,
             persistentDistroIds = persistentIds,
             recipeProbeReady = local.probeReady,
             dfEntries = local.dfEntries,
@@ -193,6 +196,10 @@ class CatalogViewModel(
 
     fun toggleCalicoVxlan() {
         localState.value = localState.value.copy(calicoVxlanEnabled = !localState.value.calicoVxlanEnabled)
+    }
+
+    fun toggleKeepBlobs() {
+        localState.value = localState.value.copy(keepBlobs = !localState.value.keepBlobs)
     }
 
     fun toggleDistributionPersistentRootfs(distroId: String) {
@@ -361,7 +368,7 @@ class CatalogViewModel(
         }
     }
 
-    fun pullImage(imageRef: String) {
+    fun pullImage(imageRef: String, keepBlobs: Boolean = localState.value.keepBlobs) {
         scope.launch {
             val clean = imageRef.trim()
             if (clean.isEmpty()) return@launch
@@ -375,11 +382,13 @@ class CatalogViewModel(
                     imageRef = clean,
                     dnsPort = runtimeGateway.dnsProxyPort,
                     env = runtimeGateway.buildRungvHostEnv(),
+                    keepBlobs = keepBlobs,
                 )
                 if (res.exitCode != 0) {
                     error(res.stderr.ifBlank { "Pull exited with status ${res.exitCode}" })
                 }
-                localState.value = localState.value.copy(statusMessage = "Pulled $clean.")
+                val suffix = if (keepBlobs) " (original blobs kept)" else ""
+                localState.value = localState.value.copy(statusMessage = "Pulled $clean$suffix.")
                 refreshStorageStatsInternal()
             }.onFailure { err ->
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Pull failed")
@@ -388,7 +397,36 @@ class CatalogViewModel(
         }
     }
 
-    fun loadImageTar(tarFile: File) {
+    fun pushImage(imageRef: String, targetRef: String? = null) {
+        scope.launch {
+            val clean = imageRef.trim()
+            val cleanTarget = targetRef?.trim()?.takeIf { it.isNotEmpty() }
+            if (clean.isEmpty()) return@launch
+            val displayTarget = cleanTarget ?: clean
+            localState.value = localState.value.copy(
+                busyAction = "Pushing $displayTarget...",
+                errorMessage = null,
+                statusMessage = null,
+            )
+            runCatching {
+                val res = catalogRepository.pushImage(
+                    imageRef = clean,
+                    targetRef = cleanTarget,
+                    dnsPort = runtimeGateway.dnsProxyPort,
+                    env = runtimeGateway.buildRungvHostEnv(),
+                )
+                if (res.exitCode != 0) {
+                    error(res.stderr.ifBlank { "Push exited with status ${res.exitCode}" })
+                }
+                localState.value = localState.value.copy(statusMessage = "Pushed $displayTarget.")
+            }.onFailure { err ->
+                localState.value = localState.value.copy(errorMessage = err.message ?: "Push failed")
+            }
+            localState.value = localState.value.copy(busyAction = null)
+        }
+    }
+
+    fun loadImageTar(tarFile: File, keepBlobs: Boolean = localState.value.keepBlobs) {
         scope.launch {
             localState.value = localState.value.copy(
                 busyAction = "Loading image archive...",
@@ -399,11 +437,13 @@ class CatalogViewModel(
                 val res = catalogRepository.loadImageArchive(
                     tarPath = tarFile.absolutePath,
                     env = runtimeGateway.buildRungvHostEnv(),
+                    keepBlobs = keepBlobs,
                 )
                 if (res.exitCode != 0) {
                     error(res.stderr.ifBlank { "Image load failed (${res.exitCode})" })
                 }
-                localState.value = localState.value.copy(statusMessage = "Loaded OCI image archive.")
+                val suffix = if (keepBlobs) " (original blobs kept)" else ""
+                localState.value = localState.value.copy(statusMessage = "Loaded OCI image archive$suffix.")
                 refreshStorageStatsInternal()
             }.onFailure { err ->
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Archive load failed")
@@ -416,6 +456,7 @@ class CatalogViewModel(
         imageRef: String,
         outputTarFile: File,
         isOnline: Boolean,
+        allowOffline: Boolean = localState.value.keepBlobs,
         onArchiveReady: (File) -> Unit,
     ) {
         scope.launch {
@@ -433,6 +474,7 @@ class CatalogViewModel(
                     dnsPort = runtimeGateway.dnsProxyPort,
                     isOnline = isOnline,
                     env = runtimeGateway.buildRungvHostEnv(),
+                    allowOffline = allowOffline,
                 )
                 if (res.exitCode != 0) {
                     error(res.stderr.ifBlank { "Image export failed (${res.exitCode})" })

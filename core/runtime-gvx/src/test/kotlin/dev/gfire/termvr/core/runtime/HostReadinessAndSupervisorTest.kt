@@ -1091,7 +1091,7 @@ class HostReadinessAndSupervisorTest {
                 }
                 GvxControlClient.METHOD_STOP -> """{"ok":true,"result":{"signaled":"SIGTERM","killed":false}}"""
                 GvxControlClient.METHOD_RESOURCE_UPDATE ->
-                    """{"ok":true,"result":{"memory_bytes":536870912,"cpu_millis":2000,"guest_cpus":2,"pids_limit":128,"isolate_lan":true}}"""
+                    """{"ok":true,"result":{"memory_bytes":536870912,"cpu_millis":2000,"guest_cpus":2,"pids_limit":128,"isolate_lan":true,"net_tx_bps":25000000,"net_rx_bps":50000000}}"""
                 GvxControlClient.METHOD_PORT_ADD -> {
                     dynamicPorts.add("""{"proto":"tcp","host_ip":"127.0.0.1","host_port":8088,"guest_port":80,"source":"dynamic"}""")
                     """{"ok":true,"result":{"ports":[${dynamicPorts.joinToString(",")}]}}"""
@@ -1112,7 +1112,7 @@ class HostReadinessAndSupervisorTest {
                 GvxControlClient.METHOD_INSPECT ->
                     """{"ok":true,"result":{"id":"ctrl-box","state":"${if (pausedOnServer) "paused" else "running"}","platform":"systrap","architecture":"arm64","lockdown_applied":true,"network_mode":"nat","eth0_ip":"10.88.0.2","pid_count":3,"resources":{"memory_bytes":536870912,"cpu_millis":2000,"pids_limit":128,"isolate_lan":true},"mounts":[{"target":"/data","type":"ext4lite","source":"hotvol","read_only":true,"mutable":true}]}}"""
                 GvxControlClient.METHOD_STATS ->
-                    """{"ok":true,"result":{"cpu":{"user_ns":300000000,"sys_ns":100000000},"memory":{"total_bytes":50331648,"anon_bytes":33554432},"pids":3,"pids_limit":128}}"""
+                    """{"ok":true,"result":{"cpu":{"user_ns":300000000,"sys_ns":100000000},"memory":{"total_bytes":50331648,"anon_bytes":33554432},"block_io":[{"disk":"vda","read_ops":7,"write_ops":3,"read_sectors":32,"write_sectors":16}],"pids":3,"pids_limit":128}}"""
                 GvxControlClient.METHOD_PROC_LIST ->
                     """{"ok":true,"result":{"processes":[{"pid":1,"state":"S","comm":"init"},{"pid":42,"state":"R","comm":"worker","cmdline":["worker","--serve"]}]}}"""
                 GvxControlClient.METHOD_PROC_SIGNAL -> """{"ok":true,"result":{"signal":"SIGTERM","pid":42}}"""
@@ -1185,13 +1185,22 @@ class HostReadinessAndSupervisorTest {
             assertEquals(SandboxRunState.RUNNING, supervisor.startOrResumeSandbox(profile))
             assertEquals(SandboxRunState.RUNNING, supervisor.runStates.value[profile.id])
 
-            // Live resource update syncs RAM/CPU/PIDs/isolateLan and proxyBridge isolation policy.
+            // Live resource update syncs RAM/CPU/PIDs/isolateLan/NAT bandwidth caps and proxyBridge isolation policy.
             val limits = supervisor.updateResourcesLive(
                 profile.id,
-                LiveResourceUpdate(memoryMiB = 512, cpuCores = 2.0, pidsLimit = 128, isolateLan = true),
+                LiveResourceUpdate(
+                    memoryMiB = 512,
+                    cpuCores = 2.0,
+                    pidsLimit = 128,
+                    isolateLan = true,
+                    netTxBps = 25_000_000L,
+                    netRxBps = 50_000_000L,
+                ),
             )
             assertEquals(128L, limits.pidsLimit)
             assertTrue(limits.isolateLan)
+            assertEquals(25_000_000L, limits.netTxBps)
+            assertEquals(50_000_000L, limits.netRxBps)
             assertTrue(proxyBridge.currentPolicy.isolateLanEgress)
 
             // Live loopback port add & remove work; LAN add is rejected at runtime boundary.
@@ -1258,7 +1267,10 @@ class HostReadinessAndSupervisorTest {
 
             // Inspector RPCs
             assertEquals("10.88.0.2", supervisor.inspectSandbox(profile.id).eth0Ip)
-            assertEquals(3, supervisor.statsSandbox(profile.id).pids)
+            val liveStats = supervisor.statsSandbox(profile.id)
+            assertEquals(3, liveStats.pids)
+            assertEquals(32L * 512L, liveStats.blockReadBytes)
+            assertEquals(16L * 512L, liveStats.blockWriteBytes)
             assertEquals(2, supervisor.listGuestProcesses(profile.id).size)
             supervisor.signalGuestProcess(profile.id, pid = 42, signal = "SIGTERM")
             assertEquals("ready", supervisor.readKernelLog(profile.id).single().text)

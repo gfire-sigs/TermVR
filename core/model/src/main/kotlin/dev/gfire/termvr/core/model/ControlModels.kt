@@ -73,7 +73,27 @@ data class LiveResourceLimits(
     val guestCpus: Int = 0,
     val pidsLimit: Long = 0L,
     val isolateLan: Boolean = false,
+    val netTxBps: Long = 0L,
+    val netRxBps: Long = 0L,
 )
+
+/**
+ * Describes per-device block I/O counters returned by `gvx-ctrl/2` `sandbox.stats` (`block_io`).
+ */
+@Serializable
+data class LiveBlockIoSample(
+    val disk: String = "",
+    val readOps: Long = 0L,
+    val writeOps: Long = 0L,
+    val readSectors: Long = 0L,
+    val writeSectors: Long = 0L,
+) {
+    val readBytes: Long
+        get() = readSectors.coerceAtLeast(0L) * 512L
+
+    val writeBytes: Long
+        get() = writeSectors.coerceAtLeast(0L) * 512L
+}
 
 /**
  * Captures a point-in-time `sandbox.stats` resource sample from `gvx-ctrl/2`.
@@ -91,11 +111,24 @@ data class LiveStatsSnapshot(
     val memoryLimitBytes: Long = 0L,
     val netRxBytes: Long = 0L,
     val netTxBytes: Long = 0L,
+    val blockIo: List<LiveBlockIoSample> = emptyList(),
     val pids: Int = 0,
     val pidsLimit: Long = 0L,
 ) {
     val totalCpuNanos: Long
         get() = (cpuUserNanos + cpuSysNanos).coerceAtLeast(0L)
+
+    val blockReadBytes: Long
+        get() = blockIo.sumOf { it.readBytes }
+
+    val blockWriteBytes: Long
+        get() = blockIo.sumOf { it.writeBytes }
+
+    val blockReadOps: Long
+        get() = blockIo.sumOf { it.readOps.coerceAtLeast(0L) }
+
+    val blockWriteOps: Long
+        get() = blockIo.sumOf { it.writeOps.coerceAtLeast(0L) }
 }
 
 /**
@@ -132,7 +165,14 @@ data class LiveResourceUpdate(
     val cpuCores: Double? = null,
     val pidsLimit: Int? = null,
     val isolateLan: Boolean? = null,
+    val netTxBps: Long? = null,
+    val netRxBps: Long? = null,
 ) {
     val hasChanges: Boolean
-        get() = memoryMiB != null || cpuCores != null || pidsLimit != null || isolateLan != null
+        get() = memoryMiB != null ||
+            cpuCores != null ||
+            pidsLimit != null ||
+            isolateLan != null ||
+            netTxBps != null ||
+            netRxBps != null
 }

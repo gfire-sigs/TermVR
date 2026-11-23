@@ -806,6 +806,16 @@ class SandboxSupervisor(
                 )
                 proxyBridge.updatePolicy(nextProfile.network.outboundProxy, isolate)
             }
+            update.netTxBps?.let { txBps ->
+                nextProfile = nextProfile.copy(
+                    network = nextProfile.network.copy(netTxBps = txBps.coerceAtLeast(0L)),
+                )
+            }
+            update.netRxBps?.let { rxBps ->
+                nextProfile = nextProfile.copy(
+                    network = nextProfile.network.copy(netRxBps = rxBps.coerceAtLeast(0L)),
+                )
+            }
             managed.profile = nextProfile
             cachedProfiles[profileId] = nextProfile
             result

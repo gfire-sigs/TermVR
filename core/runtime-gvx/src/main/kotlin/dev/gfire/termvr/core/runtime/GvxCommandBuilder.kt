@@ -500,9 +500,21 @@ class GvxCommandBuilder(
                 args.add("--dynamic-ports")
                 if (profile.network.autoPublishPorts) {
                     args.add("--auto-publish")
+                    if (profile.network.autoPublishAddr.isNotBlank()) {
+                        args.add("--auto-publish-addr")
+                        args.add(profile.network.autoPublishAddr)
+                    }
                 }
                 if (profile.network.isolateLanEgress) {
                     args.add("-isolate-lan")
+                }
+                if (profile.network.netTxBps > 0L) {
+                    args.add("--net-tx-bps")
+                    args.add(profile.network.netTxBps.toString())
+                }
+                if (profile.network.netRxBps > 0L) {
+                    args.add("--net-rx-bps")
+                    args.add(profile.network.netRxBps.toString())
                 }
             }
 

@@ -218,13 +218,13 @@ class GvxControlClientTest {
                 GvxControlClient.METHOD_INSPECT ->
                     """{"ok":true,"result":{"id":"devbox","name":"devbox","state":"running","platform":"systrap","architecture":"arm64","syscall_isolation":"seccomp","lockdown_applied":true,"network_mode":"nat","eth0_ip":"10.88.0.2","eth0_mtu":1500,"resources":{"memory_bytes":536870912,"cpu_millis":2000,"guest_cpus":2,"pids_limit":128,"isolate_lan":true},"memory_used_bytes":67108864,"ports":[{"proto":"tcp","host_ip":"127.0.0.1","host_port":8080,"guest_ip":"10.88.0.2","guest_port":80,"source":"dynamic"}],"mounts":[{"target":"/","type":"overlay","source":"rootfs","read_only":false,"mutable":true},{"target":"/data","type":"ext4lite","source":"data","read_only":false,"mutable":true}],"active_exec_sessions":1,"pid_count":4,"capabilities":["lifecycle.pause"],"uptime_ns":9000000000}}"""
                 GvxControlClient.METHOD_STATS ->
-                    """{"ok":true,"result":{"cpu":{"user_ns":150000000,"sys_ns":50000000,"throttled":3,"throttled_ns":12000000},"memory":{"total_bytes":67108864,"anon_bytes":33554432,"file_bytes":16777216,"tmpfs_bytes":8388608,"limit_bytes":536870912},"network":[{"interface":"eth0","rx_bytes":1200,"tx_bytes":3400}],"pids":5,"pids_limit":128}}"""
+                    """{"ok":true,"result":{"cpu":{"user_ns":150000000,"sys_ns":50000000,"throttled":3,"throttled_ns":12000000},"memory":{"total_bytes":67108864,"anon_bytes":33554432,"file_bytes":16777216,"tmpfs_bytes":8388608,"limit_bytes":536870912},"network":[{"interface":"eth0","rx_bytes":1200,"tx_bytes":3400}],"block_io":[{"disk":"vda","read_ops":12,"write_ops":5,"read_sectors":64,"write_sectors":16}],"pids":5,"pids_limit":128}}"""
                 GvxControlClient.METHOD_PAUSE -> """{"ok":true,"result":{"state":"paused"}}"""
                 GvxControlClient.METHOD_UNPAUSE -> """{"ok":true,"result":{"state":"running"}}"""
                 GvxControlClient.METHOD_STOP -> """{"ok":true,"result":{"signaled":"SIGTERM","killed":false}}"""
                 GvxControlClient.METHOD_CHECKPOINT -> """{"ok":true,"result":{"ok":true}}"""
                 GvxControlClient.METHOD_RESOURCE_UPDATE ->
-                    """{"ok":true,"result":{"memory_bytes":1073741824,"cpu_millis":1500,"guest_cpus":2,"pids_limit":256,"isolate_lan":true}}"""
+                    """{"ok":true,"result":{"memory_bytes":1073741824,"cpu_millis":1500,"guest_cpus":2,"pids_limit":256,"isolate_lan":true,"net_tx_bps":25000000,"net_rx_bps":50000000}}"""
                 GvxControlClient.METHOD_PORT_LIST ->
                     """{"ok":true,"result":{"ports":[{"proto":"tcp","host_ip":"127.0.0.1","host_port":8080,"guest_port":80,"source":"dynamic"}]}}"""
                 GvxControlClient.METHOD_PORT_ADD ->
@@ -278,6 +278,12 @@ class GvxControlClientTest {
             assertEquals(67_108_864L, stats.memoryTotalBytes)
             assertEquals(1200L, stats.netRxBytes)
             assertEquals(3400L, stats.netTxBytes)
+            assertEquals(1, stats.blockIo.size)
+            assertEquals("vda", stats.blockIo.single().disk)
+            assertEquals(12L, stats.blockReadOps)
+            assertEquals(5L, stats.blockWriteOps)
+            assertEquals(64L * 512L, stats.blockReadBytes)
+            assertEquals(16L * 512L, stats.blockWriteBytes)
             assertEquals(5, stats.pids)
 
             client.pause(sock, quiesceNet = true)
@@ -287,16 +293,27 @@ class GvxControlClientTest {
 
             val updatedLimits = client.updateResources(
                 sock,
-                LiveResourceUpdate(memoryMiB = 1024, cpuCores = 1.5, pidsLimit = 256, isolateLan = true),
+                LiveResourceUpdate(
+                    memoryMiB = 1024,
+                    cpuCores = 1.5,
+                    pidsLimit = 256,
+                    isolateLan = true,
+                    netTxBps = 25_000_000L,
+                    netRxBps = 50_000_000L,
+                ),
             )
             assertEquals(1_073_741_824L, updatedLimits.memoryBytes)
             assertEquals(1500L, updatedLimits.cpuMillis)
             assertEquals(256L, updatedLimits.pidsLimit)
             assertTrue(updatedLimits.isolateLan)
+            assertEquals(25_000_000L, updatedLimits.netTxBps)
+            assertEquals(50_000_000L, updatedLimits.netRxBps)
             val resCall = server.calls.first { it.method == GvxControlClient.METHOD_RESOURCE_UPDATE }
             assertEquals(1024L * 1024L * 1024L, resCall.params!!.jsonObject["memory_bytes"]!!.jsonPrimitive.long)
             assertEquals(1500L, resCall.params.jsonObject["cpu_millis"]!!.jsonPrimitive.long)
             assertEquals(256L, resCall.params.jsonObject["pids_limit"]!!.jsonPrimitive.long)
+            assertEquals(25_000_000L, resCall.params.jsonObject["net_tx_bps"]!!.jsonPrimitive.long)
+            assertEquals(50_000_000L, resCall.params.jsonObject["net_rx_bps"]!!.jsonPrimitive.long)
 
             assertEquals(1, client.listPorts(sock).size)
             val addedPorts = client.addPorts(sock, listOf("127.0.0.1:9090:90/tcp"))

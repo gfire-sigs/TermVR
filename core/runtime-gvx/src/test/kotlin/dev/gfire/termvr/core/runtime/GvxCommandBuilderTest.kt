@@ -686,6 +686,9 @@ class GvxCommandBuilderTest {
             network = NetworkModeConfig(
                 backend = NetBackend.NAT,
                 autoPublishPorts = true,
+                autoPublishAddr = "127.0.0.1",
+                netTxBps = 25_000_000L,
+                netRxBps = 50_000_000L,
             ),
         )
         val ctl = builder.controlSocketFile(profile.id)
@@ -696,6 +699,15 @@ class GvxCommandBuilderTest {
             assertTrue(args.contains("--allow-volume-attach"))
             assertTrue(args.contains("--dynamic-ports"))
             assertTrue(args.contains("--auto-publish"))
+            val autoAddrIdx = args.indexOf("--auto-publish-addr")
+            assertTrue(autoAddrIdx >= 0)
+            assertEquals("127.0.0.1", args[autoAddrIdx + 1])
+            val txIdx = args.indexOf("--net-tx-bps")
+            assertTrue(txIdx >= 0)
+            assertEquals("25000000", args[txIdx + 1])
+            val rxIdx = args.indexOf("--net-rx-bps")
+            assertTrue(rxIdx >= 0)
+            assertEquals("50000000", args[rxIdx + 1])
             val pidsIdx = args.indexOf("--pids-limit")
             assertTrue(pidsIdx >= 0)
             assertEquals("256", args[pidsIdx + 1])
@@ -704,6 +716,9 @@ class GvxCommandBuilderTest {
         val unlimitedArgs = builder.buildRunArgs(profile.copy(pidsLimit = 0, network = NetworkModeConfig(backend = NetBackend.NAT, autoPublishPorts = false)), 5353, ctl)
         assertFalse(unlimitedArgs.contains("--pids-limit"))
         assertFalse(unlimitedArgs.contains("--auto-publish"))
+        assertFalse(unlimitedArgs.contains("--auto-publish-addr"))
+        assertFalse(unlimitedArgs.contains("--net-tx-bps"))
+        assertFalse(unlimitedArgs.contains("--net-rx-bps"))
         assertTrue(unlimitedArgs.contains("--dynamic-ports"))
 
         assertEquals(

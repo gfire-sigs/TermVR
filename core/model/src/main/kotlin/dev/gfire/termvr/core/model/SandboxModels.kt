@@ -472,10 +472,20 @@ data class NetworkModeConfig(
     val backend: NetBackend = NetBackend.NAT,
     val isolateLanEgress: Boolean = false,
     val autoPublishPorts: Boolean = false,
+    val autoPublishAddr: String = "",
+    val netTxBps: Long = 0L,
+    val netRxBps: Long = 0L,
     val wireGuardConfigName: String? = null,
     val outboundProxy: OutboundProxyConfig = OutboundProxyConfig(),
 ) {
     init {
+        require(netTxBps >= 0L) { "NetworkModeConfig netTxBps must be non-negative, found $netTxBps" }
+        require(netRxBps >= 0L) { "NetworkModeConfig netRxBps must be non-negative, found $netRxBps" }
+        if (autoPublishAddr.isNotEmpty()) {
+            require(AUTO_PUBLISH_ADDR_REGEX.matches(autoPublishAddr)) {
+                "NetworkModeConfig autoPublishAddr must be a bare IP literal, found '$autoPublishAddr'"
+            }
+        }
         if (backend == NetBackend.WIREGUARD) {
             require(!wireGuardConfigName.isNullOrBlank()) {
                 "NetworkModeConfig wireGuardConfigName is required when backend is WIREGUARD"
@@ -494,6 +504,7 @@ data class NetworkModeConfig(
 
     companion object {
         private val WG_CONFIG_NAME_REGEX = Regex("^[a-zA-Z0-9._-]{1,64}$")
+        private val AUTO_PUBLISH_ADDR_REGEX = Regex("^[0-9a-fA-F:.]{3,45}$")
     }
 }
 
