@@ -696,5 +696,12 @@ class SandboxModelsTest {
         assertThrows(IllegalArgumentException::class.java) {
             NetworkModeConfig(autoPublishAddr = "127.0.0.1 bad")
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            NetworkModeConfig(autoPublishAddr = "0.0.0.0")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            NetworkModeConfig(autoPublishAddr = ":::")
+        }
+        assertEquals("::1", NetworkModeConfig(autoPublishAddr = "::1").autoPublishAddr)
     }
 }

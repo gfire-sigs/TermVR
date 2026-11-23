@@ -420,6 +420,7 @@ class CatalogViewModel(
                 }
                 localState.value = localState.value.copy(statusMessage = "Pushed $displayTarget.")
             }.onFailure { err ->
+                if (err is kotlinx.coroutines.CancellationException) throw err
                 localState.value = localState.value.copy(errorMessage = err.message ?: "Push failed")
             }
             localState.value = localState.value.copy(busyAction = null)

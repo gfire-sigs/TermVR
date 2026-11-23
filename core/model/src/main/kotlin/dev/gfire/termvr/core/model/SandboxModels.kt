@@ -482,8 +482,8 @@ data class NetworkModeConfig(
         require(netTxBps >= 0L) { "NetworkModeConfig netTxBps must be non-negative, found $netTxBps" }
         require(netRxBps >= 0L) { "NetworkModeConfig netRxBps must be non-negative, found $netRxBps" }
         if (autoPublishAddr.isNotEmpty()) {
-            require(AUTO_PUBLISH_ADDR_REGEX.matches(autoPublishAddr)) {
-                "NetworkModeConfig autoPublishAddr must be a bare IP literal, found '$autoPublishAddr'"
+            require(autoPublishAddr in ALLOWED_AUTO_PUBLISH_ADDRS) {
+                "NetworkModeConfig autoPublishAddr must be empty or a loopback address (127.0.0.1 or ::1), found '$autoPublishAddr'"
             }
         }
         if (backend == NetBackend.WIREGUARD) {
@@ -504,7 +504,7 @@ data class NetworkModeConfig(
 
     companion object {
         private val WG_CONFIG_NAME_REGEX = Regex("^[a-zA-Z0-9._-]{1,64}$")
-        private val AUTO_PUBLISH_ADDR_REGEX = Regex("^[0-9a-fA-F:.]{3,45}$")
+        private val ALLOWED_AUTO_PUBLISH_ADDRS = setOf("127.0.0.1", "::1")
     }
 }
 

@@ -2,4 +2,4 @@ TermVR 0.21.10002026111600 (gvx v0.21.10002026111600):
 - Live NAT TX/RX bandwidth limits (Mbps) in Network with --net-tx-bps and --net-rx-bps.
 - Block I/O and NAT cap telemetry in Container Inspector Stats.
 - Added OCI image push, opt-in -keep-blobs for offline .tar export, and fixed image load -i.
-- Bundled gvx v0.21.10002026111600: multi-arch manifest push, live bandwidth shaping, and gvx-oci/v1.0 User-Agent.
+- Bundled gvx v0.21.10002026111600: OCI registry push, live NAT bandwidth shaping, and gvx-oci/v1.0 User-Agent.

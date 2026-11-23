@@ -306,6 +306,12 @@ class CatalogRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) {
             CatalogRepository.buildImagePushArgs("alpine:3.21", dnsPort = 0)
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogRepository.buildPullArgs("--registry-url=https://evil.example", dnsPort = 15353)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogRepository.buildImagePushArgs("alpine:3.21", targetRef = "-q", dnsPort = 15353)
+        }
     }
 
     @Test

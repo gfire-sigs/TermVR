@@ -347,6 +347,15 @@ class GvxControlClientTest {
             val dmesg = client.kernelLog(sock, tail = 50, clear = true)
             assertEquals(1, dmesg.size)
             assertEquals("gvisor booted", dmesg.single().text)
+
+            // Verify gvx-ctrl/2 v0.21 wire method/capability/feature constants match gvx/pkg/gvx/control/types.go
+            assertEquals("sandbox.events", GvxControlClient.METHOD_EVENTS)
+            assertEquals("net.policy_get", GvxControlClient.METHOD_NET_POLICY_GET)
+            assertEquals("net.policy_set", GvxControlClient.METHOD_NET_POLICY_SET)
+            assertEquals("net.unix_forward", GvxControlClient.METHOD_UNIX_FORWARD)
+            assertEquals("net.unix_forward", GvxControlClient.CAP_UNIX_FORWARD)
+            assertEquals("mount.bind_attach", GvxControlClient.CAP_MOUNT_BIND_ATTACH)
+            assertEquals("net_qos", GvxControlClient.FEATURE_NET_QOS)
         } finally {
             server.shutdown()
         }

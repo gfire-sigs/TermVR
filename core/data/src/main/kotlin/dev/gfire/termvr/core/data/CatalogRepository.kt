@@ -421,7 +421,7 @@ class CatalogRepository(
             dnsPort: Int,
             keepBlobs: Boolean = false,
         ): List<String> {
-            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace)) {
+            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace) && !imageRef.startsWith("-")) {
                 "imageRef must be a non-blank OCI reference"
             }
             require(dnsPort in 1..65535) { "dnsPort must be within 1..65535" }
@@ -462,7 +462,7 @@ class CatalogRepository(
             check(isOnline || allowOffline) {
                 "Export Image (.tar) requires an active network connection or kept blobs (-keep-blobs)"
             }
-            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace)) {
+            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace) && !imageRef.startsWith("-")) {
                 "imageRef must be a non-blank OCI reference"
             }
             require(outputTarPath.isNotBlank()) { "outputTarPath must not be blank" }
@@ -487,13 +487,13 @@ class CatalogRepository(
             targetRef: String? = null,
             dnsPort: Int,
         ): List<String> {
-            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace)) {
+            require(imageRef.isNotBlank() && !imageRef.any(Char::isWhitespace) && !imageRef.startsWith("-")) {
                 "imageRef must be a non-blank OCI reference"
             }
             val cleanTarget = targetRef?.trim()?.takeIf { it.isNotEmpty() }
             if (cleanTarget != null) {
-                require(!cleanTarget.any(Char::isWhitespace)) {
-                    "targetRef must not contain whitespace"
+                require(!cleanTarget.any(Char::isWhitespace) && !cleanTarget.startsWith("-")) {
+                    "targetRef must be a valid OCI reference"
                 }
             }
             require(dnsPort in 1..65535) { "dnsPort must be within 1..65535" }
