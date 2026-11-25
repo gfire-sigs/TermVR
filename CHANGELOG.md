@@ -6,7 +6,29 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.21.10012026111600`.
+This section tracks changes staged on `main` after `0.22.10002026111600`.
+
+---
+
+## [0.22.10002026111600]
+
+This release (`versionCode` `302200000`) upgrades `gvx` to `v0.22.10002026111600` (`a90476e02630`) and hardens automated upstream release tracking. It bundles `ext4lite` per-mount size limits, ephemeral scratch volumes, and improved `sync-gvx` workflow automation.
+
+### Runtime upgrade to `gvx` `v0.22.10002026111600`
+
+The bundled `librungv.so` binary advances to upstream `gvx` `v0.22.10002026111600` (`a90476e02630`) with backward-compatible storage and checkpoint updates.
+
+- Bundled `gvx` `v0.22.10002026111600` (`a90476e02630`), which adds `size=SIZE` caps and bare `ephemeral` scratch mounts on `--mount type=volume` for `ext4lite` volumes (`gvx#247`, `gvx#256`).
+- Included checkpoint manifest version `3` support for capped persistent volumes, explicit `UNSUPPORTED` rejection for ephemeral volume checkpoints, and the `systrap` `forkStub` unmap check cleanup.
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.22.10002026111600`.
+
+### Automated `gvx` release tracking workflow
+
+`scripts/sync-gvx-version.sh` and `.github/workflows/sync-gvx.yml` now track published upstream GitHub Releases and manage sync branches cleanly.
+
+- Updated `scripts/sync-gvx-version.sh --fetch-latest` to query the latest published non-draft, non-prerelease GitHub Release and peel its commit via `git ls-remote`. Added a `versionCode` downgrade guard and `--from-tags` fallback.
+- Updated `.github/workflows/sync-gvx.yml` to pass `SYNC_GH_PAT || GITHUB_TOKEN` to `actions/checkout` and the fetch step. The job skips redundant pushes when `chore/sync-gvx` matches and cleans stale branches when `main` is current.
+- Added upstream release and diff links to sync PR descriptions and structured status summaries to `$GITHUB_STEP_SUMMARY`.
 
 ---
 

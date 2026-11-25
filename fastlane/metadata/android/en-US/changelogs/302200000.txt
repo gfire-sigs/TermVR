@@ -1,0 +1,3 @@
+TermVR 0.22.10002026111600 upgrades the bundled gvx runtime and hardens upstream release tracking.
+- Upgraded gvx to v0.22.10002026111600 (a90476e02630) with ext4lite volume size limits, ephemeral scratch volumes, and checkpoint manifest v3 support.
+- Improved sync-gvx automation to track published GitHub Releases, skip redundant pushes, and clean stale sync branches.
