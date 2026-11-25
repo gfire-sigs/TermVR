@@ -21,24 +21,32 @@ concurrency:
 
 jobs:
   sync-gvx:
-    name: Check and Sync Upstream gvx Tag
+    name: Check and Sync Upstream gvx Release
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          token: ${{ secrets.SYNC_GH_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Install audit tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends git jq python3 ripgrep
 
-      - name: Fetch latest upstream gvx tag and sync manifests
+      - name: Fetch latest upstream gvx release and sync manifests
+        id: sync
         env:
+          GH_TOKEN: ${{ secrets.SYNC_GH_PAT || secrets.GITHUB_TOKEN }}
           INPUT_APP_REV: ${{ inputs.app_revision }}
         run: |
           set -euo pipefail
+          PREV_GVX_TAG="$(jq -er '.sources.gvx.tag' scripts/source-lock.json)"
+          PREV_GVX_COMMIT="$(jq -er '.sources.gvx.commit' scripts/source-lock.json)"
+          echo "prev_gvx_tag=${PREV_GVX_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "prev_gvx_commit=${PREV_GVX_COMMIT}" >> "${GITHUB_OUTPUT}"
+
           SYNC_ARGS=(--fetch-latest --repo https://github.com/gfire-sigs/gvx.git)
           if [ -n "${INPUT_APP_REV}" ]; then
             SYNC_ARGS+=(--app-rev "${INPUT_APP_REV}")
@@ -66,19 +74,36 @@ jobs:
       - name: Open or update pull request when gvx version changed
         env:
           GH_TOKEN: ${{ secrets.SYNC_GH_PAT || secrets.GITHUB_TOKEN }}
+          PREV_GVX_TAG: ${{ steps.sync.outputs.prev_gvx_tag }}
+          PREV_GVX_COMMIT: ${{ steps.sync.outputs.prev_gvx_commit }}
         run: |
           set -euo pipefail
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "Upstream gvx tag and manifests are already up to date."
-            exit 0
-          fi
-
           GVX_TAG="$(jq -er '.sources.gvx.tag' scripts/source-lock.json)"
           GVX_COMMIT="$(jq -er '.sources.gvx.commit' scripts/source-lock.json)"
           VERSION_NAME="$(jq -er '.termvr.version_name' scripts/source-lock.json)"
           VERSION_CODE="$(jq -er '.termvr.version_code' scripts/source-lock.json)"
           BRANCH_NAME="chore/sync-gvx"
+          REMOTE_REF="refs/remotes/origin/${BRANCH_NAME}"
 
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Upstream gvx release and manifests are already up to date (${GVX_TAG})."
+            EXISTING_PR="$(gh pr list --head "${BRANCH_NAME}" --base main --state open --json number --jq '.[0].number // empty')"
+            if [ -n "${EXISTING_PR}" ]; then
+              gh pr close "${EXISTING_PR}" --comment "Superseded: \`main\` already tracks \`gvx\` \`${GVX_TAG}\` (\`${GVX_COMMIT:0:12}\`)."
+            fi
+            if git rev-parse --verify --quiet "${REMOTE_REF}" >/dev/null; then
+              git push origin --delete "${BRANCH_NAME}" || true
+            fi
+            {
+              echo "### Sync gvx Status: Up to date"
+              echo ""
+              echo "- Active \`gvx\` release: \`${GVX_TAG}\` (\`${GVX_COMMIT:0:12}\`)"
+              echo "- \`versionName\`: \`${VERSION_NAME}\` (\`versionCode\`: \`${VERSION_CODE}\`)"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          BASE_SHA="$(git rev-parse HEAD)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "${BRANCH_NAME}"
@@ -90,29 +115,76 @@ jobs:
             app/src/main/assets/licenses/index.json \
             app/src/main/assets/licenses/gvx.txt \
             fastlane/metadata/android/en-US/changelogs/
+          if [ -n "$(git status --porcelain --untracked-files=all | grep -v '^[MADRC] ' || true)" ]; then
+            echo "Unexpected unstaged or untracked files left by sync-gvx-version.sh:" >&2
+            git status --short >&2
+            exit 1
+          fi
           git commit -m "build(deps): sync gvx to ${GVX_TAG}"
-          git push --force-with-lease origin "${BRANCH_NAME}"
+
+          NEW_TREE="$(git rev-parse "${BRANCH_NAME}^{tree}")"
+          PUSH_STATUS="pushed"
+          if REMOTE_SHA="$(git rev-parse --verify --quiet "${REMOTE_REF}")"; then
+            REMOTE_TREE="$(git rev-parse "${REMOTE_SHA}^{tree}")"
+            REMOTE_PARENT="$(git rev-parse "${REMOTE_SHA}^" 2>/dev/null || true)"
+            if [ "${REMOTE_TREE}" = "${NEW_TREE}" ] && [ "${REMOTE_PARENT}" = "${BASE_SHA}" ]; then
+              echo "Remote branch ${BRANCH_NAME} already matches ${GVX_TAG} on current main (${REMOTE_SHA}); skipping push."
+              PUSH_STATUS="unchanged"
+            else
+              git push --force-with-lease="refs/heads/${BRANCH_NAME}:${REMOTE_SHA}" origin "${BRANCH_NAME}"
+            fi
+          else
+            git push origin "${BRANCH_NAME}"
+          fi
 
           PR_TITLE="build(deps): sync gvx to ${GVX_TAG}"
           PR_BODY="$(cat <<EOF
-          Synchronizes TermVR release metadata with upstream \`gvx\` tag \`${GVX_TAG}\` (\`${GVX_COMMIT}\`).
+          Synchronizes TermVR release metadata with upstream \`gvx\` release \`${GVX_TAG}\` (\`${GVX_COMMIT}\`).
 
+          - Previous \`gvx\`: \`${PREV_GVX_TAG}\` (\`${PREV_GVX_COMMIT:0:12}\`)
+          - Target \`gvx\`: [\`${GVX_TAG}\`](https://github.com/gfire-sigs/gvx/releases/tag/${GVX_TAG}) (\`${GVX_COMMIT:0:12}\`)
+          - Upstream diff: [\`${PREV_GVX_TAG}...${GVX_TAG}\`](https://github.com/gfire-sigs/gvx/compare/${PREV_GVX_TAG}...${GVX_TAG})
           - \`versionName\`: \`${VERSION_NAME}\`
           - \`versionCode\`: \`${VERSION_CODE}\`
           - Verified with \`./scripts/sync-gvx-version.sh --check\` and \`AGENTS.md\` Section 5 gates.
           EOF
           )"
 
-          EXISTING_PR="$(gh pr list --head "${BRANCH_NAME}" --base main --state open --json number --jq '.[0].number // empty')"
+          EXISTING_PR="$(gh pr list --head "${BRANCH_NAME}" --base main --state open --json number,url --jq '.[0] | if . then "\(.number)\t\(.url)" else empty end')"
           if [ -n "${EXISTING_PR}" ]; then
-            gh pr edit "${EXISTING_PR}" --title "${PR_TITLE}" --body "${PR_BODY}"
+            IFS=$'\t' read -r PR_NUM PR_URL <<<"${EXISTING_PR}"
+            gh pr edit "${PR_NUM}" --title "${PR_TITLE}" --body "${PR_BODY}"
+            {
+              echo "### Sync gvx Status: Updated PR #${PR_NUM}"
+              echo ""
+              echo "- Upstream \`gvx\`: \`${PREV_GVX_TAG}\` to \`${GVX_TAG}\` (\`${GVX_COMMIT:0:12}\`)"
+              echo "- Branch \`${BRANCH_NAME}\`: ${PUSH_STATUS}"
+              echo "- Pull Request: ${PR_URL}"
+            } >> "${GITHUB_STEP_SUMMARY}"
           else
-            if ! pr_err="$(gh pr create --base main --head "${BRANCH_NAME}" --title "${PR_TITLE}" --body "${PR_BODY}" 2>&1)"; then
-              if printf '%s' "${pr_err}" | grep -Fq "not permitted to create or approve pull requests"; then
-                echo "::warning::Pushed ${BRANCH_NAME} for ${GVX_TAG}, but repository Actions settings block PR creation. Configure SYNC_GH_PAT or open https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH_NAME}"
+            if pr_out="$(gh pr create --base main --head "${BRANCH_NAME}" --title "${PR_TITLE}" --body "${PR_BODY}" 2>&1)"; then
+              echo "${pr_out}"
+              {
+                echo "### Sync gvx Status: Opened Pull Request"
+                echo ""
+                echo "- Upstream \`gvx\`: \`${PREV_GVX_TAG}\` to \`${GVX_TAG}\` (\`${GVX_COMMIT:0:12}\`)"
+                echo "- Pull Request: ${pr_out}"
+              } >> "${GITHUB_STEP_SUMMARY}"
+            else
+              if printf '%s' "${pr_out}" | grep -Fq "not permitted to create or approve pull requests"; then
+                COMPARE_URL="https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH_NAME}?expand=1"
+                echo "::warning::Branch ${BRANCH_NAME} (${PUSH_STATUS}) is ready for ${GVX_TAG}, but repository Actions settings block PR creation. Enable 'Allow GitHub Actions to create and approve pull requests' or configure SYNC_GH_PAT, or open ${COMPARE_URL}"
+                {
+                  echo "### Sync gvx Status: Branch Ready (PR Creation Blocked)"
+                  echo ""
+                  echo "- Upstream \`gvx\`: \`${PREV_GVX_TAG}\` to \`${GVX_TAG}\` (\`${GVX_COMMIT:0:12}\`)"
+                  echo "- Branch \`${BRANCH_NAME}\`: ${PUSH_STATUS}"
+                  echo "- Open PR manually: ${COMPARE_URL}"
+                  echo "- Permanent fix: enable **Allow GitHub Actions to create and approve pull requests** in repository Actions settings or configure the \`SYNC_GH_PAT\` secret."
+                } >> "${GITHUB_STEP_SUMMARY}"
                 exit 0
               fi
-              printf '%s\n' "${pr_err}" >&2
+              printf '%s\n' "${pr_out}" >&2
               exit 1
             fi
           fi

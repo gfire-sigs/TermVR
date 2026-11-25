@@ -15,12 +15,16 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 EXPECTED_UPDATE_CHECK_MODE = r"Tags ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$"
 TAG_RE = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)$")
 EXPECT_TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$")
 SHA40_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+GITHUB_HTTPS_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
+GITHUB_SSH_RE = re.compile(r"^git@github\.com:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$")
 GVX_STAMP_RE = re.compile(r"^1([0-9]{3})(20[0-9]{2})(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})$")
 STAMP_RE = re.compile(r"^[0-9]*(20[0-9]{2})(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})$")
 VERSION_CODE_RE = re.compile(r"^([2-9][0-9])(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})([0-9])$")
@@ -185,6 +189,85 @@ def compute_versions(
     if version_code <= 0 or version_code > 2_147_483_647:
         raise SyncError(f"Computed versionCode {version_code} overflows signed 32-bit Android Int")
     return version_name, version_code
+
+
+def parse_github_repo(repo: str) -> tuple[str, str] | None:
+    match = GITHUB_HTTPS_RE.match(repo) or GITHUB_SSH_RE.match(repo)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def resolve_tag_commit_sha(repo: str, tag_name: str) -> str:
+    res = subprocess.run(
+        ["git", "ls-remote", "--tags", repo, f"refs/tags/{tag_name}", f"refs/tags/{tag_name}^{{}}"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if res.returncode != 0:
+        raise SyncError(f"git ls-remote failed for {repo} tag {tag_name}: {res.stderr.strip()}")
+
+    direct_sha: str | None = None
+    peeled_sha: str | None = None
+    for line in res.stdout.splitlines():
+        line = line.strip()
+        if not line or "\t" not in line:
+            continue
+        sha, ref = line.split("\t", 1)
+        if not SHA40_RE.match(sha):
+            continue
+        if ref == f"refs/tags/{tag_name}^{{}}":
+            peeled_sha = sha.lower()
+        elif ref == f"refs/tags/{tag_name}":
+            direct_sha = sha.lower()
+
+    commit_sha = peeled_sha or direct_sha
+    if not commit_sha:
+        raise SyncError(f"Tag '{tag_name}' not found at {repo}")
+    return commit_sha
+
+
+def fetch_latest_upstream_release(repo: str) -> tuple[str, str]:
+    parsed = parse_github_repo(repo)
+    if parsed is None:
+        return fetch_latest_upstream_tag(repo)
+    owner, name = parsed
+    api_url = f"https://api.github.com/repos/{owner}/{name}/releases/latest"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "TermVR-sync-gvx",
+    }
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(api_url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+        raise SyncError(
+            f"GitHub latest release query failed ({exc.code}) for {owner}/{name}: {body or exc.reason}"
+        ) from exc
+    except Exception as exc:
+        raise SyncError(f"GitHub latest release query failed for {owner}/{name}: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise SyncError(f"Unexpected GitHub release response for {owner}/{name}")
+    if payload.get("draft") or payload.get("prerelease"):
+        raise SyncError(f"Latest GitHub release for {owner}/{name} is marked draft or prerelease")
+    tag_name = str(payload.get("tag_name", "")).strip()
+    if not TAG_RE.match(tag_name):
+        raise SyncError(f"Latest GitHub release tag '{tag_name}' does not match v<major>.<minor>.<patch>")
+
+    commit_sha = resolve_tag_commit_sha(repo, tag_name)
+    return tag_name, commit_sha
 
 
 def fetch_latest_upstream_tag(repo: str) -> tuple[str, str]:
@@ -578,7 +661,21 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--gvx-tag", help="Target upstream gvx tag (v<major>.<minor>.<patch>)")
     parser.add_argument("--gvx-commit", help="Target upstream gvx 40-hex commit SHA")
     parser.add_argument("--app-rev", type=int, help="TermVR app revision suffix (0..9)")
-    parser.add_argument("--fetch-latest", action="store_true", help="Resolve latest upstream gvx tag via git ls-remote")
+    parser.add_argument(
+        "--fetch-latest",
+        action="store_true",
+        help="Resolve latest published upstream gvx GitHub release (or latest tag for non-GitHub repos)",
+    )
+    parser.add_argument(
+        "--from-tags",
+        action="store_true",
+        help="Resolve --fetch-latest from git ls-remote tags instead of GitHub Releases API",
+    )
+    parser.add_argument(
+        "--allow-downgrade",
+        action="store_true",
+        help="Allow --fetch-latest to sync to a lower versionCode than currently locked",
+    )
     parser.add_argument("--repo", help="Git repository URL or local path for --fetch-latest / commit date lookup")
     parser.add_argument("--commit-date", help="Optional YYYY-MM-DD UTC commit date for non-stamp SemVer fallback")
     parser.add_argument("--dry-run", action="store_true", help="Compute and validate without modifying files")
@@ -600,8 +697,8 @@ def main(argv: list[str]) -> int:
         args.check = True
 
     if args.check:
-        if args.app_rev is not None or args.dry_run:
-            raise SyncError("--app-rev and --dry-run cannot be used with --check")
+        if args.app_rev is not None or args.dry_run or args.from_tags or args.allow_downgrade:
+            raise SyncError("--app-rev, --dry-run, --from-tags, and --allow-downgrade cannot be used with --check")
         run_check(repo_root, args.expect_tag)
         return 0
 
@@ -609,20 +706,34 @@ def main(argv: list[str]) -> int:
         raise SyncError("--expect-tag is only valid with --check")
 
     if args.fetch_latest:
-        gvx_tag, gvx_commit = fetch_latest_upstream_tag(repo_url)
+        if args.from_tags:
+            gvx_tag, gvx_commit = fetch_latest_upstream_tag(repo_url)
+        else:
+            gvx_tag, gvx_commit = fetch_latest_upstream_release(repo_url)
         current_tag = str(lock.get("sources", {}).get("gvx", {}).get("tag", ""))
         current_commit = str(lock.get("sources", {}).get("gvx", {}).get("commit", ""))
         current_rev = int(lock.get("termvr", {}).get("app_revision", 0))
+        current_code = int(lock.get("termvr", {}).get("version_code", 0))
         if args.app_rev is not None:
             app_rev = args.app_rev
         elif gvx_tag == current_tag and gvx_commit == current_commit:
             app_rev = current_rev
         else:
             app_rev = 0
+        _, candidate_code = compute_versions(gvx_tag, gvx_commit, app_rev, repo_url, args.commit_date)
+        if not args.allow_downgrade and current_code > 0 and candidate_code < current_code:
+            log(
+                f"Skipping downgrade: current {current_tag} (versionCode={current_code}) "
+                f"is newer than upstream {gvx_tag} (versionCode={candidate_code})"
+            )
+            return 0
         run_sync(repo_root, gvx_tag, gvx_commit, app_rev, repo_url, args.commit_date, args.dry_run)
         if not args.dry_run:
             run_check(repo_root, None)
         return 0
+
+    if args.from_tags or args.allow_downgrade:
+        raise SyncError("--from-tags and --allow-downgrade are only valid with --fetch-latest")
 
     if not args.gvx_tag or not args.gvx_commit:
         raise SyncError("Both --gvx-tag and --gvx-commit are required together")
