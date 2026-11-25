@@ -53,7 +53,7 @@ android {
 
     packaging {
         jniLibs {
-            // Compress .so entries in APK and extract librungv.so to nativeLibraryDir at install time for ProcessBuilder execution under Android W^X SELinux policy.
+            // Compress .so entries in APK and extract librungvx.so to nativeLibraryDir at install time for ProcessBuilder execution under Android W^X SELinux policy.
             useLegacyPackaging = true
         }
         resources {

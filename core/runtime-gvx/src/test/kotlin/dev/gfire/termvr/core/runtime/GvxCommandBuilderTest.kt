@@ -240,12 +240,19 @@ class GvxCommandBuilderTest {
 
     @Test
     fun `parsePublishingLine parses IPv4 and IPv6 ephemeral port lines`() {
-        val p1 = GvxCommandBuilder.parsePublishingLine("rungv: publishing 127.0.0.1:41234->8080/tcp")
+        val p1 = GvxCommandBuilder.parsePublishingLine("rungvx: publishing 127.0.0.1:41234 -> 8080/tcp")
         assertNotNull(p1)
         assertEquals("127.0.0.1", p1!!.listenHost)
         assertEquals(41234, p1.hostPort)
         assertEquals(8080, p1.guestPort)
         assertEquals(ForwardProtocol.TCP, p1.protocol)
+
+        val pLegacy = GvxCommandBuilder.parsePublishingLine("rungv: publishing 127.0.0.1:41234->8080/tcp")
+        assertNotNull(pLegacy)
+        assertEquals("127.0.0.1", pLegacy!!.listenHost)
+        assertEquals(41234, pLegacy.hostPort)
+        assertEquals(8080, pLegacy.guestPort)
+        assertEquals(ForwardProtocol.TCP, pLegacy.protocol)
 
         val p2 = GvxCommandBuilder.parsePublishingLine("publishing [::1]:55123:9000/udp")
         assertNotNull(p2)
@@ -253,6 +260,13 @@ class GvxCommandBuilderTest {
         assertEquals(55123, p2.hostPort)
         assertEquals(9000, p2.guestPort)
         assertEquals(ForwardProtocol.UDP, p2.protocol)
+
+        val p3 = GvxCommandBuilder.parsePublishingLine("rungvx: publishing [::1]:55124 -> 9001/udp")
+        assertNotNull(p3)
+        assertEquals("[::1]", p3!!.listenHost)
+        assertEquals(55124, p3.hostPort)
+        assertEquals(9001, p3.guestPort)
+        assertEquals(ForwardProtocol.UDP, p3.protocol)
 
         assertNull(GvxCommandBuilder.parsePublishingLine("random stderr line"))
     }

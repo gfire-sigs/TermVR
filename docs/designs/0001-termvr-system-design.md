@@ -359,7 +359,7 @@ This section links authoritative upstream specifications and records post-`v1.0`
 
 Four upstream specifications define the external contracts consumed by `TermVR`.
 
-- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.22.10002026111600`)
+- `gvx` User-Space Kernel and CLI Reference: `https://github.com/gfire-sigs/gvx` (`v0.23.10022026112300`)
 - `Ghostty` and `libghostty-vt` C API: `https://github.com/ghostty-org/ghostty` (`vt-1.0.1`)
 - Elephant-Goldfish Design Model (`EGM`): `https://github.com/google/elephant-goldfish-model`
 - F-Droid Reproducible Builds Guide: `https://f-droid.org/docs/Reproducible_Builds/`
@@ -443,7 +443,7 @@ The table below maps every planned production file across `M1` through `M5`, mar
 | **`M3`** | `Create` | `core/runtime-gvx/src/main/kotlin/dev/gfire/termvr/core/runtime/LoopbackProxyBridge.kt` | `:core:runtime-gvx` | `HTTP`/`HTTPS`/`SOCKS5`/`SOCKS4`/`SOCKS4a` and Android system-proxy upstream dialer and bridge. |
 | **`M3`** | `Create` | `guest/termvr-agent/internal/mux/proxy_linux.go` | `guest/termvr-agent` | Guest `127.0.0.1:1080` mixed HTTP/SOCKS5 listener and `SO_ORIGINAL_DST` transparent port `1081`. |
 | **`M3`** | `Create` | `core/data/src/main/assets/recipes/{docker-dind.json,k3s-single-node.json,calico-vxlan.yaml}` | `:core:data` | Prebuilt `docker:dind` and `rancher/k3s` manifests plus the 5-patch Calico VXLAN manifest. |
-| **`M3`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/{ProfileRepository.kt,CatalogRepository.kt}` | `:core:data` | Versioned DataStore profile storage, Keystore proxy secrets, registry auth writer, NDJSON parsers, and `rungv volume compact`. |
+| **`M3`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/{ProfileRepository.kt,CatalogRepository.kt}` | `:core:data` | Versioned DataStore profile storage, Keystore proxy secrets, registry auth writer, NDJSON parsers, and `rungvx volume compact`. |
 | **`M3`** | `Create` | `app/src/main/kotlin/dev/gfire/termvr/ui/{home,terminal,catalog,network,settings}/*.kt` | `:app` | Compose screens, host diagnostics, volume mode/Git worktree dialogs, proxy editor, LAN `0.0.0.0` gate, and `Terminal` nav. |
 | **`M4`** | `Create` | `core/data/src/main/kotlin/dev/gfire/termvr/core/data/GitWorktreeManager.kt` | `:core:data` | Pure-Kotlin POSIX bare Git project hub (`repo.git`) and per-container `git worktree` provisioner. |
 | **`M4`** | `Modify` | `app/src/main/AndroidManifest.xml` | `:app` | Register `TermVrDocumentsProvider` with `MANAGE_DOCUMENTS` and `grantUriPermissions="true"`. |
@@ -549,7 +549,7 @@ data class GitWorktreeSpec(
 @Serializable
 data class NetworkModeConfig(
     val backend: NetBackend = NetBackend.NAT,
-    val isolateLanEgress: Boolean = false,           // Maps to rungv -isolate-lan
+    val isolateLanEgress: Boolean = false,           // Maps to rungvx -isolate-lan
     val wireGuardConfigName: String? = null,         // Stored under <filesDir>/wg/<name>.conf
     val outboundProxy: OutboundProxyConfig = OutboundProxyConfig(),
 )
@@ -863,11 +863,11 @@ Physical USB, Bluetooth, Chromebook, and Samsung DeX keyboards bypass soft compo
 
 `:core:runtime-gvx` supervises `gvx` child processes, bridges dynamic Android DNS and outbound proxies, multiplexes guest PTYs, and drives foreground notifications and checkpoints.
 
-### 15.1 `librungv.so` Execution, Non-Evictable Storage, Host CAs, and `RAW_PTY`
+### 15.1 `librungvx.so` Execution, Non-Evictable Storage, Host CAs, and `RAW_PTY`
 
-Android 10+ mounts `filesDir` and `cacheDir` noexec under SELinux `app_data_file`. `TermVR` packages the `gvx` CLI binary at `jniLibs/<abi>/librungv.so` with `extractNativeLibs="true"` and `useLegacyPackaging = true`. Package installation extracts `librungv.so` into `applicationInfo.nativeLibraryDir` (`apk_data_file`, `r-x`), where `ProcessBuilder` executes it legally.
+Android 10+ mounts `filesDir` and `cacheDir` noexec under SELinux `app_data_file`. `TermVR` packages the `gvx` CLI binary at `jniLibs/<abi>/librungvx.so` with `extractNativeLibs="true"` and `useLegacyPackaging = true`. Package installation extracts `librungvx.so` into `applicationInfo.nativeLibraryDir` (`apk_data_file`, `r-x`), where `ProcessBuilder` executes it legally.
 
-`SandboxForegroundService` populates five environment contracts before spawning `librungv.so`:
+`SandboxForegroundService` populates five environment contracts before spawning `librungvx.so`:
 
 - **`HOME = <filesDir>/gvx-home`**: Holds `$HOME/.docker/config.json` written by `CatalogRepository` for authenticated OCI pulls.
 - **`XDG_CACHE_HOME = <filesDir>/gvx-store`**: Upstream `gvx` places named `ext4lite` volumes in `filepath.Dir(OCICacheDir)/volumes`. Pointing `XDG_CACHE_HOME` into non-evictable `filesDir` keeps `<filesDir>/gvx-store/gvx/volumes/` and `layers/` safe from Android cache sweeps.
@@ -875,18 +875,18 @@ Android 10+ mounts `filesDir` and `cacheDir` noexec under SELinux `app_data_file
 - **`SSL_CERT_FILE` & `SSL_CERT_DIR` (when `trustHostCaCerts == true`)**: Android stores root certificates in `/apex/com.android.conscrypt/cacerts` rather than `/etc/ssl/certs`. `GvxCommandBuilder` exports PEM certificates from `KeyStore.getInstance("AndroidCAStore")` into `<cacheDir>/ca/android-roots.pem` plus empty `<cacheDir>/ca/empty-dir` and sets both environment variables.
 - **`HTTP_PROXY`, `HTTPS_PROXY`, & `NO_PROXY` (on `pull` and `image save`)**: When an outbound proxy is active, host image commands point to `http://termvr:<128bitToken>@127.0.0.1:<bridgePort>`. Even `SOCKS4`/`SOCKS4a` upstreams work transparently with Go's `net/http` registry client through `LoopbackProxyBridge`.
 
-When `profile.muxMode == MuxMode.RAW_PTY` (fallback mode for minimalist scratch images without `/bin/sh`), `ProcessBuilder` pipes would cause `gvx` `tty_linux.go` to disable terminal mode or lock size at `80x24`. `GvxCommandBuilder` instead opens a host PTY pair via JNI (`posix_openpt`, `grantpt`, `unlockpt`, `ptsname_r`). It attaches the slave FD to `librungv.so` stdio and forwards resizes via `TIOCSWINSZ` plus `SIGWINCH`.
+When `profile.muxMode == MuxMode.RAW_PTY` (fallback mode for minimalist scratch images without `/bin/sh`), `ProcessBuilder` pipes would cause `gvx` `tty_linux.go` to disable terminal mode or lock size at `80x24`. `GvxCommandBuilder` instead opens a host PTY pair via JNI (`posix_openpt`, `grantpt`, `unlockpt`, `ptsname_r`). It attaches the slave FD to `librungvx.so` stdio and forwards resizes via `TIOCSWINSZ` plus `SIGWINCH`.
 
 ### 15.2 `GvxCommandBuilder`: Separate `buildRunArgs` and `buildRestoreArgs` Contracts
 
-Upstream `rungv run` checks for `--` before reading positional image arguments, whereas `rungv restore` rejects `-image`, `--entrypoint`, and command arguments altogether. `GvxCommandBuilder` therefore implements two distinct argument builders:
+Upstream `rungvx run` checks for `--` before reading positional image arguments, whereas `rungvx restore` rejects `-image`, `--entrypoint`, and command arguments altogether. `GvxCommandBuilder` therefore implements two distinct argument builders:
 
 - **`buildRunArgs(profile, dnsPort, controlSock, activePorts)`**:
   - Passes `run`, optional `-m "${profile.memoryMiB}m"` when `memoryMiB > 0`, optional `--cpus` clamped to host processor count when `cpuCores > 0.0`, and optional `--pids-limit <N>` when `pidsLimit > 0` (all omitted by default for unlimited resources).
   - Sets guest user-space capabilities: `--privileged=true` when `profile.guestPrivileged` is `true` (`docker`/`k3s`), `--privileged=false --net-raw` when `transparentTcp` is `true`, or `--privileged=false` otherwise.
   - Passes `--host-dns "127.0.0.1:$dnsPort"`, `-h profile.id`, `-control-socket controlSock.absolutePath`, `--allow-volume-attach`, and `--host-ca-certs` when `profile.trustHostCaCerts` is `true`.
   - Passes `-net=nat --dynamic-ports` (plus optional `--auto-publish`, `--auto-publish-addr`, `-isolate-lan`, `--net-tx-bps`, and `--net-rx-bps`), `-net=wg -wg-conf <path>`, or `-net=none`.
-  - Formats each enabled `PortForwardRule` as `-p`: single port `<listenHost>:<hostPort>:<guestPort>/<proto>` (`hostPort = 0` for ephemeral), ephemeral range `<listenHost>::<guestStart>-<guestEnd>/<proto>`, fixed range `<listenHost>:<hStart>-<hEnd>:<gStart>-<gEnd>/<proto>`, or `unix:<hostSock>:<guestSock>`. Parses `rungv: publishing` lines on stderr to record assigned ephemeral host ports.
+  - Formats each enabled `PortForwardRule` as `-p`: single port `<listenHost>:<hostPort>:<guestPort>/<proto>` (`hostPort = 0` for ephemeral), ephemeral range `<listenHost>::<guestStart>-<guestEnd>/<proto>`, fixed range `<listenHost>:<hStart>-<hEnd>:<gStart>-<gEnd>/<proto>`, or `unix:<hostSock>:<guestSock>`. Parses `rungvx: publishing` lines on stderr to record assigned ephemeral host ports.
   - Emits `-v <filesDir>/workspaces/<id>:/workspace:rw` (or `-v <filesDir>/git-projects/<projectId>/repo.git:/git/<projectId>.git:rw` plus `-v <filesDir>/git-projects/<projectId>/worktrees/<id>:/workspace:rw` when `profile.gitWorktree` is configured without a custom `/workspace` override). Before boot, `SandboxSupervisor` calls `GitWorktreeManager.provisionWorktreeForContainer` to initialize linked Git metadata and reject duplicate branch checkouts.
   - Emits `-v <filesDir>/agent/<guestArch>:/run/termvr-agent:ro` (in `STDIO_MUX` mode), optional `-rootfs-volume rootfs-<id>` when `persistentRootfs` is `true`, user `VolumeMountSpec` entries (`-v <vol>:<dst>:rw|ro` for `NAMED_EXT4LITE`, `-v <hostDir>:<dst>:rw|ro` for `WORKSPACE_HOSTFS`, or `--mount type=overlay,src=<base>,dst=<dst>[,upper=<upper>]` for `OVERLAY_EXT4LITE`), `--tmpfs` paths, and sorted `-e <key>=<value>` flags.
   - Defaults `TERM=xterm-256color`, `COLORTERM=truecolor`, and `LANG=C.UTF-8` (when both `LANG` and `LC_ALL` are absent) without injecting a custom `TERM_PROGRAM`. Exports `TERMVR_GIT_PROJECT`, `TERMVR_GIT_BRANCH`, and `TERMVR_GIT_COMMON_DIR=/git/<projectId>.git` when `profile.gitWorktree` is set. In `STDIO_MUX` mode, it injects credential-free `HTTP_PROXY=http://127.0.0.1:1080`, `HTTPS_PROXY=http://127.0.0.1:1080`, `ALL_PROXY=socks5h://127.0.0.1:1080`, `NO_PROXY`, and lowercase aliases unless `initDaemonArgv` is non-empty under `OutboundProxyMode.DIRECT`.
@@ -904,7 +904,7 @@ Static boot-time DNS IPs and static proxy environment variables break across Wi-
   - When no proxy is active (or `routeDnsViaProxy` is `false`), queries dispatch through `android.net.DnsResolver.getInstance().rawQuery(connectivityManager.activeNetwork, ...)` (`3500 ms` timeout; immediate `SERVFAIL` when offline).
   - When `routeDnsViaProxy` is `true` under an active proxy, `LoopbackDnsProxy` tunnels RFC 1035 TCP DNS queries through `LoopbackProxyBridge` to prevent UDP 53 leaks.
 - **`LoopbackProxyBridge` (`HTTP` / `HTTPS` / `SOCKS5` / `SOCKS4` / `SOCKS4a` / `System`)**:
-  - Accepts authenticated host `HTTP`/`CONNECT` requests (`127.0.0.1:<bridgePort>` guarded by a random 128-bit Basic token) for `rungv pull`/`image save` and `CatalogRepository`, plus `PROXY_CONNECT` mux streams from `termvr-agent`.
+  - Accepts authenticated host `HTTP`/`CONNECT` requests (`127.0.0.1:<bridgePort>` guarded by a random 128-bit Basic token) for `rungvx pull`/`image save` and `CatalogRepository`, plus `PROXY_CONNECT` mux streams from `termvr-agent`.
   - Resolves upstream mode dynamically per connection: `DIRECT` dials `SocketChannel` directly; `ANDROID_SYSTEM` inspects `ConnectivityManager.getDefaultProxy()` (`ProxyInfo` host, port, and exclusion list); `CUSTOM` dials the configured `ProxyEndpointSpec` retrieving any password from Android Keystore.
   - Speaks five upstream protocols: `HTTP` (`CONNECT host:port` plus `Proxy-Authorization: Basic`) and `HTTPS` (TLS 1.3 `SSLSocket` with SNI plus `CONNECT`). It also speaks `SOCKS5` (RFC 1928 `0x05`, RFC 1929 `0x02` auth, `ATYP = 0x03`), `SOCKS4` (`0x04` IPv4), and `SOCKS4A` (`0.0.0.1` sentinel plus hostname).
   - Enforces LAN isolation when `profile.network.isolateLanEgress` is `true`. `LoopbackProxyBridge` rejects targets resolving to `127.0.0.0/8`, `::1`, RFC1918 subnets, or link-local ranges so guests cannot reach the local LAN.
@@ -941,7 +941,7 @@ For outbound proxying, `termvr-agent` binds `127.0.0.1:1080` and peeks each stre
 | `0x0A` | `TELEMETRY_RESP` | Guest to Host | `0` | JSON `{ "cpuNanos": u64, "rssBytes": u64, "procCount": u32, "listenPorts": [u16] }` |
 | `0x0B` | `HOST_RPC_REQ` | Both | `0` | `uint32 reqId`, `uint8 op`, `uint8 flags` (`FIN`), chunk payload (`<= 32 KiB`) |
 | `0x0C` | `HOST_RPC_RESP` | Both | `0` | `uint32 reqId`, `uint8 status`, `uint8 flags` (`FIN`), chunk payload (`<= 32 KiB`) |
-| `0x0D` | `MUX_RESYNC` | Host to Guest | `0` | Empty payload sent immediately after `rungv restore` reconnects stdio |
+| `0x0D` | `MUX_RESYNC` | Host to Guest | `0` | Empty payload sent immediately after `rungvx restore` reconnects stdio |
 | `0x0E` | `MUX_RESYNC_ACK` | Guest to Host | `0` | JSON `{ "openStreams": [{"id": 1, "rows": 42, "cols": 110}] }` |
 | `0x0F` | `PROXY_CONNECT` | Guest to Host | `>= 1` | `uint16 dstPort` + UTF-8 `dstHost` (domain name or IP literal) |
 | `0x10` | `PROXY_CONNECT_ACK`| Host to Guest | `>= 1` | `uint8 status` (`0` = connected, non-zero = SOCKS/HTTP error code) + optional UTF-8 message |
@@ -984,10 +984,10 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 `CatalogScreen` organizes three tabs (`Distributions`, `Recipes`, `Local Images`) filtered strictly to the device's native Linux architecture (`arm64` on `arm64-v8a`; `amd64` on `x86_64`):
 
 - **Curated distributions**: `Debian 13 (Trixie)` (`debian:trixie-slim`, default), `Alpine 3.21`, `Ubuntu 24.04 LTS`, and `Fedora 42`, each pre-configured with `/workspace` mount, `STDIO_MUX`, and an optional `Persistent root (ext4lite)` toggle.
-- **Registry auth & `rungv` CLI contracts**:
-  - `CatalogRepository` authenticates against OCI registries using Kotlin `HttpsURLConnection` (`TLS 1.3`, routed through `LoopbackProxyBridge` when active) and writes `$HOME/.docker/config.json` (`0600`) directly because `rungv login` lacks `--host-dns`.
-  - `rungv pull`, `rungv image push`, and online `rungv image save` receive `--host-dns 127.0.0.1:<dnsPort>`. Opt-in `-keep-blobs` on `pull` and `image load -i` retains original layer blobs so `Export .tar` works offline and `Push` uploads exact digests without a source registry.
-  - `rungv system df --format json` and `rungv volume ls --format json` emit newline-delimited JSON (**NDJSON**, one JSON object per line), whereas `rungv volume inspect` emits a JSON array. `CatalogRepository` parses `SizeBytes`, physical `AllocatedBytes` (defaulting to `SizeBytes` when absent), `InUse`, and `LockMode` (`none`, `shared`, `exclusive`), passes `-f` to `system prune` and `volume prune`, and invokes `rungv volume compact <name> -cache-dir <gvxCacheDir>` on stopped `ext4lite` volumes.
+- **Registry auth & `rungvx` CLI contracts**:
+  - `CatalogRepository` authenticates against OCI registries using Kotlin `HttpsURLConnection` (`TLS 1.3`, routed through `LoopbackProxyBridge` when active) and writes `$HOME/.docker/config.json` (`0600`) directly because `rungvx login` lacks `--host-dns`.
+  - `rungvx pull`, `rungvx image push`, and online `rungvx image save` receive `--host-dns 127.0.0.1:<dnsPort>`. Opt-in `-keep-blobs` on `pull` and `image load -i` retains original layer blobs so `Export .tar` works offline and `Push` uploads exact digests without a source registry.
+  - `rungvx system df --format json` and `rungvx volume ls --format json` emit newline-delimited JSON (**NDJSON**, one JSON object per line), whereas `rungvx volume inspect` emits a JSON array. `CatalogRepository` parses `SizeBytes`, physical `AllocatedBytes` (defaulting to `SizeBytes` when absent), `InUse`, and `LockMode` (`none`, `shared`, `exclusive`), passes `-f` to `system prune` and `volume prune`, and invokes `rungvx volume compact <name> -cache-dir <gvxCacheDir>` on stopped `ext4lite` volumes.
 - **Recipe 1: `Docker Engine (DinD)` (`docker:28-dind`)**:
   - Requires `>= 4096 MiB` physical host RAM (unlimited default sandbox RAM) and `>= 2048 MiB` free disk.
   - Sets `guestPrivileged = true`, mounts per-profile `ext4lite` volume `docker-${profileId}:/var/lib/docker`, sets `-e DOCKER_TLS_CERTDIR=`, sets `autoCheckpointOnLowMemory = false`, and runs `initDaemonArgv = ["dockerd-entrypoint.sh", "--storage-driver=overlay2", "--iptables=true", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]`.
@@ -1029,7 +1029,7 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 - **Canonical path confinement**: Every `documentId` resolves via `canonicalFile` inside `<filesDir>/workspaces/<profileId>/` or `<filesDir>/git-projects/<projectId>/worktrees/<profileId>/`, rejecting `..` segments, `.gvx_meta*` sidecars, and symlink escapes outside the target root.
 - **Atomic `.termvr.tmp` save swap**: `openDocument` in write mode (`"w"`, `"wt"`, `"wa"`, `"rw"`) stages writes in a bounded sibling `.termvr.tmp` file, copying prior bytes for append or read-write opens. On clean descriptor close, `onCloseListener` syncs disk, preserves POSIX file modes, and moves the staging file over the target.
-- **`FROZEN` workspace write lock**: Upstream `gvx` `hostfs` validates host file sizes and modification timestamps during `rungv restore` (`ValidateFileSizes` / `ValidateFileTimestamps`). While a profile is `FREEZING` or `FROZEN`, both `TermVrDocumentsProvider` and `FilesScreen` omit `Document.FLAG_SUPPORTS_WRITE` / `FLAG_SUPPORTS_DELETE` so external edits cannot corrupt the saved checkpoint. `FilesScreen` offers an explicit `"Discard Checkpoint & Unlock Workspace"` button when offline host edits are required.
+- **`FROZEN` workspace write lock**: Upstream `gvx` `hostfs` validates host file sizes and modification timestamps during `rungvx restore` (`ValidateFileSizes` / `ValidateFileTimestamps`). While a profile is `FREEZING` or `FROZEN`, both `TermVrDocumentsProvider` and `FilesScreen` omit `Document.FLAG_SUPPORTS_WRITE` / `FLAG_SUPPORTS_DELETE` so external edits cannot corrupt the saved checkpoint. `FilesScreen` offers an explicit `"Discard Checkpoint & Unlock Workspace"` button when offline host edits are required.
 
 ---
 
@@ -1043,15 +1043,15 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 - **Phase 1 (`prebuild: ../scripts/provision-toolchains-and-vendor.sh --all-sources --toolchains-dir /tmp/termvr-toolchains`)**: Runs before F-Droid's `scanner` step and writes all caches outside the repository tree. Verifies `git rev-parse HEAD` of `gvx`, `ghostty`, `freetype`, `harfbuzz`, and `termvr_fonts` against `scripts/source-lock.json`; downloads `SHA-256`-pinned Go `1.27.4`, Zig `0.17.0`, and `TermVRMonoNF-TTF.zip` archives if absent; verifies `TermVRMonoNF-Regular.ttf` against `ttf_sha256`; populates `gvx/vendor` via `go mod vendor`; and populates Zig's package cache via `zig build --fetch`.
 - **Phase 2 (`build: ../scripts/build-native-deps.sh --abi arm64-v8a --toolchains-dir /tmp/termvr-toolchains`)**: Runs after `scanner` and compiles completely offline:
-  - Compiles `librungv.so` into `core/runtime-gvx/src/main/jniLibs/<abi>/librungv.so`:
-    - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -mod=vendor -trimpath -buildvcs=false -buildmode=pie -ldflags="-s -w -buildid=" ./cmd/rungv`.
-    - On `x86_64` (emulator/CI): `CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$NDK_CLANG_X86_64 go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" ./cmd/rungv`.
+  - Compiles `librungvx.so` into `core/runtime-gvx/src/main/jniLibs/<abi>/librungvx.so`:
+    - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -mod=vendor -trimpath -buildvcs=false -buildmode=pie -ldflags="-s -w -buildid=" ./cmd/rungvx`.
+    - On `x86_64` (emulator/CI): `CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$NDK_CLANG_X86_64 go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" ./cmd/rungvx`.
   - Compiles static `termvr-agent` (`CGO_ENABLED=0 GOOS=linux GOARCH=<guestArch> go build -trimpath -buildvcs=false -ldflags="-s -w -buildid="`) into `app/src/main/assets/agent/<guestArch>/termvr-agent`.
   - Compiles `libghostty-vt.a` (`zig build -Doptimize=ReleaseFast --system <zig-cache> -Dtarget=<target>`), `libfreetype.a`, and `libharfbuzz.a` (`ZERO_AR_DATE=1`, `-ffile-prefix-map=$PWD=.`) into `.native-deps/<abi>/`, and copies `TermVRMonoNF-Regular.ttf` into `core/terminal-ui/src/main/assets/fonts/`.
 
 ### 18.2 Mandatory 16 KB ELF Page-Alignment Gate
 
-Android 15+ `arm64` 16 KB kernels reject shared libraries whose `PT_LOAD` segments align below `0x4000` (`16384` bytes). `ProcessBuilder` also requires `librungv.so` extracted to disk (`useLegacyPackaging = true` and `extractNativeLibs="true"`). `scripts/verify-16kb-alignment.sh` validates every packaged `.so` (`libtermvr_vt.so` and `librungv.so`) with `llvm-readelf` and fails if zero `LOAD` segments are parsed or any segment aligns below `16384`:
+Android 15+ `arm64` 16 KB kernels reject shared libraries whose `PT_LOAD` segments align below `0x4000` (`16384` bytes). `ProcessBuilder` also requires `librungvx.so` extracted to disk (`useLegacyPackaging = true` and `extractNativeLibs="true"`). `scripts/verify-16kb-alignment.sh` validates every packaged `.so` (`libtermvr_vt.so` and `librungvx.so`) with `llvm-readelf` and fails if zero `LOAD` segments are parsed or any segment aligns below `16384`:
 
 ```bash
 llvm-readelf -W -l "$so_file" | awk '

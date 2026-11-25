@@ -1,0 +1,3 @@
+TermVR 0.23.10022026112300 upgrades the bundled gvx runtime to v0.23.10022026112300 and migrates to librungvx.so.
+- Upgraded gvx to v0.23.10022026112300 (52e94052d139), synced to gVisor release-20261123.0 with EROFS inline data, TCP Delayed ACKs, seccomp filter caching, and xattr capability fixes.
+- Migrated native packaging, launchers, and stderr port parsing from librungv.so to librungvx.so.

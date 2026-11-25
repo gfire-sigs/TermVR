@@ -20,7 +20,7 @@ usage() {
   cat <<'EOF'
 Usage: build-native-deps.sh [options]
 
-Build librungv.so, static termvr-agent, libghostty-vt.a, libfreetype.a, and
+Build librungvx.so, static termvr-agent, libghostty-vt.a, libfreetype.a, and
 libharfbuzz.a completely offline, and stage headers and bundled fonts.
 
 Options:
@@ -351,11 +351,12 @@ build_for_abi() {
 
   log_info "Building offline native dependencies for ${abi}"
 
-  # 1. Build librungv.so from vendored gvx checkout.
+  # 1. Build librungvx.so from vendored gvx checkout.
   [ -f "${GVX_DIR}/vendor/modules.txt" ] || die "Missing ${GVX_DIR}/vendor/modules.txt; run provision-toolchains-and-vendor.sh first"
   local jni_out_dir="${REPO_ROOT}/core/runtime-gvx/src/main/jniLibs/${abi}"
   mkdir -p "${jni_out_dir}"
-  local rungv_out="${jni_out_dir}/librungv.so"
+  rm -f "${jni_out_dir}/librungv.so"
+  local rungvx_out="${jni_out_dir}/librungvx.so"
 
   (
     cd "${GVX_DIR}"
@@ -363,15 +364,15 @@ build_for_abi() {
       CGO_ENABLED=0 GOOS=android GOARCH=arm64 "${GO_EXE}" build \
         -mod=vendor -trimpath -buildvcs=false -buildmode=pie \
         -ldflags="-s -w -buildid=" \
-        -o "${rungv_out}" ./cmd/rungv
+        -o "${rungvx_out}" ./cmd/rungvx
     else
       CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="${NDK_CLANG_X86_64}" "${GO_EXE}" build \
         -mod=vendor -trimpath -buildvcs=false \
         -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" \
-        -o "${rungv_out}" ./cmd/rungv
+        -o "${rungvx_out}" ./cmd/rungvx
     fi
   )
-  log_info "Built ${rungv_out}"
+  log_info "Built ${rungvx_out}"
 
   # 2. Build static pure-Go termvr-agent and enforce <= 2.2 MiB budget.
   local agent_out="${REPO_ROOT}/app/src/main/assets/agent/${guest_arch}/termvr-agent"

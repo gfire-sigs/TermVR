@@ -471,7 +471,7 @@ class SandboxForegroundService : LifecycleService() {
         val files = appCtx.filesDir
         val cache = appCtx.cacheDir
         val nativeLibDir = File(appCtx.applicationInfo.nativeLibraryDir)
-        val rungvFile = File(nativeLibDir, "librungv.so")
+        val rungvFile = File(nativeLibDir, "librungvx.so")
 
         val secretStore = AndroidKeystoreSecretStore(File(files, "secrets"))
         val proxyBridge = LoopbackProxyBridge(

@@ -442,7 +442,7 @@ class CatalogRepositoryTest {
         )
 
         compactExitCode = 1
-        compactStderr = "rungv volume compact: gvx: volume is in use"
+        compactStderr = "rungvx volume compact: gvx: volume is in use"
         val busyCompact = repo.compactVolume("active-rw")
         assertTrue(busyCompact.isFailure)
         assertTrue(busyCompact.exceptionOrNull()?.message?.contains("in use") == true)

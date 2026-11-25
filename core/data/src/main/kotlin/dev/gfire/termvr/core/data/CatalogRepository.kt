@@ -315,13 +315,13 @@ class CatalogRepository(
 
     suspend fun systemDf(env: Map<String, String> = emptyMap()): List<RungvSystemDfEntry> {
         val result = commandExecutor.execute(buildSystemDfArgs(), env)
-        check(result.exitCode == 0) { "rungv system df failed: ${result.stderr}" }
+        check(result.exitCode == 0) { "rungvx system df failed: ${result.stderr}" }
         return parseSystemDfNdjson(result.stdout)
     }
 
     suspend fun listVolumes(env: Map<String, String> = emptyMap()): List<RungvVolumeLsEntry> {
         val result = commandExecutor.execute(buildVolumeLsArgs(), env)
-        check(result.exitCode == 0) { "rungv volume ls failed: ${result.stderr}" }
+        check(result.exitCode == 0) { "rungvx volume ls failed: ${result.stderr}" }
         return parseVolumeLsNdjson(result.stdout)
     }
 
@@ -330,7 +330,7 @@ class CatalogRepository(
         env: Map<String, String> = emptyMap(),
     ): List<RungvVolumeInspectEntry> {
         val result = commandExecutor.execute(buildVolumeInspectArgs(volumeName), env)
-        check(result.exitCode == 0) { "rungv volume inspect failed: ${result.stderr}" }
+        check(result.exitCode == 0) { "rungvx volume inspect failed: ${result.stderr}" }
         return parseVolumeInspectJsonArray(result.stdout)
     }
 
@@ -339,7 +339,7 @@ class CatalogRepository(
         env: Map<String, String> = emptyMap(),
     ): RungvCommandResult {
         val result = commandExecutor.execute(buildVolumeCreateArgs(volumeName), env)
-        check(result.exitCode == 0) { "rungv volume create failed: ${result.stderr}" }
+        check(result.exitCode == 0) { "rungvx volume create failed: ${result.stderr}" }
         return result
     }
 
@@ -352,7 +352,7 @@ class CatalogRepository(
         env: Map<String, String> = emptyMap(),
     ): RungvCommandResult {
         val result = commandExecutor.execute(buildVolumeRmArgs(volumeName, force), env)
-        check(result.exitCode == 0) { "rungv volume rm failed: ${result.stderr}" }
+        check(result.exitCode == 0) { "rungvx volume rm failed: ${result.stderr}" }
         return result
     }
 
@@ -366,7 +366,7 @@ class CatalogRepository(
         val args = buildVolumeCompactArgs(name, gvxCacheDir)
         val result = commandExecutor.execute(args, env)
         check(result.exitCode == 0) {
-            result.stderr.trim().ifEmpty { "rungv volume compact failed (${result.exitCode})" }
+            result.stderr.trim().ifEmpty { "rungvx volume compact failed (${result.exitCode})" }
         }
     }
 

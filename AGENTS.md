@@ -46,7 +46,7 @@ The repository vendors 41 engineering skills under `.agents/skills/` from `gosud
 | `:core:data` | `dev.gfire.termvr.core.data` | DataStore persistence, Keystore proxy credentials, `SAF` grants, font registry, and recipe catalog loading. | `:core:model` |
 | `:core:terminal-vt` | `dev.gfire.termvr.core.vt` | JNI library (`libtermvr_vt.so`) owning `libghostty-vt`, FreeType, HarfBuzz, and OpenGL ES 3.0 atlas shaders. | `:core:model` |
 | `:core:terminal-ui` | `dev.gfire.termvr.core.ui` | Single-surface `SurfaceView` host, `Choreographer` frame loop, `InputConnection` IME bridge, and auxiliary key bar. | `:core:model`, `:core:terminal-vt` |
-| `:core:runtime-gvx` | `dev.gfire.termvr.core.runtime` | `librungv.so` supervisor, foreground service, wake lock, loopback DNS and proxy bridges, and mux client. | `:core:model`, `:core:data` |
+| `:core:runtime-gvx` | `dev.gfire.termvr.core.runtime` | `librungvx.so` supervisor, foreground service, wake lock, loopback DNS and proxy bridges, and mux client. | `:core:model`, `:core:data` |
 | `:app` | `dev.gfire.termvr` | Adaptive navigation shell, feature screens, onboarding diagnostics, and `DocumentsProvider`. | All `:core:*` modules |
 | `guest/termvr-agent` | `dev.gfire.termvr/guest/termvr-agent` | Static pure-Go Linux PID 1 multiplexer and local proxy listener over stdio pipes. | Go standard library only |
 
@@ -62,9 +62,9 @@ Every component that allocates native memory, OpenGL textures, file descriptors,
 
 ### 3.2 Host Lockdown, Phantom-Process Budget, and 16 KB Pages
 
-`librungv.so` applies `hostlockdown` before starting guest code. The sandbox cannot bind new host ports, open new host directories, or create checkpoint files after guest boot. `:core:runtime-gvx` passes all `-p` port rules, `-v` volume mounts, `--host-dns` proxy endpoints, `-checkpoint-dir`, and `-control-socket` flags at startup.
+`librungvx.so` applies `hostlockdown` before starting guest code. The sandbox cannot bind new host ports, open new host directories, or create checkpoint files after guest boot. `:core:runtime-gvx` passes all `-p` port rules, `-v` volume mounts, `--host-dns` proxy endpoints, `-checkpoint-dir`, and `-control-socket` flags at startup.
 
-Android limits total app child processes to 32 across the OS by default on Android 12 and newer. Each `gvx` guest address space consumes one Sentry process, one `systrap` stub process, and up to two `sysmsg` processes. `TermVR` multiplexes all tabs and split panes of a sandbox through `termvr-agent` over `stdin` and `stdout` pipes. Every native ELF binary (`librungv.so` and `libtermvr_vt.so`) aligns `PT_LOAD` segments to at least 16 KB (`-Wl,-z,max-page-size=16384`) for Android 15+ devices.
+Android limits total app child processes to 32 across the OS by default on Android 12 and newer. Each `gvx` guest address space consumes one Sentry process, one `systrap` stub process, and up to two `sysmsg` processes. `TermVR` multiplexes all tabs and split panes of a sandbox through `termvr-agent` over `stdin` and `stdout` pipes. Every native ELF binary (`librungvx.so` and `libtermvr_vt.so`) aligns `PT_LOAD` segments to at least 16 KB (`-Wl,-z,max-page-size=16384`) for Android 15+ devices.
 
 ---
 

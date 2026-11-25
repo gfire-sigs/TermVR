@@ -72,7 +72,7 @@ class HostReadinessAndSupervisorTest {
         // Synthetic /proc tree: root=100, children=101,102, grandchild=103 under 101, unrelated=200.
         val procRoot = File(tempDir, "proc").apply { mkdirs() }
         writeProcStat(procRoot, pid = 100, comm = "app_process64", ppid = 1)
-        writeProcStat(procRoot, pid = 101, comm = "librungv.so", ppid = 100)
+        writeProcStat(procRoot, pid = 101, comm = "librungvx.so", ppid = 100)
         writeProcStat(procRoot, pid = 102, comm = "systrap (helper)", ppid = 100)
         writeProcStat(procRoot, pid = 103, comm = "sysmsg", ppid = 101)
         writeProcStat(procRoot, pid = 200, comm = "other_app", ppid = 1)
@@ -261,7 +261,7 @@ class HostReadinessAndSupervisorTest {
                 launchedCommands.add(args)
                 val handle = FakeMuxProcessHandle(
                     executor = pool,
-                    stderrText = "rungv: publishing 127.0.0.1:41234 -> 10.0.0.2:80/tcp\n",
+                    stderrText = "rungvx: publishing 127.0.0.1:41234 -> 10.0.0.2:80/tcp\n",
                 )
                 activeHandles.add(handle)
                 handle
@@ -495,7 +495,7 @@ class HostReadinessAndSupervisorTest {
         val filesDir = File(tempDir, "files").apply { mkdirs() }
         val cacheDir = File(tempDir, "cache").apply { mkdirs() }
         val slaveFile = File(tempDir, "pts-9").apply { writeText("") }
-        val fakeExec = File(tempDir, "librungv.so").apply {
+        val fakeExec = File(tempDir, "librungvx.so").apply {
             writeText("#!/bin/sh\n")
             setExecutable(true)
         }
@@ -994,7 +994,7 @@ class HostReadinessAndSupervisorTest {
                 selfPidProvider = { 100 },
             ),
             processLauncher = { args, _, _ ->
-                // Verify git worktree metadata ALREADY exists on disk at the moment librungv.so is spawned!
+                // Verify git worktree metadata ALREADY exists on disk at the moment librungvx.so is spawned!
                 assertTrue(File(filesDir, "git-projects/mono/repo.git/HEAD").isFile)
                 launchedArgs.add(args)
                 FakeMuxProcessHandle(pool)
@@ -1022,7 +1022,7 @@ class HostReadinessAndSupervisorTest {
             )
             assertTrue(launchedArgs.single().contains("${File(filesDir, "git-projects/mono/repo.git").absolutePath}:/git/mono.git:rw"))
 
-            // Worker B attempting to launch on the SAME branch wt/shared-branch must fail BEFORE spawning librungv.so!
+            // Worker B attempting to launch on the SAME branch wt/shared-branch must fail BEFORE spawning librungvx.so!
             val workerB = SandboxProfile(
                 id = "worker-b",
                 displayName = "Worker B",
@@ -1316,7 +1316,7 @@ class HostReadinessAndSupervisorTest {
             add("z.gfire.dev/gvx/pkg/gvx.New(...)")
             add("\tz.gfire.dev/gvx/pkg/gvx/sandbox.go:231 +0x32c")
             add("main.main()")
-            add("\tz.gfire.dev/gvx/cmd/rungv/main.go:63 +0x1c")
+            add("\tz.gfire.dev/gvx/cmd/rungvx/main.go:63 +0x1c")
         }
         val supervisor = SandboxSupervisor(
             filesDir = filesDir,

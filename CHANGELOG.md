@@ -6,7 +6,29 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.22.10002026111600`.
+This section tracks changes staged on `main` after `0.23.10022026112300`.
+
+---
+
+## [0.23.10022026112300]
+
+This release (`versionCode` `302300020`) upgrades `gvx` to `v0.23.10022026112300` (`52e94052d139`) and migrates the packaged runtime binary from `librungv.so` to `librungvx.so`. It bundles the upstream `gVisor` `release-20261123.0` sync, `xattr` capability security fixes, and updated `rungvx` stderr port parsing.
+
+### Runtime upgrade to `gvx` `v0.23.10022026112300`
+
+The embedded sandbox kernel advances from `gvx` `v0.22.10002026111600` to `v0.23.10022026112300` (`52e94052d139`), tracking `gVisor` `release-20261123.0` (`83df8eae069e`).
+
+- Bundled `gvx` `v0.23.10022026112300` (`52e94052d139`), which syncs `gVisor` to `release-20261123.0` with EROFS tail-packed inline data, TCP Delayed ACKs, `seccomp` filter cache reuse, overlay depth limits, and `epoll_ctl` `EPOLLEXCLUSIVE` validation.
+- Included raw v3 file capability `xattr` fixes across `hostfs`, `ext4lite`, and `erofs`, plus per-stack netstack isolation improvements in `gvx`.
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.23.10022026112300`.
+
+### Migration from `librungv.so` to `librungvx.so`
+
+Upstream `gvx` `v0.23` renamed `./cmd/rungv` and its Android binary to `./cmd/rungvx` and `librungvx.so` (`gvx#250`). `TermVR` updates its build script, native binary lookup, and stderr parser while keeping existing profiles and volumes compatible.
+
+- Updated `scripts/build-native-deps.sh` and `scripts/source-lock.json` to build `./cmd/rungvx` into `jniLibs/<abi>/librungvx.so` and remove any stale `librungv.so` output.
+- Updated `SandboxForegroundService`, `SandboxRuntimeGateway`, and `SandboxSupervisor` to launch `librungvx.so` from `applicationInfo.nativeLibraryDir`.
+- Updated `GvxCommandBuilder.parsePublishingLine` to parse `rungvx: publishing` stderr lines alongside legacy `rungv: publishing` lines.
 
 ---
 

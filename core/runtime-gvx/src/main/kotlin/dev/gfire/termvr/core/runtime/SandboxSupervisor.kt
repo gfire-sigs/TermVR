@@ -59,7 +59,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Wraps a spawned `librungv.so` child process for lifecycle management and unit-test injection.
+ * Wraps a spawned `librungvx.so` child process for lifecycle management and unit-test injection.
  */
 interface GvxProcessHandle : Closeable {
     val stdoutStream: InputStream
@@ -75,14 +75,14 @@ interface GvxProcessHandle : Closeable {
 }
 
 /**
- * Spawns `librungv.so` processes with the specified CLI arguments, host environment, and optional PTY slave device.
+ * Spawns `librungvx.so` processes with the specified CLI arguments, host environment, and optional PTY slave device.
  */
 fun interface GvxProcessLauncher {
     fun launch(args: List<String>, env: Map<String, String>, ptySlaveDevice: File?): GvxProcessHandle
 }
 
 /**
- * Default production `ProcessBuilder` launcher targeting `applicationInfo.nativeLibraryDir/librungv.so`.
+ * Default production `ProcessBuilder` launcher targeting `applicationInfo.nativeLibraryDir/librungvx.so`.
  */
 class AndroidRungvProcessLauncher(
     private val executableFile: File,
@@ -93,7 +93,7 @@ class AndroidRungvProcessLauncher(
         ptySlaveDevice: File? = null,
     ): ProcessBuilder {
         require(executableFile.exists() && executableFile.canExecute()) {
-            "librungv.so is missing or not executable at ${executableFile.absolutePath}"
+            "librungvx.so is missing or not executable at ${executableFile.absolutePath}"
         }
         val cmd = ArrayList<String>(1 + args.size).apply {
             add(executableFile.absolutePath)
@@ -1692,7 +1692,7 @@ class SandboxSupervisor(
             exitCode == SIGKILL_EXIT_CODE || exitCode == -SIGKILL_SIGNAL_NUMBER
 
         /**
-         * Formats an actionable diagnostic message when `librungv.so` terminates unexpectedly.
+         * Formats an actionable diagnostic message when `librungvx.so` terminates unexpectedly.
          */
         fun formatUnexpectedExitDiagnostic(
             containerName: String,

@@ -199,7 +199,7 @@ class NetworkLifecycleResilienceTest {
                 if (failPort9090.get() && binds9090) {
                     TestMuxProcessHandle(
                         executor = pool,
-                        stderrText = "rungv: listen tcp 127.0.0.1:9090: bind: address already in use\n",
+                        stderrText = "rungvx: listen tcp 127.0.0.1:9090: bind: address already in use\n",
                         failImmediatelyWithExitCode = 1,
                     )
                 } else {
@@ -559,7 +559,7 @@ class NetworkLifecycleResilienceTest {
 
             assertEquals(SandboxRunState.FAILED, harness.supervisor.runStates.value[profile.id])
             val notice = harness.supervisor.activeServiceNotice.value
-            assertNotNull(notice, "Expected actionable diagnostic notice when librungv.so dies with SIGKILL (137)")
+            assertNotNull(notice, "Expected actionable diagnostic notice when librungvx.so dies with SIGKILL (137)")
             assertTrue(notice!!.contains("SIGKILL") || notice.contains("137"), "Notice should mention SIGKILL/137: $notice")
             assertTrue(
                 notice.contains("Disable child process restrictions"),

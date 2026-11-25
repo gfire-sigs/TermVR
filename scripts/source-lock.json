@@ -2,8 +2,8 @@
   "schema_version": 1,
   "termvr": {
     "app_revision": 0,
-    "version_name": "0.22.10002026111600",
-    "version_code": 302200000
+    "version_name": "0.23.10022026112300",
+    "version_code": 302300020
   },
   "toolchains": {
     "jdk": "17",
@@ -20,10 +20,10 @@
   "sources": {
     "gvx": {
       "repository": "https://github.com/gfire-sigs/gvx.git",
-      "tag": "v0.22.10002026111600",
-      "commit": "a90476e02630e7d35861e1da16d407e03e71e8b7",
+      "tag": "v0.23.10022026112300",
+      "commit": "52e94052d139e06074002aec0dfdc62cc64c99de",
       "spdx_license": "Apache-2.0",
-      "artifact": "librungv.so"
+      "artifact": "librungvx.so"
     },
     "ghostty": {
       "repository": "https://github.com/ghostty-org/ghostty.git",

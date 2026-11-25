@@ -20,7 +20,7 @@ import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Holds host-proxy endpoint settings injected into host `rungv` image commands.
+ * Holds host-proxy endpoint settings injected into host `rungvx` image commands.
  */
 data class HostProxyBridgeEnv(
     val port: Int,
@@ -42,7 +42,7 @@ data class HostProxyBridgeEnv(
 }
 
 /**
- * Represents one published host-to-guest port mapping parsed from `rungv: publishing` stderr lines.
+ * Represents one published host-to-guest port mapping parsed from `rungvx: publishing` stderr lines.
  */
 data class PublishedPortMapping(
     val listenHost: String,
@@ -186,7 +186,7 @@ object NativePtyBridge : PtyBackend {
 }
 
 /**
- * Builds validated `librungv.so` environments, `run` arguments, `restore` arguments, and port specs.
+ * Builds validated `librungvx.so` environments, `run` arguments, `restore` arguments, and port specs.
  */
 class GvxCommandBuilder(
     private val filesDir: File,
@@ -256,7 +256,7 @@ class GvxCommandBuilder(
     }
 
     /**
-     * Populates the five Section 15.1 host environment contracts for `librungv.so` execution.
+     * Populates the five Section 15.1 host environment contracts for `librungvx.so` execution.
      */
     fun buildHostEnvironment(
         trustHostCaCerts: Boolean,
@@ -289,7 +289,7 @@ class GvxCommandBuilder(
     }
 
     /**
-     * Builds the complete `rungv run` CLI argument vector matching Design 0001 Section 15.2.
+     * Builds the complete `rungvx run` CLI argument vector matching Design 0001 Section 15.2.
      */
     fun buildRunArgs(
         profile: SandboxProfile,
@@ -370,7 +370,7 @@ class GvxCommandBuilder(
     }
 
     /**
-     * Builds the `rungv restore` CLI argument vector without `-image`, `--entrypoint`, or `--`.
+     * Builds the `rungvx restore` CLI argument vector without `-image`, `--entrypoint`, or `--`.
      */
     fun buildRestoreArgs(
         profile: SandboxProfile,
@@ -410,7 +410,7 @@ class GvxCommandBuilder(
     }
 
     /**
-     * Builds a short-lived `rungv run` helper command to browse a stopped named `ext4lite` volume.
+     * Builds a short-lived `rungvx run` helper command to browse a stopped named `ext4lite` volume.
      */
     fun buildStoppedVolumeHelperArgs(
         volumeName: String,
@@ -767,12 +767,12 @@ class GvxCommandBuilder(
         const val GUEST_TRANSPARENT_PROXY_PORT: Int = 1081
 
         private val PUBLISHING_LINE_REGEX = Regex(
-            """^\s*(?:rungv:\s+)?publishing\s+(\[[0-9a-fA-F:]+]|[0-9.]+):(\d+)(?:\s*->\s*|:)(?:\[[0-9a-fA-F:]+]:|[0-9.]+:)?(\d+)/(tcp|udp)\s*$""",
+            """^\s*(?:rungvx?:\s+)?publishing\s+(\[[0-9a-fA-F:]+]|[0-9.]+):(\d+)(?:\s*->\s*|:)(?:\[[0-9a-fA-F:]+]:|[0-9.]+:)?(\d+)/(tcp|udp)\s*$""",
             RegexOption.IGNORE_CASE,
         )
 
         /**
-         * Parses `rungv: publishing <host>:<hostPort>-><guestPort>/<proto>` stderr lines.
+         * Parses `rungvx: publishing <host>:<hostPort>-><guestPort>/<proto>` stderr lines.
          */
         fun parsePublishingLine(line: String): PublishedPortMapping? {
             val match = PUBLISHING_LINE_REGEX.matchEntire(line) ?: return null

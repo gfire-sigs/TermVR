@@ -1,4 +1,4 @@
-Go Standard Library & Runtime (1.27.4 - termvr-agent & librungv.so)
+Go Standard Library & Runtime (1.27.4 - termvr-agent & librungvx.so)
 Repository: https://go.googlesource.com/go
 
 Copyright 2009 The Go Authors.

@@ -265,7 +265,7 @@ class AndroidSandboxRuntimeGateway(
     private val volumeJson = Json { ignoreUnknownKeys = true }
 
     /**
-     * Creates a `RungvCommandExecutor` executing `librungv.so` directly for image catalog operations.
+     * Creates a `RungvCommandExecutor` executing `librungvx.so` directly for image catalog operations.
      */
     fun createRungvCommandExecutor(): RungvCommandExecutor = RungvCommandExecutor { args, env ->
         executeRungvCommand(args, env)
@@ -275,12 +275,12 @@ class AndroidSandboxRuntimeGateway(
         args: List<String>,
         env: Map<String, String> = emptyMap(),
     ): RungvCommandResult = withContext(Dispatchers.IO) {
-        val rungv = File(appContext.applicationInfo.nativeLibraryDir, "librungv.so")
+        val rungv = File(appContext.applicationInfo.nativeLibraryDir, "librungvx.so")
         if (!rungv.isFile) {
             return@withContext RungvCommandResult(
                 exitCode = 127,
                 stdout = "",
-                stderr = "librungv.so not found in ${appContext.applicationInfo.nativeLibraryDir}",
+                stderr = "librungvx.so not found in ${appContext.applicationInfo.nativeLibraryDir}",
             )
         }
         val cmd = ArrayList<String>(1 + args.size).apply {
@@ -296,7 +296,7 @@ class AndroidSandboxRuntimeGateway(
         val finished = proc.waitFor(300L, TimeUnit.SECONDS)
         if (!finished) {
             proc.destroyForcibly()
-            RungvCommandResult(exitCode = 124, stdout = stdout, stderr = "rungv command timed out")
+            RungvCommandResult(exitCode = 124, stdout = stdout, stderr = "rungvx command timed out")
         } else {
             RungvCommandResult(exitCode = proc.exitValue(), stdout = stdout, stderr = stderr)
         }
@@ -452,7 +452,7 @@ class AndroidSandboxRuntimeGateway(
     override suspend fun listVolumes(): List<RungvVolumeLsEntry> {
         val result = executeRungvCommand(CatalogRepository.buildVolumeLsArgs())
         check(result.exitCode == 0) {
-            result.stderr.ifBlank { "rungv volume ls failed (${result.exitCode})" }
+            result.stderr.ifBlank { "rungvx volume ls failed (${result.exitCode})" }
         }
         return result.stdout.lineSequence()
             .map { it.trim() }
@@ -464,14 +464,14 @@ class AndroidSandboxRuntimeGateway(
     override suspend fun createVolume(name: String) {
         val result = executeRungvCommand(CatalogRepository.buildVolumeCreateArgs(name))
         check(result.exitCode == 0) {
-            result.stderr.ifBlank { "rungv volume create failed (${result.exitCode})" }
+            result.stderr.ifBlank { "rungvx volume create failed (${result.exitCode})" }
         }
     }
 
     override suspend fun removeVolume(name: String, force: Boolean) {
         val result = executeRungvCommand(CatalogRepository.buildVolumeRmArgs(name, force))
         check(result.exitCode == 0) {
-            result.stderr.ifBlank { "rungv volume rm failed (${result.exitCode})" }
+            result.stderr.ifBlank { "rungvx volume rm failed (${result.exitCode})" }
         }
     }
 
@@ -479,7 +479,7 @@ class AndroidSandboxRuntimeGateway(
         val gvxCacheDir = File(appContext.filesDir, "gvx-store/gvx")
         val result = executeRungvCommand(CatalogRepository.buildVolumeCompactArgs(name, gvxCacheDir))
         check(result.exitCode == 0) {
-            result.stderr.trim().ifEmpty { "rungv volume compact failed (${result.exitCode})" }
+            result.stderr.trim().ifEmpty { "rungvx volume compact failed (${result.exitCode})" }
         }
     }
 
