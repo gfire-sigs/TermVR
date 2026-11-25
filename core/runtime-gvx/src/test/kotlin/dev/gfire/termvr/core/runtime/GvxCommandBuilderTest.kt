@@ -58,6 +58,7 @@ class GvxCommandBuilderTest {
 
         assertEquals(builder.gvxHomeDir.absolutePath, env["HOME"])
         assertEquals(builder.gvxStoreDir.absolutePath, env["XDG_CACHE_HOME"])
+        assertEquals(builder.gvxStoreDir.absolutePath, env["XDG_DATA_HOME"])
         assertEquals(builder.gvxTmpDir.absolutePath, env["TMPDIR"])
         assertEquals(builder.androidRootsPem.absolutePath, env["SSL_CERT_FILE"])
         assertEquals(builder.caEmptyDir.absolutePath, env["SSL_CERT_DIR"])

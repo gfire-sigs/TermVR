@@ -6,7 +6,28 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.23.10022026112300`.
+This section tracks changes staged on `main` after `0.24.10002026112300`.
+
+---
+
+## [0.24.10002026112300]
+
+This release (`versionCode` `302400000`) upgrades `gvx` to `v0.24.10002026112300` (`e4e6b7b8b695`) and aligns `TermVR` host environment storage with `gvx` user data directory resolution.
+
+### Runtime upgrade to `gvx` `v0.24.10002026112300`
+
+The embedded `librungvx.so` runtime advances from `gvx` `v0.23.10022026112300` to `v0.24.10002026112300` (`e4e6b7b8b695`), keeping `gVisor` `release-20261123.0` (`83df8eae069e`).
+
+- Bundled `gvx` `v0.24.10002026112300` (`e4e6b7b8b695`), which moves default named volume storage out of cache directories (`gvx#261`) and adds `-volume-dir` and `GVX_VOLUME_DIR` controls across the CLI and Go SDK.
+- Included VFS-backed working-directory resolution for relative guest executables and relative or empty `PATH` entries (`gvx#262`).
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.24.10002026112300`.
+
+### Persistent `ext4lite` volume directory alignment
+
+Upstream `gvx` `v0.24` resolves default named volumes on Android from `$XDG_DATA_HOME/gvx/volumes` instead of `$XDG_CACHE_HOME/gvx/volumes`. `TermVR` sets `XDG_DATA_HOME` to the same persistent app storage directory so fresh and upgraded installs share one volume path.
+
+- Exported `XDG_DATA_HOME = <filesDir>/gvx-store` alongside `XDG_CACHE_HOME` in `GvxCommandBuilder.buildHostEnvironment`.
+- Updated `GvxCommandBuilderTest` and `docs/designs/0001-termvr-system-design.md` Section 15.1 to cover the `XDG_DATA_HOME` environment contract.
 
 ---
 

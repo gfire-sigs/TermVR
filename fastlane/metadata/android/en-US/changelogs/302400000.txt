@@ -1,0 +1,3 @@
+TermVR 0.24.10002026112300 upgrades the bundled gvx runtime to v0.24.10002026112300.
+- Upgraded gvx to v0.24.10002026112300 (e4e6b7b8b695), moving default named volumes out of cache directories, adding -volume-dir controls, and resolving relative guest executables against the active working directory.
+- Exported XDG_DATA_HOME alongside XDG_CACHE_HOME so named ext4lite volumes remain under persistent app storage on fresh and upgraded installs.

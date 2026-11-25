@@ -267,6 +267,7 @@ class GvxCommandBuilder(
         val env = LinkedHashMap<String, String>(baseEnv)
         env["HOME"] = gvxHomeDir.absolutePath
         env["XDG_CACHE_HOME"] = gvxStoreDir.absolutePath
+        env["XDG_DATA_HOME"] = gvxStoreDir.absolutePath
         env["TMPDIR"] = gvxTmpDir.absolutePath
 
         if (trustHostCaCerts) {
