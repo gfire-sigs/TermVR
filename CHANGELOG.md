@@ -6,7 +6,21 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.24.10002026112300`.
+This section tracks changes staged on `main` after `0.24.10012026112300`.
+
+---
+
+## [0.24.10012026112300]
+
+This release (`versionCode` `302400010`) upgrades `gvx` to `v0.24.10012026112300` (`95918a156297`). All existing container profiles, workspaces, and persistent `ext4lite` volumes remain compatible.
+
+### Runtime upgrade to `gvx` `v0.24.10012026112300`
+
+The embedded `librungvx.so` runtime advances from `gvx` `v0.24.10002026112300` to `v0.24.10012026112300` (`95918a156297`), keeping `gVisor` `release-20261123.0` (`83df8eae069e`).
+
+- Bundled `gvx` `v0.24.10012026112300` (`95918a156297`), which adds `MemoryFile.AllocationStats` and `MemoryFile.WaitReleaserIdle` in `pgalloc` (`gvx#263`, `gvx#264`).
+- Included isolated `SEEK_DATA` and `SEEK_HOLE` leak verification for Linux `systrap` idle stubs across 4 KB and 16 KB host pages.
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.24.10012026112300`.
 
 ---
 

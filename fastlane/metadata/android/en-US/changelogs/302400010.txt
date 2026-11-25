@@ -1,0 +1,2 @@
+TermVR 0.24.10012026112300 upgrades the bundled gvx runtime to v0.24.10012026112300.
+- Upgraded pinned gvx runtime to v0.24.10012026112300 (95918a156297), adding deterministic pgalloc releaser status helpers and isolated Linux systrap leak verification (gvx#263, gvx#264).
