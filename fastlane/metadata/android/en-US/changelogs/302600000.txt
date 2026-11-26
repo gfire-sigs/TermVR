@@ -1,0 +1,2 @@
+TermVR 0.26.10002026112300 upgrades the bundled gvx runtime to v0.26.10002026112300.
+- Upgraded pinned gvx runtime to v0.26.10002026112300 (4d5ff9e33b51), adding opt-in contained host symbolic links for hostfs bind mounts and serialized containment checks across rename and link operations (gvx#267, gvx#278).

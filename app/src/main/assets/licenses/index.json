@@ -10,7 +10,7 @@
   {
     "id": "gvx",
     "name": "gvx User-Space Linux Sandbox",
-    "version": "v0.25.10002026112300",
+    "version": "v0.26.10002026112300",
     "spdxId": "Apache-2.0",
     "repositoryUrl": "https://github.com/gfire-sigs/gvx",
     "assetFile": "gvx.txt"

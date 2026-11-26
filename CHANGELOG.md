@@ -6,7 +6,21 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.25.10002026112300`.
+This section tracks changes staged on `main` after `0.26.10002026112300`.
+
+---
+
+## [0.26.10002026112300]
+
+This release (`versionCode` `302600000`) upgrades `gvx` to `v0.26.10002026112300` (`4d5ff9e33b51`). All existing container profiles, workspaces, and persistent `ext4lite` volumes remain compatible.
+
+### Runtime upgrade to `gvx` `v0.26.10002026112300`
+
+The embedded `librungvx.so` runtime advances from `gvx` `v0.25.10002026112300` to `v0.26.10002026112300` (`4d5ff9e33b51`), keeping `gVisor` `release-20261123.0` (`83df8eae069e`).
+
+- Bundled `gvx` `v0.26.10002026112300` (`4d5ff9e33b51`), adding opt-in contained host symbolic links (`--mount ...,symlinks=contained`) for `hostfs` bind mounts (`gvx#267`, `gvx#278`).
+- Included serialized symbolic link containment checks across `rename`, `RENAME_EXCHANGE`, `RENAME_WHITEOUT`, and `link`, plus virtual symbolic link inspection APIs (`gvx#278`).
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.26.10002026112300`.
 
 ---
 
