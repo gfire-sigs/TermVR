@@ -1,0 +1,2 @@
+TermVR 0.25.10002026112300 upgrades the bundled gvx runtime to v0.25.10002026112300.
+- Upgraded pinned gvx runtime to v0.25.10002026112300 (eff5ad2a10be), adding persistent EROFS layer verification caching for faster starts and memory-manager callback safety fixes (gvx#265, gvx#266, gvx#268, gvx#269, gvx#274).

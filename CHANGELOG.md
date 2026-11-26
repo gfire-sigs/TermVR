@@ -6,7 +6,22 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.24.10012026112300`.
+This section tracks changes staged on `main` after `0.25.10002026112300`.
+
+---
+
+## [0.25.10002026112300]
+
+This release (`versionCode` `302500000`) upgrades `gvx` to `v0.25.10002026112300` (`eff5ad2a10be`). All existing container profiles, workspaces, and persistent `ext4lite` volumes remain compatible.
+
+### Runtime upgrade to `gvx` `v0.25.10002026112300`
+
+The embedded `librungvx.so` runtime advances from `gvx` `v0.24.10012026112300` to `v0.25.10002026112300` (`eff5ad2a10be`), keeping `gVisor` `release-20261123.0` (`83df8eae069e`).
+
+- Bundled `gvx` `v0.25.10002026112300` (`eff5ad2a10be`), adding persistent `.erofs.id` layer verification caching across sandbox starts (`gvx#268`, `gvx#273`).
+- Included image `Labels` and `ConfigDigest` metadata (`gvx#265`, `gvx#270`), external `hostfs` `MetaDir` support (`gvx#266`, `gvx#271`), and `NetModeLink` L3 packet streams (`gvx#269`, `gvx#272`).
+- Included the `pkg/sentry/mm` non-escaping callback fix (`gvx#274`) and Windows `systrap` trampoline island safety fixes (`gvx#275`).
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.25.10002026112300`.
 
 ---
 
