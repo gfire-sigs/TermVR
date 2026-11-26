@@ -116,6 +116,13 @@ class TerminalSessionCoordinator(
         _lastError.value = message
     }
 
+    internal fun isPaneStreamBound(paneId: String): Boolean {
+        val runtime = paneRuntimes[paneId] ?: return false
+        return runtime.streamId >= 1L &&
+            runtime.muxPtyHandle != null &&
+            !runtime.streamBindingInFlight.get()
+    }
+
     fun needsReattach(profileId: String): Boolean {
         val hasTabs = _tabs.value.any { it.profileId == profileId }
         if (!hasTabs) return false
@@ -733,7 +740,7 @@ class TerminalSessionCoordinator(
                 if (runtime.boundMuxRef === mux) {
                     runtime.boundMuxRef = null
                 }
-                if (!runtime.closed) {
+                if (!runtime.closed && !mux.isClosed) {
                     _lastError.value = err.message ?: "Failed to open PTY session"
                     appendTerminalNotice(runtime, "\r\n[Failed to open PTY: ${err.message}]\r\n")
                 }

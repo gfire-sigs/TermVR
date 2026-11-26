@@ -109,15 +109,17 @@ class SnapshotResumeFlowTest {
             // 1. Cold boot and open shell tab (stream 1).
             assertEquals(SandboxRunState.RUNNING, gateway.startOrResumeSandbox(profile))
             coordinator.ensureTabsForProfile(profile, maxScrollbackLines = 1000, palette = ColorPalette.DEFAULT_DARK)
+            val tabId = coordinator.tabs.value.single().tabId
+            val paneId = coordinator.tabs.value.single().focusedPaneId
             val deadline1 = System.currentTimeMillis() + 3_000L
-            while (gateway.latestGuestSession()?.openedStreamIds?.contains(1L) != true &&
+            while ((gateway.latestGuestSession()?.openedStreamIds?.contains(1L) != true ||
+                !coordinator.isPaneStreamBound(paneId)) &&
                 System.currentTimeMillis() < deadline1
             ) {
                 Thread.sleep(10L)
             }
             assertTrue(gateway.latestGuestSession()!!.openedStreamIds.contains(1L))
-            val tabId = coordinator.tabs.value.single().tabId
-            val paneId = coordinator.tabs.value.single().focusedPaneId
+            assertTrue(coordinator.isPaneStreamBound(paneId))
 
             // 2. Freeze closes old MuxSessionClient; input/resize while frozen must NOT emit "MuxSessionClient is closed".
             assertEquals(SandboxRunState.FROZEN, gateway.freezeSandbox(profile.id))
@@ -184,13 +186,16 @@ class SnapshotResumeFlowTest {
             try {
                 vm.switchToOrStartProfile(profile)
                 advanceUntilIdle()
+                val paneId = coordinator.tabs.value.single().focusedPaneId
                 val deadline1 = System.currentTimeMillis() + 3_000L
-                while (gateway.latestGuestSession()?.openedStreamIds?.contains(1L) != true &&
+                while ((gateway.latestGuestSession()?.openedStreamIds?.contains(1L) != true ||
+                    !coordinator.isPaneStreamBound(paneId)) &&
                     System.currentTimeMillis() < deadline1
                 ) {
                     Thread.sleep(10L)
                 }
-                val paneId = coordinator.tabs.value.single().focusedPaneId
+                assertTrue(gateway.latestGuestSession()!!.openedStreamIds.contains(1L))
+                assertTrue(coordinator.isPaneStreamBound(paneId))
 
                 // Simulate applyPortForwards(checkpointAndRestore = true) swapping MuxSessionClient in background.
                 assertEquals(
@@ -217,10 +222,13 @@ class SnapshotResumeFlowTest {
                 advanceUntilIdle()
                 val coldGuest = gateway.latestGuestSession()!!
                 val deadline3 = System.currentTimeMillis() + 3_000L
-                while (coldGuest.openedStreamIds.isEmpty() && System.currentTimeMillis() < deadline3) {
+                while ((coldGuest.openedStreamIds.isEmpty() || !coordinator.isPaneStreamBound(paneId)) &&
+                    System.currentTimeMillis() < deadline3
+                ) {
                     Thread.sleep(10L)
                 }
                 assertTrue(coldGuest.openedStreamIds.isNotEmpty())
+                assertTrue(coordinator.isPaneStreamBound(paneId))
                 assertNull(coordinator.lastError.value)
             } finally {
                 vmScope.cancel()
@@ -250,12 +258,14 @@ class SnapshotResumeFlowTest {
             val tab = coordinator.openNewShellTab(profile, 1000, ColorPalette.DEFAULT_DARK)!!
             val firstController = coordinator.activeController()
             val deadline1 = System.currentTimeMillis() + 3_000L
-            while (gateway.latestGuestSession()?.openedStreamIds?.size != 1 &&
+            while ((gateway.latestGuestSession()?.openedStreamIds?.size != 1 ||
+                !coordinator.isPaneStreamBound(tab.focusedPaneId)) &&
                 System.currentTimeMillis() < deadline1
             ) {
                 Thread.sleep(10L)
             }
             assertEquals(1, gateway.latestGuestSession()!!.openedStreamIds.size)
+            assertTrue(coordinator.isPaneStreamBound(tab.focusedPaneId))
 
             // Splitting creates a second pane sharing the same tab controller.
             coordinator.splitFocusedPane(
@@ -269,7 +279,8 @@ class SnapshotResumeFlowTest {
             assertSame(firstController, splitController)
 
             val deadline2 = System.currentTimeMillis() + 3_000L
-            while (gateway.latestGuestSession()?.openedStreamIds?.size != 2 &&
+            while ((gateway.latestGuestSession()?.openedStreamIds?.size != 2 ||
+                !coordinator.tabs.value.single().allPaneIds().all { coordinator.isPaneStreamBound(it) }) &&
                 System.currentTimeMillis() < deadline2
             ) {
                 Thread.sleep(10L)
@@ -313,10 +324,14 @@ class SnapshotResumeFlowTest {
             val tab = coordinator.openNewShellTab(profile, 1000, ColorPalette.DEFAULT_DARK)!!
             val guest = gateway.latestGuestSession()!!
             val openDeadline = System.currentTimeMillis() + 3_000L
-            while (!guest.openedStreamIds.contains(1L) && System.currentTimeMillis() < openDeadline) {
+            while ((!guest.openedStreamIds.contains(1L) ||
+                !coordinator.isPaneStreamBound(tab.focusedPaneId)) &&
+                System.currentTimeMillis() < openDeadline
+            ) {
                 Thread.sleep(10L)
             }
             assertTrue(guest.openedStreamIds.contains(1L))
+            assertTrue(coordinator.isPaneStreamBound(tab.focusedPaneId))
 
             val expected = "fastfetch_0123456789_abcdefghijklmnopqrstuvwxyz"
             for (ch in expected) {
