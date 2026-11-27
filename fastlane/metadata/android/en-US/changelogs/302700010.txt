@@ -1,0 +1,3 @@
+TermVR 0.27.10012026112300 upgrades the bundled gvx runtime to v0.27.10012026112300.
+- Quiesces host stdin and TTY readers across checkpoints and serializes kernel startup state (gvx#283).
+- Includes upstream reliability and test-suite synchronization fixes (gvx#284, gvx#285).

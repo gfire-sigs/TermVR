@@ -6,7 +6,21 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.27.10002026112300`.
+This section tracks changes staged on `main` after `0.27.10012026112300`.
+
+---
+
+## [0.27.10012026112300]
+
+This release (`versionCode` `302700010`) upgrades `gvx` to `v0.27.10012026112300` (`84ef48ab4b79`). All existing container profiles, workspaces, and persistent `ext4lite` volumes remain compatible.
+
+### Runtime upgrade to `gvx` `v0.27.10012026112300`
+
+The embedded `librungvx.so` runtime advances from `gvx` `v0.27.10002026112300` to `v0.27.10012026112300` (`84ef48ab4b79`), keeping `gVisor` `release-20261123.0` (`83df8eae069e`).
+
+- Bundled `gvx` `v0.27.10012026112300` (`84ef48ab4b79`), quiescing host `stdin` and `TTY` readers across checkpoints and serializing kernel startup state (`gvx#283`).
+- Included Windows `systrap` island-slot scrubbing fixes (`gvx#284`) and deterministic test-suite synchronization improvements (`gvx#285`).
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.27.10012026112300`.
 
 ---
 
