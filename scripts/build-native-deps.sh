@@ -317,6 +317,23 @@ BUILD_SCRATCH="${REPO_ROOT}/core/terminal-vt/build/native-deps-work"
 rm -rf "${BUILD_SCRATCH}"
 mkdir -p "${BUILD_SCRATCH}"
 
+# Build host slimlink once from vendored gvx when available so librungvx.so
+# gets dead-method elimination offline while preserving standard Go pclntab.
+SLIMLINK_BIN=""
+SLIMLINK_CACHE="${BUILD_SCRATCH}/slimlink-cache"
+if [ -d "${GVX_DIR}/tools/slimlink" ]; then
+  [ -f "${GVX_DIR}/vendor/modules.txt" ] || die "Missing ${GVX_DIR}/vendor/modules.txt; run provision-toolchains-and-vendor.sh first"
+  SLIMLINK_BIN="${BUILD_SCRATCH}/slimlink"
+  (
+    cd "${GVX_DIR}"
+    env -u GOOS -u GOARCH -u GOAMD64 -u GOARM64 -u GO386 -u GOARM -u GOEXPERIMENT -u GOFLAGS \
+      CGO_ENABLED=0 "${GO_EXE}" build \
+      -mod=vendor -trimpath -buildvcs=false \
+      -o "${SLIMLINK_BIN}" ./tools/slimlink
+  )
+  log_info "Built host slimlink at ${SLIMLINK_BIN}"
+fi
+
 # Stage bundled font asset once across all ABIs.
 FONTS_OUT="${REPO_ROOT}/core/terminal-ui/src/main/assets/fonts"
 mkdir -p "${FONTS_OUT}"
@@ -360,7 +377,21 @@ build_for_abi() {
 
   (
     cd "${GVX_DIR}"
-    if [ "${abi}" = "arm64-v8a" ]; then
+    if [ -n "${SLIMLINK_BIN}" ]; then
+      if [ "${abi}" = "arm64-v8a" ]; then
+        CGO_ENABLED=0 GOOS=android GOARCH=arm64 "${SLIMLINK_BIN}" \
+          -go="${GO_EXE}" -cache-dir="${SLIMLINK_CACHE}" -- \
+          -mod=vendor -trimpath -buildvcs=false -buildmode=pie \
+          -ldflags="-s -w -buildid=" \
+          -o "${rungvx_out}" ./cmd/rungvx
+      else
+        CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="${NDK_CLANG_X86_64}" "${SLIMLINK_BIN}" \
+          -go="${GO_EXE}" -cache-dir="${SLIMLINK_CACHE}" -- \
+          -mod=vendor -trimpath -buildvcs=false \
+          -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" \
+          -o "${rungvx_out}" ./cmd/rungvx
+      fi
+    elif [ "${abi}" = "arm64-v8a" ]; then
       CGO_ENABLED=0 GOOS=android GOARCH=arm64 "${GO_EXE}" build \
         -mod=vendor -trimpath -buildvcs=false -buildmode=pie \
         -ldflags="-s -w -buildid=" \

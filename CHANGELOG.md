@@ -6,7 +6,21 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.26.10002026112300`.
+This section tracks changes staged on `main` after `0.27.10002026112300`.
+
+---
+
+## [0.27.10002026112300]
+
+This release (`versionCode` `302700000`) upgrades `gvx` to `v0.27.10002026112300` (`97949bee0c71`) and enables linker dead-method elimination for `librungvx.so`. All existing container profiles, workspaces, and persistent `ext4lite` volumes remain compatible.
+
+### Runtime upgrade to `gvx` `v0.27.10002026112300`
+
+The embedded `librungvx.so` runtime advances from `gvx` `v0.26.10002026112300` to `v0.27.10002026112300` (`97949bee0c71`), keeping `gVisor` `release-20261123.0` (`83df8eae069e`).
+
+- Bundled `gvx` `v0.27.10002026112300` (`97949bee0c71`), excluding `nvproxy` from default builds (`gvx#279`) and removing reflection method lookups in `pkg/state` and `pkg/rungvx` (`gvx#280`, `gvx#281`).
+- Updated `scripts/build-native-deps.sh` to link `librungvx.so` offline via `gvx` `tools/slimlink` (`gvx#282`), shrinking APK size while keeping Go stack traces and `16 KB` alignment.
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.27.10002026112300`.
 
 ---
 

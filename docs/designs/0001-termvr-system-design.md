@@ -1043,9 +1043,9 @@ Five gated `HOST_RPC` operations (`op = 1..5`) run over stream `0`:
 
 - **Phase 1 (`prebuild: ../scripts/provision-toolchains-and-vendor.sh --all-sources --toolchains-dir /tmp/termvr-toolchains`)**: Runs before F-Droid's `scanner` step and writes all caches outside the repository tree. Verifies `git rev-parse HEAD` of `gvx`, `ghostty`, `freetype`, `harfbuzz`, and `termvr_fonts` against `scripts/source-lock.json`; downloads `SHA-256`-pinned Go `1.27.4`, Zig `0.17.0`, and `TermVRMonoNF-TTF.zip` archives if absent; verifies `TermVRMonoNF-Regular.ttf` against `ttf_sha256`; populates `gvx/vendor` via `go mod vendor`; and populates Zig's package cache via `zig build --fetch`.
 - **Phase 2 (`build: ../scripts/build-native-deps.sh --abi arm64-v8a --toolchains-dir /tmp/termvr-toolchains`)**: Runs after `scanner` and compiles completely offline:
-  - Compiles `librungvx.so` into `core/runtime-gvx/src/main/jniLibs/<abi>/librungvx.so`:
-    - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -mod=vendor -trimpath -buildvcs=false -buildmode=pie -ldflags="-s -w -buildid=" ./cmd/rungvx`.
-    - On `x86_64` (emulator/CI): `CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$NDK_CLANG_X86_64 go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" ./cmd/rungvx`.
+  - Compiles `librungvx.so` into `core/runtime-gvx/src/main/jniLibs/<abi>/librungvx.so` via `gvx` `tools/slimlink` (DCE-only overlay linker keeping standard `pclntab`):
+    - On `arm64-v8a`: `CGO_ENABLED=0 GOOS=android GOARCH=arm64 slimlink -- -mod=vendor -trimpath -buildvcs=false -buildmode=pie -ldflags="-s -w -buildid=" ./cmd/rungvx`.
+    - On `x86_64` (emulator/CI): `CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$NDK_CLANG_X86_64 slimlink -- -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w -buildid= -extldflags '-Wl,-z,max-page-size=16384 -Wl,--build-id=none'" ./cmd/rungvx`.
   - Compiles static `termvr-agent` (`CGO_ENABLED=0 GOOS=linux GOARCH=<guestArch> go build -trimpath -buildvcs=false -ldflags="-s -w -buildid="`) into `app/src/main/assets/agent/<guestArch>/termvr-agent`.
   - Compiles `libghostty-vt.a` (`zig build -Doptimize=ReleaseFast --system <zig-cache> -Dtarget=<target>`), `libfreetype.a`, and `libharfbuzz.a` (`ZERO_AR_DATE=1`, `-ffile-prefix-map=$PWD=.`) into `.native-deps/<abi>/`, and copies `TermVRMonoNF-Regular.ttf` into `core/terminal-ui/src/main/assets/fonts/`.
 

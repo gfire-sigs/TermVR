@@ -1,0 +1,3 @@
+TermVR 0.27.10002026112300 upgrades the bundled gvx runtime to v0.27.10002026112300.
+- Upgraded pinned gvx runtime to v0.27.10002026112300 (97949bee0c71), excluding nvproxy by default and removing reflection method lookups (gvx#279, gvx#280, gvx#281).
+- Built librungvx.so offline via gvx tools/slimlink for dead-method elimination while keeping Go stack traces and 16 KB alignment (gvx#282).
