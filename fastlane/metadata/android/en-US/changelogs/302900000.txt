@@ -1,0 +1,4 @@
+TermVR 0.29.10002026112300 upgrades the bundled gvx runtime to v0.29.10002026112300.
+- Resolves named control sockets on Android under TMPDIR or user cache instead of /tmp (gvx#305).
+- Hardens unwritable-HOME cache fallback, ephemeral volume paths, and read-only image lookups (gvx#297, gvx#302).
+- Includes upstream sanitization of ARM64 ID registers, Windows volume separation, and Linux AppArmor diagnostics (gvx#298, gvx#299, gvx#303, gvx#304, gvx#305).

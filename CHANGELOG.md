@@ -6,7 +6,22 @@ This file records notable user-visible, build, and release changes across `TermV
 
 ## [Unreleased]
 
-This section tracks changes staged on `main` after `0.27.10012026112300`.
+This section tracks changes staged on `main` after `0.29.10002026112300`.
+
+---
+
+## [0.29.10002026112300]
+
+This release (`versionCode` `302900000`) upgrades `gvx` to `v0.29.10002026112300` (`759be9bb3985`). All existing container profiles, workspaces, and persistent `ext4lite` volumes remain compatible.
+
+### Runtime upgrade to `gvx` `v0.29.10002026112300`
+
+The embedded `librungvx.so` runtime advances from `gvx` `v0.27.10012026112300` to `v0.29.10002026112300` (`759be9bb3985`), keeping `gVisor` `release-20261123.0` (`83df8eae069e`). This upgrade incorporates upstream `v0.28` packaging updates and `v0.29` runtime and storage fixes.
+
+- Bundled `gvx` `v0.29.10002026112300` (`759be9bb3985`), fixing named control sockets on Android to prefer explicit `TMPDIR` or user cache directories over `/tmp` (`gvx#305`).
+- Hardened unwritable-`HOME` cache fallback, ephemeral volume path precedence, and read-only image lookups (`gvx#297`, `gvx#302`).
+- Included upstream sanitization for EL0 ID registers on ARM64 (`gvx#298`, `gvx#303`), separation of default Windows volume paths (`gvx#305`), and Linux AppArmor diagnostics (`gvx#299`, `gvx#304`).
+- Updated `CheckpointController.DEFAULT_GVX_VERSION`, `scripts/source-lock.json`, `gradle/libs.versions.toml`, `fdroid/dev.gfire.termvr.yml`, and bundled license notices to `v0.29.10002026112300`.
 
 ---
 
